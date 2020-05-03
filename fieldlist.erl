@@ -2,7 +2,8 @@
 
 -include("phttp.hrl").
 
--export([add/2, find/2, at/2, remove/2, to_iolist/1, to_binary/1, get_value/2]).
+-export([add/2, add_value/3, find/2, at/2, remove/2, get_value/2]).
+-export([to_proplist/1, to_iolist/1, to_binary/1]).
 
 trimows(?EMPTY) ->
     ?EMPTY;
@@ -51,6 +52,11 @@ add(F, FL) ->
             {ok, [{Pos,F}|FL]}
     end.
 
+add_value(Name, Value, FL) ->
+    BinName = list_to_binary(Name),
+    BinValue = list_to_binary(Value),
+    [{length(Name),<<BinName/binary,?COLON,BinValue/binary>>}|FL].
+
 find(Name, FL) ->
     find(Name, FL, 1).
 
@@ -91,6 +97,17 @@ to_iolist(FL) ->
 
 to_binary(FL) ->
     iolist_to_binary(to_iolist(FL)).
+
+to_proplist(FL) ->
+    to_proplist(FL, []).
+
+to_proplist([], PL) ->
+    PL;
+
+to_proplist([{Pos,Bin}|FL], PL) ->
+    Prop = binary_to_list(binary_lcase(binary_part(Bin, 0, Pos))),
+    Value = binary_to_list(trimows(binary_part(Bin, Pos+1, byte_size(Bin)-Pos-1))),
+    to_proplist(FL, [{list_to_atom(Prop),Value}|PL]).
 
 binary_lcase(?EMPTY) ->
     ?EMPTY;

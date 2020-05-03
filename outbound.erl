@@ -11,7 +11,7 @@
          terminate/2]).
 
 start_link(Host, Port) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [Host, Port], []).
+    gen_server:start_link(?MODULE, [Host, Port], []).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
@@ -111,7 +111,7 @@ head_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
 
 head_finish(Bin, Status, Headers, State) ->
     {DataPid, Ref, {Method,_,_}} = State#outstate.req,
-    inbound:response_head(DataPid, Ref, Status, Headers),
+    inbound:respond(DataPid, Ref, {head, Status, Headers}),
     {ok, BodyLength} = phttp:body_length(Method, Status, Headers),
     body_begin(Bin, phttp:body_reader(BodyLength), State).
 
@@ -128,19 +128,19 @@ body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
         {wait, ?EMPTY, Bin2, HState} ->
             {noreply, State#outstate{hstate=HState, buffer=Bin2}};
         {wait, Bin1, Bin2, HState} ->
-            {DataPid,_,_} = State#outstate.req,
-            inbound:response_body(DataPid, Bin1),
+            {DataPid,Ref,_} = State#outstate.req,
+            inbound:respond(DataPid, Ref, {body, Bin1}),
             {noreply, State#outstate{hstate=HState, buffer=Bin2}};
         {redo, ?EMPTY, Bin2, Bin3, HState} ->
             %% Avoids sending messages about nothing.
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
         {redo, Bin1, Bin2, Bin3, HState} ->
-            {DataPid,_,_} = State#outstate.req,
-            inbound:response_body(DataPid, Bin1),
+            {DataPid,Ref,_} = State#outstate.req,
+            inbound:respond(DataPid, Ref, {body, Bin1}),
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
         {last, Bin1, Bin2} ->
-            {DataPid,_,_} = State#outstate.req,
-            inbound:response_body(DataPid, Bin1),
+            {DataPid,Ref,_} = State#outstate.req,
+            inbound:respond(DataPid, Ref, {body, Bin1}),
             {noreply, State#outstate{state=idle, buffer=Bin2}, {continue, close_request}}
     end.
 
@@ -175,7 +175,7 @@ send_lines(Sock, [X|L]) ->
     end.
 
 relay_body_out(DataPid, Ref, Sock) ->
-    case inbound:request_body(DataPid, Ref) of
+    case inbound:request(DataPid, Ref, body) of
         {error, Reason} ->
             {error, Reason};
         {more, ?EMPTY} ->

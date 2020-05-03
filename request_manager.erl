@@ -68,7 +68,7 @@ handle_cast({close_request, OutPid, Ref}, State) ->
         {[], _} ->
             {stop, {unknown_request, Ref}, State};
         {[[InPid]], _} ->
-            inbound:close_request(InPid, Ref),
+            inbound:close(InPid, Ref),
             ets:match_delete(State#rmstate.reqtab, {OutPid, InPid, Ref, '_'}),
             {noreply, State}
     end.

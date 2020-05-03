@@ -1,29 +1,27 @@
--module(inbound).
--behavior(gen_server).
+%%% inbound
+%%% Provides a common interface for gen_server modules to implement for inbound
+%%% connections. These connects send out requests and receive responses.
+%%%
 
+-module(inbound).
 -include("phttp.hrl").
 
--compile(export_all).
+-export([close/2, reset/2, abort/3, request/3, respond/3]).
 
 %%% external interface
 
-close_request(Pid, ReqId) ->
-    gen_server:cast(Pid, {close_request, ReqId}).
+close(Pid, Ref) ->
+    gen_server:cast(Pid, {close, Ref}).
 
-reset_request(Pid, ReqId) ->
-    gen_server:cast(Pid, {reset_request, ReqId}).
+reset(Pid, Ref) ->
+    gen_server:cast(Pid, {reset, Ref}).
 
-response_head(Pid, ReqId, Status, Headers) ->
-    gen_server:cast(Pid, {response_head, ReqId, Status, Headers}).
+abort(Pid, Ref, Reason) ->
+    gen_server:cast(Pid, {abort, Ref, Reason}).
 
-abort_request(Pid, ReqId, Reason) ->
-    gen_server:cast(Pid, {abort_request, ReqId, Reason}).
+request(Pid, Ref, Request) ->
+    gen_server:call(Pid, {request, Ref, Request}).
 
-%%% gen_server behavior callbacks
+respond(Pid, Ref, Response) ->
+    gen_server:cast(Pid, {respond, Ref, Response}).
 
-init([]) ->
-    ReqTab = ets:new(requests, [set,private]),
-    {ReqTab}.
-
-handle_cast({close_request, ReqId}, {ReqTab}) ->
-    .
