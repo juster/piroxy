@@ -7,9 +7,13 @@
 -behavior(gen_server).
 -include("phttp.hrl").
 
+-record(request, {ref, from, hostinfo, head, body}).
+-record(response, {ref, status, headers, body}).
+
 -export([start_link/0, send/3, send/4]).
 -export([init/1, handle_cast/2, handle_call/3]).
 
+%%%
 %%% new interface functions
 %%%
 
@@ -23,16 +27,18 @@ send(Pid, HostInfo, Head) ->
 send(Pid, HostInfo, Head, Body) ->
     gen_server:call(Pid, {send, HostInfo, Head, Body}).
 
+%%%
 %%% behavior callbacks
 %%%
 
 init([]) ->
-    {ok, {ets:new(requests, [set,private]), ets:new(responses, [set,private])}}.
+    {ok, {ets:new(requests, [set,private,{keypos,#request.ref}]),
+          ets:new(responses, [set,private,{keypos,#response.ref}])}}.
 
 handle_call({send, HostInfo, Head}, From, State) ->
     handle_call({send, HostInfo, Head, ?EMPTY}, From, State);
 
-handle_call({send, HostInfo, Head, Body}, {Pid,_}, {ReqTab,ResTab} = State) ->
+handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
     {Method, Uri, Headers} = Head,
     MethodBin = method_bin(Method),
     UriBin = list_to_binary(Uri),
@@ -40,45 +46,41 @@ handle_call({send, HostInfo, Head, Body}, {Pid,_}, {ReqTab,ResTab} = State) ->
         {error, Reason} ->
             {stop, Reason, State};
         {ok, Ref} ->
-            ets:insert(ReqTab, {Ref, Pid, HostInfo,
-                                {MethodBin, UriBin, Headers},
-                                Body}),
-            ets:insert(ResTab, {Ref, null, null, ?EMPTY}),
-            {reply, Ref, State}
+            Req = {request, Ref, From, HostInfo,
+                   {MethodBin, UriBin, Headers}, Body}, 
+            ets:insert(ReqTab, Req),
+            ets:insert(ResTab, {response, Ref, null, null, ?EMPTY}),
+            {noreply, State}
     end;
 
 handle_call({request, Ref, body}, _From, {ReqTab,_ResTab} = State) ->
-    case element(1, ets:match(ReqTab, {Ref,'_','_','_','$1'}, 1)) of
-        [[?EMPTY]] ->
-            {reply, {last, ?EMPTY}, State};
-        [[Body]] ->
-            {reply, {last, Body}, State}
-    end.
+    Req = hd(ets:lookup(ReqTab, Ref)),
+    {reply, {last, Req#request.body}, State}.
 
 handle_cast({close, Ref}, {ReqTab,ResTab} = State) ->
-    [[Pid]] = element(1, ets:match(ReqTab, {Ref,'$1','_','_','_'}, 1)),
-    [{_,StatusLine,Headers,Body}] = ets:lookup(ResTab, Ref),
-    Pid ! {response, Ref, StatusLine, Headers, Body},
+    [#request{from=From}] = ets:lookup(ReqTab, Ref),
+    [#response{status=StatusLine,headers=Headers,body=Body}] = ets:lookup(ResTab, Ref),
     ets:delete(ReqTab, Ref),
     ets:delete(ResTab, Ref),
+    gen_server:reply(From, {ok, {StatusLine, Headers, Body}}),
     {noreply, State};
 
 handle_cast({reset, Ref}, {ReqTab,ResTab} = State) ->
     case ets:lookup(ReqTab, Ref) of
         [] ->
             {stop, {request_missing, Ref}, State};
-        [{_,Pid,HostInfo,Head,_Body}] ->
+        [#request{hostinfo=HostInfo,head=Head}] ->
             {ok, NewRef} = new_request(HostInfo, Head),
-            ets:update_element(ReqTab, Ref, {1, NewRef}),
+            ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
             ets:delete(ResTab, Ref),
             ets:insert(ResTab, {Ref, null, null, ?EMPTY}),
-            Pid ! {reset_request, Ref, NewRef},
             {noreply, State}
     end;
 
 handle_cast({respond, Ref, {head, StatusLine, Headers}}, {_ReqTab,ResTab} = State) ->
     %%{{Major, Minor}, Status, _} = StatusLine, 
-    case ets:update_element(ResTab, Ref, [{2, StatusLine}, {3, Headers}]) of
+    case ets:update_element(ResTab, Ref, [{#response.status, StatusLine},
+                                          {#response.headers, Headers}]) of
         true ->
             {noreply, State};
         false ->
@@ -86,13 +88,12 @@ handle_cast({respond, Ref, {head, StatusLine, Headers}}, {_ReqTab,ResTab} = Stat
     end;
 
 handle_cast({respond, Ref, {body, Body}}, {_ReqTab,ResTab} = State) ->
-    NewBody = case element(1, ets:match(ResTab, {Ref,'_','_','$1'}, 1)) of
-                  [[?EMPTY]] ->
-                      Body;
-                  [[PrevBody]] ->
-                      <<PrevBody/binary,Body/binary>>
+    [#response{body = PrevBody}] = ets:lookup(ResTab, Ref),
+    NewBody = case PrevBody of
+                  ?EMPTY -> Body;
+                  PrevBody -> <<PrevBody/binary,Body/binary>>
               end,
-    ets:update_element(ResTab, Ref, {4, NewBody}),
+    ets:update_element(ResTab, Ref, {#response.body, NewBody}),
     {noreply, State}.
 
 method_bin(get) ->
