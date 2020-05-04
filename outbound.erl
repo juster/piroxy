@@ -96,7 +96,7 @@ handle_info({tcp, _Sock, Bin}, State) ->
     {stop, {unexpected_recv, Bin}, State};
 
 handle_info({ssl_closed, _}, State) ->
-    {stop, normal, State};
+    {stop, normal, State#outstate{socket=null}};
 
 handle_info({ssl_error, Reason}, State) ->
     {stop, Reason, State};
@@ -110,6 +110,9 @@ handle_info({ssl, _Sock, Data}, State = #outstate{state=body}) ->
 handle_info({ssl, _Sock, Bin}, State) ->
     %% TODO: shutdown socket?
     {stop, {unexpected_recv, Bin}, State}.
+
+terminate(_Reason, #outstate{socket=null}) ->
+    ok;
 
 terminate(_Reason, #outstate{socket=Sock, ssl=false}) ->
     ok = gen_tcp:close(Sock);
