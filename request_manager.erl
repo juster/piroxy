@@ -7,6 +7,8 @@
 
 -record(rmstate, {hosttab, reqtab, pidtab}).
 
+-record(hostconn, {hostinfo, pid, nfail=0}).
+
 -export([start_link/0, new_request/2, next_request/0, close_request/1]).
 
 %%% gen_server callbacks
@@ -32,13 +34,19 @@ close_request(Ref) ->
     gen_server:cast(?MODULE, {close_request, self(), Ref}).
 
 %%% gen_server callbacks
+%%%
 
 init([]) ->
-    process_flag(trap_exit, true),
-    HostTab = ets:new(hosts, [set,private]),
-    ReqTab = ets:new(requests, [bag,private]),
-    PidTab = ets:new(pids, [set,private]),
-    {ok, #rmstate{hosttab=HostTab, reqtab=ReqTab, pidtab=PidTab}}.
+    case application:ensure_all_started(ssl) of
+        {ok, _} ->
+            process_flag(trap_exit, true),
+            HostTab = ets:new(hosts, [set,private,{keypos,#hostconn.hostinfo}]),
+            ReqTab = ets:new(requests, [bag,private]),
+            PidTab = ets:new(pids, [set,private]),
+            {ok, #rmstate{hosttab=HostTab, reqtab=ReqTab, pidtab=PidTab}};
+        {error, Reason} ->
+            {stop, Reason}
+    end.
 
 handle_call({new_request, HostInfo, Request}, {InPid, _Tag}, State) ->
     case open_connection(HostInfo, State) of
@@ -83,21 +91,21 @@ handle_info({'EXIT', Pid, Reason}, State) ->
             %% Reset the failure counter or increment it.
             case Reason of
                 normal ->
-                    ets:update_element(State#rmstate.hosttab, HostInfo, {3, 0});
+                    ets:update_element(State#rmstate.hosttab, HostInfo, {#hostconn.nfail, 0});
                 _ ->
-                    ets:update_counter(State#rmstate.hosttab, HostInfo, {3, 1})
+                    ets:update_counter(State#rmstate.hosttab, HostInfo, {#hostconn.nfail, 1})
             end,
             %% Spawn a new outgoing process if there are more requests.
             case has_requests(Pid, State) of
-                false ->
-                    ok;
                 true ->
                     case open_connection(HostInfo, State) of
                         {error, Reason} ->
                             abort_requests(Pid, State, Reason);
                         {ok, NewPid} ->
                             ets:update_element(State#rmstate.reqtab, Pid, {1, NewPid})
-                    end
+                    end;
+                false ->
+                    ok
             end,
             {noreply, State}
     end.
@@ -109,31 +117,36 @@ handle_info({'EXIT', Pid, Reason}, State) ->
 %% Use a pre-existing connection to connect to the host if it already exists.
 %% If not, create a new outgoing process.
 %%
-open_connection({Host,Port} = HostInfo, State) ->
-    case ets:lookup(State#rmstate.hosttab, HostInfo) of
-        [] ->
-            {ok, OutPid} = outbound:start_link(Host, Port),
-            ets:insert(State#rmstate.hosttab, {HostInfo, OutPid, 0}),
-            ets:insert(State#rmstate.pidtab, {OutPid, HostInfo}),
+open_connection(HostInfo, #rmstate{hosttab=HostTab,pidtab=PidTab}) ->
+    case ets:lookup(HostTab, HostInfo) of
+        [#hostconn{pid=OutPid}] ->
             {ok, OutPid};
-        [{_,null,Nfail}] when Nfail > ?OUTGOING_ERR_MAX ->
+        [#hostconn{pid=null,nfail=Nfail}] when Nfail > ?OUTGOING_ERR_MAX ->
             {error, {max_connection_fail, Nfail}};
-        [{_,null,_}] ->
-            {ok, OutPid} = outbound:start_link(Host, Port),
-            ets:update_element(State#rmstate.hosttab, HostInfo, {2, OutPid}),
-            ets:insert(State#rmstate.pidtab, {OutPid, HostInfo}),
-            {ok, OutPid};
-        [{_,OutPid,_}] ->
+        _ ->
+            {ok, OutPid} = connect(HostInfo),
+            %% Overwrite any existing hostconn record for that host.
+            ets:insert(HostTab, #hostconn{hostinfo=HostInfo, pid=OutPid}),
+            ets:insert(PidTab, {OutPid, HostInfo}),
             {ok, OutPid}
     end.
 
-cleanup_pid(OutPid, State) ->
-    case ets:lookup(State#rmstate.pidtab, OutPid) of
+connect({http,Host,Port}) ->
+    outbound:connect_http(Host, Port);
+
+connect({https,Host,Port}) ->
+    outbound:connect_https(Host, Port);
+
+connect(_) ->
+    {error, badarg}.
+
+cleanup_pid(OutPid, #rmstate{pidtab=PidTab,hosttab=HostTab}) ->
+    case ets:lookup(PidTab, OutPid) of
         [] ->
             {error, {unknown_pid, OutPid}};
         [{_, HostInfo}] ->
-            ets:delete(State#rmstate.pidtab, OutPid),
-            ets:update_element(State#rmstate.hosttab, HostInfo, {2, null}),
+            ets:delete(PidTab, OutPid),
+            ets:update_element(HostTab, HostInfo, {#hostconn.pid, null}),
             {ok, HostInfo}
     end.
 

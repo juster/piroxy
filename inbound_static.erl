@@ -22,10 +22,10 @@ start_link() ->
 
 %% Returns a request Ref as provided from request_manager.
 send(Pid, HostInfo, Head) ->
-    gen_server:call(Pid, {send, HostInfo, Head}).
+    gen_server:call(Pid, {send, HostInfo, Head}, infinity).
 
 send(Pid, HostInfo, Head, Body) ->
-    gen_server:call(Pid, {send, HostInfo, Head, Body}).
+    gen_server:call(Pid, {send, HostInfo, Head, Body}, infinity).
 
 %%%
 %%% behavior callbacks

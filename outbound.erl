@@ -4,14 +4,17 @@
 -include("phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--record(outstate, {state, socket, hstate, buffer=?EMPTY, close=false, req=null}).
+-record(outstate, {state, socket, ssl, hstate, buffer=?EMPTY, close=false, req=null}).
 
--export([start_link/2, new_request/1]).
+-export([connect_http/2, connect_https/2, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
          terminate/2]).
 
-start_link(Host, Port) ->
-    gen_server:start_link(?MODULE, [Host, Port], []).
+connect_http(Host, Port) ->
+    gen_server:start_link(?MODULE, [Host, Port, false], []).
+
+connect_https(Host, Port) ->
+    gen_server:start_link(?MODULE, [Host, Port, true], []).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
@@ -19,10 +22,18 @@ new_request(Pid) ->
 
 %%% behavior functions
 
-init([Host, Port]) ->
+init([Host, Port, false]) ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
-            {ok, #outstate{state=idle, socket=Sock, buffer=?EMPTY}};
+            {ok, #outstate{state=idle, socket=Sock, ssl=false, buffer=?EMPTY}};
+        {error, Reason} ->
+            error(Reason)
+    end;
+
+init([Host, Port, true]) ->
+    case ssl:connect(Host, Port, [binary, {packet, 0}]) of
+        {ok, Sock} ->
+            {ok, #outstate{state=idle, socket=Sock, ssl=true, buffer=?EMPTY}};
         {error, Reason} ->
             error(Reason)
     end.
@@ -82,10 +93,29 @@ handle_info({tcp, _Sock, Data}, State = #outstate{state=body}) ->
 
 handle_info({tcp, _Sock, Bin}, State) ->
     %% TODO: shutdown socket?
+    {stop, {unexpected_recv, Bin}, State};
+
+handle_info({ssl_closed, _}, State) ->
+    {stop, normal, State};
+
+handle_info({ssl_error, Reason}, State) ->
+    {stop, Reason, State};
+
+handle_info({ssl, _Sock, Data}, State = #outstate{state=head}) ->
+    head_data(Data, State);
+
+handle_info({ssl, _Sock, Data}, State = #outstate{state=body}) ->
+    body_data(Data, State);
+
+handle_info({ssl, _Sock, Bin}, State) ->
+    %% TODO: shutdown socket?
     {stop, {unexpected_recv, Bin}, State}.
 
-terminate(_Reason, State) ->
-    gen_tcp:close(State#outstate.socket).
+terminate(_Reason, #outstate{socket=Sock, ssl=false}) ->
+    ok = gen_tcp:close(Sock);
+
+terminate(_Reason, #outstate{socket=Sock, ssl=true}) ->
+    ok = ssl:close(Sock, infinity).
 
 %%% receiving states
 
@@ -146,49 +176,54 @@ body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
 
 %%% request helper functions
 
+send(Data, #outstate{socket=Sock, ssl=false}) ->
+    gen_tcp:send(Sock, Data);
+
+send(Data, #outstate{socket=Sock, ssl=true}) ->
+    ssl:send(Sock, Data).
+
 send_request(DataPid, Ref, {Method, Url, Headers}, State) ->
-    Sock = State#outstate.socket,
     Lines = [<<Method/binary, " ", Url/binary, " ", ?HTTP11>>,
              fieldlist:to_binary(Headers)],
-    case send_lines(Sock, Lines) of
+    case send_lines(Lines, State) of
         {error, Reason} ->
             {error, Reason};
         ok ->
-            relay_body_out(DataPid, Ref, Sock)
+            relay_body_out(DataPid, Ref, State)
     end.
 
-send_lines(_, []) ->
+send_lines([], _) ->
     ok;
 
-send_lines(Sock, [X|L]) ->
+send_lines([X|L], State) ->
     %%io:format("DBG: send_lines X=~p~n", [X]),
-    case gen_tcp:send(Sock, X) of
+    case send(X, State) of
         {error, Reason} ->
             {error, Reason};
         ok ->
-            case gen_tcp:send(Sock, <<?CRLF>>) of
+            case send(<<?CRLF>>, State) of
                 {error, Reason} ->
                     {error, Reason};
                 ok ->
-                    send_lines(Sock, L)
+                    send_lines(L, State)
             end
     end.
 
-relay_body_out(DataPid, Ref, Sock) ->
+relay_body_out(DataPid, Ref, State) ->
     case inbound:request(DataPid, Ref, body) of
         {error, Reason} ->
             {error, Reason};
         {more, ?EMPTY} ->
-            relay_body_out(DataPid, Ref, Sock);
+            relay_body_out(DataPid, Ref, State);
         {more, Bin} ->
-            case gen_tcp:send(Sock, Bin) of
+            case send(Bin, State) of
                 {error, Reason} ->
                     {error, Reason};
                 ok ->
-                    relay_body_out(DataPid, Ref, Sock)
+                    relay_body_out(DataPid, Ref, State)
             end;
         {last, ?EMPTY} ->
             ok;
         {last, Bin} ->
-            gen_tcp:send(Sock, Bin)
+            send(Bin, State)
     end.
