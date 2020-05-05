@@ -11,7 +11,7 @@
          terminate/2]).
 
 connect_http(Host, Port) ->
-    gen_server:start_link(?MODULE, [Host, Port, false], []).
+    gen_server:start_link(?MODULE, [Host, Port, false], [debug,{[trace]}]).
 
 connect_https(Host, Port) ->
     gen_server:start_link(?MODULE, [Host, Port, true], []).
@@ -145,8 +145,12 @@ head_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
 head_finish(Bin, Status, Headers, State) ->
     {DataPid, Ref, {Method,_,_}} = State#outstate.req,
     inbound:respond(DataPid, Ref, {head, Status, Headers}),
-    {ok, BodyLength} = phttp:body_length(Method, Status, Headers),
-    body_begin(Bin, phttp:body_reader(BodyLength), State).
+    case phttp:body_length(Method, Status, Headers) of
+        {ok, BodyLength} ->
+            body_begin(Bin, phttp:body_reader(BodyLength), State);
+        {error, missing_length} ->
+            {stop, {error, missing_length, Status, Headers}, State}
+    end.
 
 body_begin(Bin, HState, State) ->
     body_data(Bin, State#outstate{state=body, hstate=HState, buffer=?EMPTY}).
@@ -172,6 +176,7 @@ body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
             inbound:respond(DataPid, Ref, {body, Bin1}),
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
         {last, Bin1, Bin2} ->
+            io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
             {noreply, State#outstate{state=idle, buffer=Bin2}, {continue, close_request}}

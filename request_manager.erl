@@ -17,7 +17,7 @@
 %%% exported interface functions
 
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], [{debug,[trace]}]).
 
 %%% called by the inbound process
 
@@ -119,11 +119,12 @@ handle_info({'EXIT', Pid, Reason}, State) ->
 %%
 open_connection(HostInfo, #rmstate{hosttab=HostTab,pidtab=PidTab}) ->
     case ets:lookup(HostTab, HostInfo) of
-        [#hostconn{pid=OutPid}] ->
+        [#hostconn{pid=OutPid}] when OutPid =/= null ->
             {ok, OutPid};
         [#hostconn{pid=null,nfail=Nfail}] when Nfail > ?OUTGOING_ERR_MAX ->
             {error, {max_connection_fail, Nfail}};
         _ ->
+            %% No matching record or pid is null.
             {ok, OutPid} = connect(HostInfo),
             %% Overwrite any existing hostconn record for that host.
             ets:insert(HostTab, #hostconn{hostinfo=HostInfo, pid=OutPid}),

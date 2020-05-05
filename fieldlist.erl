@@ -3,7 +3,7 @@
 -include("phttp.hrl").
 
 -export([add/2, add_value/3, find/2, at/2, remove/2, get_value/2]).
--export([to_proplist/1, to_iolist/1, to_binary/1]).
+-export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
 
 trimows(?EMPTY) ->
     ?EMPTY;
@@ -84,7 +84,8 @@ get_value(Field, [{Len,Line}|FL]) ->
         Field when byte_size(Line) =< Len-1 ->
             ?EMPTY;
         Field ->
-            trimows(binary_part(Line, Len+1, byte_size(Line) - Len - 1));
+            Value0 = binary_part(Line, Len+1, byte_size(Line) - Len - 1),
+            trimows(binary_lcase(Value0));
         _ ->
             get_value(Field, FL)
     end.
@@ -108,6 +109,11 @@ to_proplist([{Pos,Bin}|FL], PL) ->
     Prop = binary_to_list(binary_lcase(binary_part(Bin, 0, Pos))),
     Value = binary_to_list(trimows(binary_part(Bin, Pos+1, byte_size(Bin)-Pos-1))),
     to_proplist(FL, [{list_to_atom(Prop),Value}|PL]).
+
+from_proplist(PL) ->
+    lists:foldl(fun ({K,V}, FL) ->
+                        fieldlist:add_value(K, V, FL)
+                end, [], PL).
 
 binary_lcase(?EMPTY) ->
     ?EMPTY;

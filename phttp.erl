@@ -178,6 +178,7 @@ body_next(_IgnBuff, Bin, State = #bodystate{state=dumb, nread=NRead0, length=Len
     end;
 
 body_next(Bin1, Bin2, State = #bodystate{state=between_chunks}) ->
+    io:format("*DBG* between_cheeks -- ~p -- ~p~n", [Bin1, Bin2]),
     case chunk_size(Bin1, Bin2) of
         {error,_} = Error ->
             Error;
@@ -197,11 +198,14 @@ body_next(Bin1, Bin2, State = #bodystate{state=between_chunks}) ->
             {redo, <<Line/binary,?CRLF>>, ?EMPTY, Rest, NewState}
     end;
 
-body_next(_, Bin, State = #bodystate{state=inside_chunk, nread=NRead0, length=Length}) ->
+body_next(_, Bin, State = #bodystate{state=inside_chunk, nread=NRead0,
+                                     length=Length}) ->
+    %%io:format("*DBG* inside_cheeks -- ~p~n", [Bin]),
     NRead = NRead0 + byte_size(Bin),
     if
         NRead < Length ->
-            {redo, Bin, ?EMPTY, ?EMPTY, State#bodystate{state=inside_chunk, nread=NRead}};
+            {redo, Bin, ?EMPTY, ?EMPTY, State#bodystate{state=inside_chunk,
+                                                        nread=NRead}};
         NRead =:= Length ->
             {redo, Bin, ?EMPTY, ?EMPTY, State#bodystate{state=between_chunks,
                                                         nread=0, length=unused}};
@@ -209,7 +213,7 @@ body_next(_, Bin, State = #bodystate{state=inside_chunk, nread=NRead0, length=Le
             Bin1 = binary_part(Bin, 0, Length - NRead0),
             Bin2 = binary_part(Bin, byte_size(Bin), -1 * (NRead-Length)),
             NextState = State#bodystate{state=between_chunks,
-                                        nread=0, length=null},
+                                        nread=0, length=unused},
             {redo, Bin1, ?EMPTY, Bin2, NextState}
     end.
 
@@ -240,22 +244,23 @@ chunk_size(Bin1, Bin2) ->
 
 body_length_by_headers(Headers) ->
     %%io:format("DBG body_length_by_headers: Headers=~p~n", [Headers]),
-    TransferCoding = case fieldlist:get_value(<<"transfer-encoding">>, Headers) of
+    TransferEncoding = case fieldlist:get_value(<<"transfer-encoding">>, Headers) of
                          ?EMPTY -> not_found; X -> X
                      end,
     ContentLength = case fieldlist:get_value(<<"content-length">>, Headers) of
                         ?EMPTY -> not_found; Y -> Y
                     end,
-    case {ContentLength, TransferCoding} of
+    case {ContentLength, TransferEncoding} of
         {not_found, not_found} ->
             {error, missing_length};
         {not_found, Bin} ->
             %% XXX: not precise, potentially buggy/insecure. needs a rewrite.
+            io:format("*DBG* transfer-encoding: ~s~n", [Bin]),
             case binary:match(Bin, <<"chunked">>) of
                 nomatch ->
-                    {ok, chunked};
+                    {error, missing_length};
                 _ ->
-                    {error, missing_length}
+                    {ok, chunked}
             end;
         {Bin, _} ->
             {ok, binary_to_integer(Bin)}
