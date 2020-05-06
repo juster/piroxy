@@ -51,11 +51,20 @@ handle_continue(next_request, #outstate{state=idle} = State) ->
         null ->
             {noreply, State};
         {DataPid, Ref, Request} = Req ->
-            case send_request(DataPid, Ref, Request, State) of
+            case relay_request(DataPid, Ref, Request, State) of
                 {error, Reason} ->
                     {stop, Reason, State};
                 ok ->
-                    recv_begin(State#outstate{req=Req})
+                    case recv_begin(State#outstate{req=Req}) of
+                        {error, Reason} ->
+                            {stop, Reason, State};
+                        {ok, State} ->
+                            % TODO: relay multiple requests at a time
+                            % (needs a queue or something to track request
+                            % refs)
+                            %{noreply, State, {continue, next_request}}
+                            {noreply, State}
+                    end
             end
     end;
 
@@ -128,14 +137,14 @@ recv_begin(State) ->
               State#outstate{state=head, hstate=HState, buffer=?EMPTY}).
 
 head_data(?EMPTY, State) ->
-    {noreply, State};
+    {ok, State};
 
 head_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
     case phttp:response_head(Buf, Data, HState0) of
         {error, Reason} ->
-            {stop, Reason};
+            {error, Reason};
         {skip, Bin, HState} ->
-            {noreply, State#outstate{hstate=HState, buffer=Bin}};
+            {ok, State#outstate{hstate=HState, buffer=Bin}};
         {redo, Bin, HState} ->
             head_data(Bin, State#outstate{hstate=HState, buffer=?EMPTY});
         {last, Bin, Status, Headers} ->
@@ -149,25 +158,25 @@ head_finish(Bin, Status, Headers, State) ->
         {ok, BodyLength} ->
             body_begin(Bin, phttp:body_reader(BodyLength), State);
         {error, missing_length} ->
-            {stop, {error, missing_length, Status, Headers}, State}
+            {error, {missing_length, Status, Headers}}
     end.
 
 body_begin(Bin, HState, State) ->
     body_data(Bin, State#outstate{state=body, hstate=HState, buffer=?EMPTY}).
 
 body_data(?EMPTY, State) ->
-    {noreply, State};
+    {ok, State};
 
 body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
     case phttp:body_next(Buf, Data, HState0) of
         {error, Reason} ->
-            {stop, Reason};
+            {error, Reason};
         {wait, ?EMPTY, Bin2, HState} ->
-            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
+            {ok, State#outstate{hstate=HState, buffer=Bin2}};
         {wait, Bin1, Bin2, HState} ->
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
-            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
+            {ok, State#outstate{hstate=HState, buffer=Bin2}};
         {redo, ?EMPTY, Bin2, Bin3, HState} ->
             %% Avoids sending messages about nothing.
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
@@ -179,7 +188,7 @@ body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
             io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
-            {noreply, State#outstate{state=idle, buffer=Bin2}, {continue, close_request}}
+            {ok, State#outstate{state=idle, buffer=Bin2}, {continue, close_request}}
     end.
 
 %%% request helper functions
@@ -190,7 +199,7 @@ send(Data, #outstate{socket=Sock, ssl=false}) ->
 send(Data, #outstate{socket=Sock, ssl=true}) ->
     ssl:send(Sock, Data).
 
-send_request(DataPid, Ref, {Method, Url, Headers}, State) ->
+relay_request(DataPid, Ref, {Method, Url, Headers}, State) ->
     Lines = [<<Method/binary, " ", Url/binary, " ", ?HTTP11>>,
              fieldlist:to_binary(Headers)],
     case send_lines(Lines, State) of
