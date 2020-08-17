@@ -4,7 +4,8 @@
 -include("phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--record(outstate, {state, socket, ssl, hstate, buffer=?EMPTY, close=false, req=null}).
+-record(outstate, {state, socket, ssl, hstate, buffer=?EMPTY, close=false,
+                   req=null}).
 
 -export([connect_http/2, connect_https/2, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,

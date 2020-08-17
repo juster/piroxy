@@ -1,6 +1,6 @@
 %%% inbound
 %%% Provides a common interface for gen_server modules to implement for inbound
-%%% connections. These connects send out requests and receive responses.
+%%% connections. These connections send out requests and receive responses.
 %%%
 
 -module(inbound).

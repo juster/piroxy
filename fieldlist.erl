@@ -94,7 +94,8 @@ to_iolist([]) ->
     <<>>;
 
 to_iolist(FL) ->
-    lists:reverse([<<?CRLF>>|lists:join(<<?CRLF>>, [Line || {_I, Line} <- FL])]).
+    L = [<<?CRLF>>|lists:join(<<?CRLF>>, [Line || {_I, Line} <- FL])],
+    lists:reverse(L).
 
 to_binary(FL) ->
     iolist_to_binary(to_iolist(FL)).
