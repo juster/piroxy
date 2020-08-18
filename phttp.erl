@@ -90,7 +90,8 @@ status_line(Bin1, Bin2) ->
                 <<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">> ->
                     %% Ignore a missing reason-phrase.
                     {ok, {{{VerMaj-$0, VerMin-$0}, Status, ?EMPTY}, Rest}};
-                <<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ",Phrase/binary>> ->
+                <<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ",
+                  Phrase/binary>> ->
                     {ok, {{{VerMaj-$0, VerMin-$0}, Status, Phrase}, Rest}};
                 _ ->
                     {error, {bad_status_line, Line}}
@@ -166,11 +167,12 @@ body_reader(ContentLength) ->
 %%   {last, Done, Rest}
 %%     ... when the last chunk of body data is Done and Rest is any extra
 %%
-body_next(_IgnBuff, Bin, State = #bodystate{state=dumb, nread=NRead0, length=Length}) ->
+body_next(_, Bin, State0 = #bodystate{state=dumb}) ->
+    #bodystate{nread=NRead0, length=Length} = State0,
     NRead = byte_size(Bin) + NRead0,
     if
         NRead < Length ->
-            {wait, Bin, ?EMPTY, State#bodystate{nread=NRead}};
+            {wait, Bin, ?EMPTY, State0#bodystate{nread=NRead}};
         NRead =:= Length ->
             {last, Bin, ?EMPTY};
         NRead > Length ->
@@ -179,13 +181,13 @@ body_next(_IgnBuff, Bin, State = #bodystate{state=dumb, nread=NRead0, length=Len
             {last, Bin1, Bin2}
     end;
 
-body_next(Bin1, Bin2, State = #bodystate{state=between_chunks}) ->
+body_next(Bin1, Bin2, State0 = #bodystate{state=between_chunks}) ->
     io:format("*DBG* between_cheeks -- ~p -- ~p~n", [Bin1, Bin2]),
     case chunk_size(Bin1, Bin2) of
         {error,_} = Error ->
             Error;
         {skip,Rest} ->
-            {wait, ?EMPTY, Rest, State};
+            {wait, ?EMPTY, Rest, State0};
         {ok, 0, Line, Rest0} ->
             %% The last chunk should have size zero (0) and have an empty
             %% line immediately after the size line.
@@ -196,27 +198,28 @@ body_next(Bin1, Bin2, State = #bodystate{state=between_chunks}) ->
                     {error, lastchunk_not_emptyline}
             end;
         {ok, Size, Line, Rest} ->
-            NewState = State#bodystate{state=inside_chunk, nread=0, length=Size},
-            {redo, <<Line/binary,?CRLF>>, ?EMPTY, Rest, NewState}
+            State = State0#bodystate{state=inside_chunk, nread=0, length=Size},
+            {redo, <<Line/binary,?CRLF>>, ?EMPTY, Rest, State}
     end;
 
-body_next(_, Bin, State = #bodystate{state=inside_chunk, nread=NRead0,
-                                     length=Length}) ->
+body_next(_, Bin, State0 = #bodystate{state=inside_chunk}) ->
+    #bodystate{nread=NRead0, length=Length} = State0,
     %%io:format("*DBG* inside_cheeks -- ~p~n", [Bin]),
     NRead = NRead0 + byte_size(Bin),
     if
         NRead < Length ->
-            {redo, Bin, ?EMPTY, ?EMPTY, State#bodystate{state=inside_chunk,
-                                                        nread=NRead}};
+            State = State0#bodystate{state=inside_chunk, nread=NRead},
+            {redo, Bin, ?EMPTY, ?EMPTY, State};
         NRead =:= Length ->
-            {redo, Bin, ?EMPTY, ?EMPTY, State#bodystate{state=between_chunks,
-                                                        nread=0, length=unused}};
+            State = State0#bodystate{state=between_chunks, nread=0,
+                                     length=unused},
+            {redo, Bin, ?EMPTY, ?EMPTY, State};
         NRead > Length ->
             Bin1 = binary_part(Bin, 0, Length - NRead0),
             Bin2 = binary_part(Bin, byte_size(Bin), -1 * (NRead-Length)),
-            NextState = State#bodystate{state=between_chunks,
-                                        nread=0, length=unused},
-            {redo, Bin1, ?EMPTY, Bin2, NextState}
+            State = State0#bodystate{state=between_chunks,
+                                     nread=0, length=unused},
+            {redo, Bin1, ?EMPTY, Bin2, State}
     end.
 
 chunk_size(Bin1, Bin2) ->

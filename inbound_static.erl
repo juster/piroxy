@@ -41,13 +41,13 @@ handle_call({send, HostInfo, Head}, From, State) ->
 handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
     {Method, Uri, Headers} = Head,
     MethodBin = method_bin(Method),
-    UriBin = list_to_binary(Uri),
+    UriBin = unicode:characters_to_binary(Uri),
     case new_request(HostInfo, {MethodBin, UriBin, Headers}) of
-        {error, Reason} ->
+        {error,Reason} ->
             {stop, Reason, State};
-        {ok, Ref} ->
+        {ok,Ref} ->
             Req = {request, Ref, From, HostInfo,
-                   {MethodBin, UriBin, Headers}, Body}, 
+                   {MethodBin, UriBin, Headers}, Body},
             ets:insert(ReqTab, Req),
             ets:insert(ResTab, {response, Ref, null, null, ?EMPTY}),
             {noreply, State}
@@ -59,7 +59,8 @@ handle_call({request, Ref, body}, _From, {ReqTab,_ResTab} = State) ->
 
 handle_cast({close, Ref}, {ReqTab,ResTab} = State) ->
     [#request{from=From}] = ets:lookup(ReqTab, Ref),
-    [#response{status=StatusLine,headers=Headers,body=Body}] = ets:lookup(ResTab, Ref),
+    [Resp] = ets:lookup(ResTab, Ref),
+    #response{status=StatusLine,headers=Headers,body=Body} = Resp,
     ets:delete(ReqTab, Ref),
     ets:delete(ResTab, Ref),
     gen_server:reply(From, {ok, {StatusLine, Headers, Body}}),
@@ -70,15 +71,17 @@ handle_cast({reset, Ref}, {ReqTab,ResTab} = State) ->
         [] ->
             {stop, {request_missing, Ref}, State};
         [#request{hostinfo=HostInfo,head=Head}] ->
-            {ok, NewRef} = new_request(HostInfo, Head),
-            ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
-            ets:delete(ResTab, Ref),
-            ets:insert(ResTab, {Ref, null, null, ?EMPTY}),
+            {ok,NewRef} = new_request(HostInfo, Head),
+            true = ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
+            true = ets:update_element(ResTab, Ref, [{#response.status, null},
+                                                    {#response.headers, null},
+                                                    {#response.body, ?EMPTY}]),
             {noreply, State}
     end;
 
-handle_cast({respond, Ref, {head, StatusLine, Headers}}, {_ReqTab,ResTab} = State) ->
-    %%{{Major, Minor}, Status, _} = StatusLine, 
+handle_cast({respond, Ref, {head, StatusLine, Headers}}, State) ->
+    {_ReqTab,ResTab} = State,
+    %%{{Major, Minor}, Status, _} = StatusLine,
     case ets:update_element(ResTab, Ref, [{#response.status, StatusLine},
                                           {#response.headers, Headers}]) of
         true ->
@@ -110,9 +113,9 @@ method_bin(delete) ->
 
 new_request(HostInfo, Head) ->
     case request_manager:new_request(HostInfo, Head) of
-        {error, Reason} ->
-            {error, Reason};
-        Ref ->
+        {ok,Ref} = Result ->
             io:format("*DBG* started request: ~p~n", [Ref]),
-            {ok, Ref}
+            Result;
+        Etc ->
+            Etc
     end.

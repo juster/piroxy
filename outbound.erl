@@ -47,18 +47,18 @@ handle_cast(new_request, State) ->
 
 %% continuation is used after a request is finished and when a
 %% new_request notification is received (and we are idle)
-handle_continue(next_request, #outstate{state=idle} = State) ->
+handle_continue(next_request, #outstate{state=idle} = State0) ->
     case request_manager:next_request() of
         null ->
-            {noreply, State};
+            {noreply, State0};
         {DataPid, Ref, Request} = Req ->
-            case relay_request(DataPid, Ref, Request, State) of
+            case relay_request(DataPid, Ref, Request, State0) of
                 {error, Reason} ->
-                    {stop, Reason, State};
+                    {stop, Reason, State0};
                 ok ->
-                    case recv_begin(State#outstate{req=Req}) of
+                    case recv_begin(State0#outstate{req=Req}) of
                         {error, Reason} ->
-                            {stop, Reason, State};
+                            {stop, Reason, State0};
                         {ok, State} ->
                             % TODO: relay multiple requests at a time
                             % (needs a queue or something to track request
@@ -84,7 +84,8 @@ handle_continue(close_request, State) ->
                     %% The last response requested that we close the connection.
                     {stop, normal, State};
                 false ->
-                    {noreply, State#outstate{state=idle, hstate=null, req=null},
+                    {noreply,
+                     State#outstate{state=idle, hstate=null, req=null},
                      {continue, next_request}}
             end
     end.
@@ -166,18 +167,18 @@ body_begin(Bin, HState, State) ->
     body_data(Bin, State#outstate{state=body, hstate=HState, buffer=?EMPTY}).
 
 body_data(?EMPTY, State) ->
-    {ok, State};
+    {noreply, State};
 
-body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
+body_data(Data, #outstate{hstate=HState0, buffer=Buf} = State) ->
     case phttp:body_next(Buf, Data, HState0) of
         {error, Reason} ->
-            {error, Reason};
+            {stop, Reason, State};
         {wait, ?EMPTY, Bin2, HState} ->
-            {ok, State#outstate{hstate=HState, buffer=Bin2}};
+            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
         {wait, Bin1, Bin2, HState} ->
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
-            {ok, State#outstate{hstate=HState, buffer=Bin2}};
+            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
         {redo, ?EMPTY, Bin2, Bin3, HState} ->
             %% Avoids sending messages about nothing.
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
@@ -189,7 +190,8 @@ body_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
             io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
-            {ok, State#outstate{state=idle, buffer=Bin2}, {continue, close_request}}
+            {noreply, State#outstate{state=idle, buffer=Bin2},
+             {continue, close_request}}
     end.
 
 %%% request helper functions

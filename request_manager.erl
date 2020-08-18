@@ -51,12 +51,12 @@ init([]) ->
 handle_call({new_request, HostInfo, Request}, {InPid, _Tag}, State) ->
     case open_connection(HostInfo, State) of
         {error, Reason} ->
-            {reply, {error, Reason}, State};
+            {reply, {error,Reason}, State};
         {ok, OutPid} ->
             Ref = erlang:make_ref(),
             ets:insert(State#rmstate.reqtab, {OutPid, InPid, Ref, Request}),
             outbound:new_request(OutPid),
-            {reply, Ref, State}
+            {reply, {ok,Ref}, State}
     end;
 
 handle_call({next_request}, {OutPid,_Tag}, State) ->
@@ -89,11 +89,12 @@ handle_info({'EXIT', Pid, Reason}, State) ->
             {stop, Reason, State};
         {ok, HostInfo} ->
             %% Reset the failure counter or increment it.
+            HostTab = State#rmstate.hosttab,
             case Reason of
                 normal ->
-                    ets:update_element(State#rmstate.hosttab, HostInfo, {#hostconn.nfail, 0});
+                    ets:update_element(HostTab, HostInfo, {#hostconn.nfail, 0});
                 _ ->
-                    ets:update_counter(State#rmstate.hosttab, HostInfo, {#hostconn.nfail, 1})
+                    ets:update_counter(HostTab, HostInfo, {#hostconn.nfail, 1})
             end,
             %% Spawn a new outgoing process if there are more requests.
             case has_requests(Pid, State) of
@@ -102,7 +103,8 @@ handle_info({'EXIT', Pid, Reason}, State) ->
                         {error, Reason} ->
                             abort_requests(Pid, State, Reason);
                         {ok, NewPid} ->
-                            ets:update_element(State#rmstate.reqtab, Pid, {1, NewPid})
+                            ets:update_element(State#rmstate.reqtab, Pid,
+                                               {1, NewPid})
                     end;
                 false ->
                     ok
