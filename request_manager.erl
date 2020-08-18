@@ -17,7 +17,7 @@
 %%% exported interface functions
 
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], [{debug,[trace]}]).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %%% called by the inbound process
 

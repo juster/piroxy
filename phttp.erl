@@ -1,7 +1,7 @@
 -module(phttp).
 
--export([status_line/2, request_line/2]).
--export([header_line/2]).
+-export([cent_enc/1, compose_uri/1]).
+-export([status_line/2, request_line/2, header_line/2]).
 -export([response_head/0, response_head/3]).
 -export([body_length/3, body_reader/1, body_next/3]).
 
@@ -22,6 +22,48 @@ nsplit(N, Subject, Pattern, L) ->
         [Bin1,Bin2] ->
             nsplit(N-1, Bin2, Pattern, [Bin1|L])
     end.
+
+cent_enc(Chars) ->
+    case unicode:characters_to_nfc_list(Chars) of
+        {error,Err} -> error(Err);
+        L -> cent_enc(L, [])
+    end.
+
+cent_enc([], L2) ->
+    lists:flatten(lists:reverse(L2));
+cent_enc([Ch|L1], L2) when Ch >= $a, Ch =< $z ->
+    cent_enc(L1, [Ch|L2]);
+cent_enc([Ch|L1], L2) when Ch >= $A, Ch =< $Z ->
+    cent_enc(L1, [Ch|L2]);
+cent_enc([Ch|L1], L2) when Ch >= $0, Ch =< $9 ->
+    cent_enc(L1, [Ch|L2]);
+cent_enc([Ch|L1], L2) when Ch =:= $-; Ch =:= $.; Ch =:= $_; Ch =:= $~ ->
+    cent_enc(L1, [Ch|L2]);
+cent_enc([Ch|L1], L2) ->
+    %io:format("*DBG*: Ch=~.16B=~c~n", [Ch,Ch]),
+    Enc = io_lib:format("%~2.16B", [Ch]),
+    cent_enc(L1, [Enc|L2]).
+
+compose_uri({Scheme, UserInfo, Host, Port, Path, Query, Fragment}) ->
+        L = [compose2(Scheme, UserInfo),
+             compose3(Scheme, Host, Port),
+             compose4(Path, Query, Fragment)],
+        string:join(L, "").
+
+compose2(Scheme, "") ->
+        atom_to_list(Scheme) ++ "://";
+compose2(Scheme, UserInfo) ->
+        atom_to_list(Scheme) ++ "://" ++ UserInfo ++ "@".
+
+compose3(http, Host, 80) ->
+        Host;
+compose3(https, Host, 443) ->
+        Host;
+compose3(_, Host, Port) ->
+        Host ++ ":" ++ integer_to_list(Port).
+
+compose4(Path, Query, Fragment) ->
+        Path ++ Query ++ Fragment.
 
 next_line(Bin1, ?EMPTY, _Max) ->
     {skip, Bin1};

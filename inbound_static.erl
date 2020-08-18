@@ -42,7 +42,7 @@ handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
     {Method, Uri, Headers} = Head,
     MethodBin = method_bin(Method),
     UriBin = unicode:characters_to_binary(Uri),
-    case new_request(HostInfo, {MethodBin, UriBin, Headers}) of
+    case request_manager:new_request(HostInfo, {MethodBin, UriBin, Headers}) of
         {error,Reason} ->
             {stop, Reason, State};
         {ok,Ref} ->
@@ -71,7 +71,7 @@ handle_cast({reset, Ref}, {ReqTab,ResTab} = State) ->
         [] ->
             {stop, {request_missing, Ref}, State};
         [#request{hostinfo=HostInfo,head=Head}] ->
-            {ok,NewRef} = new_request(HostInfo, Head),
+            {ok,NewRef} = request_manager:new_request(HostInfo, Head),
             true = ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
             true = ets:update_element(ResTab, Ref, [{#response.status, null},
                                                     {#response.headers, null},
@@ -105,17 +105,26 @@ method_bin(get) ->
 method_bin(post) ->
     <<"POST">>;
 
+method_bin(head) ->
+    <<"HEAD">>;
+
 method_bin(put) ->
     <<"PUT">>;
 
-method_bin(delete) ->
-    <<"DELETE">>.
+method_bin(options) ->
+    <<"OPTIONS">>;
 
-new_request(HostInfo, Head) ->
-    case request_manager:new_request(HostInfo, Head) of
-        {ok,Ref} = Result ->
-            io:format("*DBG* started request: ~p~n", [Ref]),
-            Result;
-        Etc ->
-            Etc
-    end.
+method_bin(delete) ->
+    <<"DELETE">>;
+
+method_bin(patch) ->
+    <<"PATCH">>.
+
+%%new_request(HostInfo, Head) ->
+%%    case request_manager:new_request(HostInfo, Head) of
+%%        {ok,Ref} = Result ->
+%%            %%io:format("*DBG* started request: ~p~n", [Ref]),
+%%            Result;
+%%        Etc ->
+%%            Etc
+%%    end.

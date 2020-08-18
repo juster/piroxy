@@ -157,6 +157,10 @@ head_finish(Bin, Status, Headers, State) ->
     {DataPid, Ref, {Method,_,_}} = State#outstate.req,
     inbound:respond(DataPid, Ref, {head, Status, Headers}),
     case phttp:body_length(Method, Status, Headers) of
+        {ok, 0} ->
+            inbound:respond(DataPid, Ref, {body, ?EMPTY}),
+            {noreply, State#outstate{state=idle, buffer=Bin},
+             {continue, close_request}};
         {ok, BodyLength} ->
             body_begin(Bin, phttp:body_reader(BodyLength), State);
         {error, missing_length} ->
@@ -187,7 +191,7 @@ body_data(Data, #outstate{hstate=HState0, buffer=Buf} = State) ->
             inbound:respond(DataPid, Ref, {body, Bin1}),
             body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
         {last, Bin1, Bin2} ->
-            io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
+            %%io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body, Bin1}),
             {noreply, State#outstate{state=idle, buffer=Bin2},
