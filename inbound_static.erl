@@ -45,7 +45,7 @@ handle_call({send, HostInfo, Head}, From, State) ->
 
 handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
     {Method, Uri, Headers} = Head,
-    MethodBin = method_bin(Method),
+    MethodBin = phttp:method_bin(Method),
     UriBin = unicode:characters_to_binary(Uri),
     case request_manager:new_request(HostInfo, {MethodBin, UriBin, Headers}) of
         {error,Reason} ->
@@ -103,30 +103,6 @@ handle_cast({respond, Ref, {body, Body}}, {_ReqTab,ResTab} = State) ->
               end,
     ets:update_element(ResTab, Ref, {#response.body, NewBody}),
     {noreply, State}.
-
-method_bin(get) ->
-    <<"GET">>;
-
-method_bin(post) ->
-    <<"POST">>;
-
-method_bin(head) ->
-    <<"HEAD">>;
-
-method_bin(put) ->
-    <<"PUT">>;
-
-method_bin(options) ->
-    <<"OPTIONS">>;
-
-method_bin(delete) ->
-    <<"DELETE">>;
-
-method_bin(patch) ->
-    <<"PATCH">>;
-
-method_bin(Method) ->
-    exit({unknown_method, Method}).
 
 %%new_request(HostInfo, Head) ->
 %%    case request_manager:new_request(HostInfo, Head) of

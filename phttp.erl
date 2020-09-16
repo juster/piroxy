@@ -4,6 +4,7 @@
 -export([status_line/2, request_line/2, header_line/2]).
 -export([response_head/0, response_head/3]).
 -export([body_length/3, body_reader/1, body_next/3]).
+-export([method_bin/1]).
 
 -include("phttp.hrl").
 
@@ -333,3 +334,12 @@ body_length(<<"HEAD">>, _, _) ->
 
 body_length(_ReqMethod, _RespStatus, RespHeaders) ->
     body_length_by_headers(RespHeaders).
+
+method_bin(get) -> <<"GET">>;
+method_bin(post) -> <<"POST">>;
+method_bin(head) -> <<"HEAD">>;
+method_bin(put) -> <<"PUT">>;
+method_bin(options) -> <<"OPTIONS">>;
+method_bin(delete) -> <<"DELETE">>;
+method_bin(patch) -> <<"PATCH">>;
+method_bin(Method) -> exit({unknown_method, Method}).
