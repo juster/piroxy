@@ -7,10 +7,12 @@
 -behavior(gen_server).
 -include("phttp.hrl").
 
+-define(TIMEOUT, 20000).
+
 -record(request, {ref, from, hostinfo, head, body}).
 -record(response, {ref, status, headers, body}).
 
--export([start_link/0, send/3, send/4]).
+-export([start_link/0, start_link/1, send/3, send/4]).
 -export([init/1, handle_cast/2, handle_call/3]).
 
 %%%
@@ -20,12 +22,15 @@
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
+start_link(Name) ->
+    gen_server:start_link({local, Name}, ?MODULE, [], []).
+
 %% Returns a request Ref as provided from request_manager.
 send(Pid, HostInfo, Head) ->
-    gen_server:call(Pid, {send, HostInfo, Head}, infinity).
+    gen_server:call(Pid, {send, HostInfo, Head}, ?TIMEOUT).
 
 send(Pid, HostInfo, Head, Body) ->
-    gen_server:call(Pid, {send, HostInfo, Head, Body}, infinity).
+    gen_server:call(Pid, {send, HostInfo, Head, Body}, ?TIMEOUT).
 
 %%%
 %%% behavior callbacks
@@ -118,7 +123,10 @@ method_bin(delete) ->
     <<"DELETE">>;
 
 method_bin(patch) ->
-    <<"PATCH">>.
+    <<"PATCH">>;
+
+method_bin(Method) ->
+    exit({unknown_method, Method}).
 
 %%new_request(HostInfo, Head) ->
 %%    case request_manager:new_request(HostInfo, Head) of
