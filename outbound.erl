@@ -4,8 +4,8 @@
 -include("phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--record(outstate, {state, socket, ssl, hstate, buffer=?EMPTY, close=false,
-                   req=null}).
+-record(outstate, {state, socket, ssl, rstate=null, close=false, req=null,
+                   buffer=?EMPTY}).
 
 -export([connect/3, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
@@ -56,7 +56,7 @@ handle_continue(next_request, #outstate{state=idle} = State0) ->
                 {error, Reason} ->
                     {stop, Reason, State0};
                 ok ->
-                    case recv_begin(State0#outstate{req=Req}) of
+                    case head_begin(State0#outstate{req=Req}) of
                         {error, Reason} ->
                             {stop, Reason, State0};
                         {ok, State} ->
@@ -73,20 +73,19 @@ handle_continue(next_request, State) ->
     %% If we are not idle, wait until we are before sending the next request.
     {noreply, State};
 
-handle_continue(close_request, State) ->
-    case State#outstate.req of
+handle_continue(close_request, State0) ->
+    case State0#outstate.req of
         null ->
-            {stop, no_active_request, State};
+            {stop, no_active_request, State0};
         {_,Ref,_} ->
             request_manager:close_request(Ref),
-            case State#outstate.close of
+            case State0#outstate.close of
                 true ->
                     %% The last response requested that we close the connection.
-                    {stop, normal, State};
+                    {stop, normal, State0};
                 false ->
-                    {noreply,
-                     State#outstate{state=idle, hstate=null, req=null},
-                     {continue, next_request}}
+                    State = State0#outstate{state=idle, rstate=null, req=null},
+                    {noreply, State, {continue, next_request}}
             end
     end.
 
@@ -96,10 +95,10 @@ handle_info({tcp_closed, _}, State) ->
 handle_info({tcp_error, Reason}, State) ->
     {stop, Reason, State};
 
-handle_info({tcp, _Sock, Data}, State = #outstate{state=head}) ->
+handle_info({tcp, _Sock, Data}, #outstate{state=head} = State) ->
     head_data(Data, State);
 
-handle_info({tcp, _Sock, Data}, State = #outstate{state=body}) ->
+handle_info({tcp, _Sock, Data}, #outstate{state=body} = State) ->
     body_data(Data, State);
 
 handle_info({tcp, _Sock, Bin}, State) ->
@@ -133,69 +132,68 @@ terminate(_Reason, #outstate{socket=Sock, ssl=true}) ->
 
 %%% receiving states
 
-recv_begin(State) ->
-    HState = phttp:response_head(),
+head_begin(State) ->
+    HReader = phttp:head_reader(),
     head_data(State#outstate.buffer,
-              State#outstate{state=head, hstate=HState, buffer=?EMPTY}).
+              State#outstate{state=head, rstate=HReader}).
 
-head_data(?EMPTY, State) ->
-    {ok, State};
-
-head_data(Data, State = #outstate{hstate=HState0, buffer=Buf}) ->
-    case phttp:response_head(Buf, Data, HState0) of
-        {error, Reason} ->
-            {error, Reason};
-        {skip, Bin, HState} ->
-            {ok, State#outstate{hstate=HState, buffer=Bin}};
-        {redo, Bin, HState} ->
-            head_data(Bin, State#outstate{hstate=HState, buffer=?EMPTY});
-        {last, Bin, Status, Headers} ->
-            head_finish(Bin, Status, Headers, State)
+head_data(?EMPTY, State) -> {ok,State};
+head_data(Bin, #outstate{rstate=RState0} = State) ->
+    case phttp:head_reader(RState0, Bin) of
+        {error,Reason} ->
+            {stop,Reason,State};
+        {continue, RState} ->
+            {noreply, State#outstate{rstate=RState}};
+        {done, StatusLine, Headers, Rest} ->
+            case phttp:status_line(StatusLine) of
+                {error,Reason} -> {stop,Reason,State};
+                {ok,Status} -> head_end(Status, Headers, Rest, State)
+            end
     end.
 
-head_finish(Bin, Status, Headers, State) ->
+head_end(Status, Headers, Rest, State) ->
     {DataPid, Ref, {Method,_,_}} = State#outstate.req,
-    inbound:respond(DataPid, Ref, {head, Status, Headers}),
-    case phttp:body_length(Method, Status, Headers) of
-        {ok, 0} ->
-            inbound:respond(DataPid, Ref, {body, ?EMPTY}),
-            {noreply, State#outstate{state=idle, buffer=Bin},
-             {continue, close_request}};
-        {ok, BodyLength} ->
-            body_begin(Bin, phttp:body_reader(BodyLength), State);
-        {error, missing_length} ->
-            {error, {missing_length, Status, Headers}}
+    inbound:respond(DataPid, Ref, {head,Status,Headers}),
+    case phttp:response_length(Method, Status, Headers) of
+        {ok,0} ->
+            inbound:respond(DataPid, Ref, {body,?EMPTY}),
+            {noreply, State#outstate{rstate=null}, {continue,close_request}};
+        {ok,BodyLen} ->
+            body_begin(Rest, BodyLen, State);
+        {error,missing_length} ->
+            {error, {missing_length,Status,Headers}}
     end.
 
-body_begin(Bin, HState, State) ->
-    body_data(Bin, State#outstate{state=body, hstate=HState, buffer=?EMPTY}).
+body_begin(Bin, BodyLen, State) ->
+    RState = phttp:body_reader(BodyLen),
+    body_data(Bin, State#outstate{state=body, rstate=RState}).
 
 body_data(?EMPTY, State) ->
     {noreply, State};
 
-body_data(Data, #outstate{hstate=HState0, buffer=Buf} = State) ->
-    case phttp:body_next(Buf, Data, HState0) of
-        {error, Reason} ->
-            {stop, Reason, State};
-        {wait, ?EMPTY, Bin2, HState} ->
-            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
-        {wait, Bin1, Bin2, HState} ->
-            {DataPid,Ref,_} = State#outstate.req,
-            inbound:respond(DataPid, Ref, {body, Bin1}),
-            {noreply, State#outstate{hstate=HState, buffer=Bin2}};
-        {redo, ?EMPTY, Bin2, Bin3, HState} ->
+body_data(Data, #outstate{rstate=RState0} = State) ->
+    case phttp:body_reader(RState0, Data) of
+        {error,Reason} ->
+            {stop,Reason,State};
+        {continue,?EMPTY,RState} ->
             %% Avoids sending messages about nothing.
-            body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
-        {redo, Bin1, Bin2, Bin3, HState} ->
+            {noreply, State#outstate{rstate=RState}};
+        {continue,Scanned,RState} ->
             {DataPid,Ref,_} = State#outstate.req,
-            inbound:respond(DataPid, Ref, {body, Bin1}),
-            body_data(Bin3, State#outstate{hstate=HState, buffer=Bin2});
-        {last, Bin1, Bin2} ->
-            %%io:format("*DBG* last -- ~p -- ~p~n", [Bin1, Bin2]),
+            inbound:respond(DataPid, Ref, {body,Scanned}),
+            {noreply, State#outstate{rstate=RState}};
+        {done,Scanned,Rest} ->
             {DataPid,Ref,_} = State#outstate.req,
-            inbound:respond(DataPid, Ref, {body, Bin1}),
-            {noreply, State#outstate{state=idle, buffer=Bin2},
-             {continue, close_request}}
+            inbound:respond(DataPid, Ref, {body,Scanned}),
+            %% There should be no extra bytes after the end of the body.
+            %% XXX: Because there is no request pipelining ... yet.
+            case Rest of
+                ?EMPTY ->
+                    {noreply, State#outstate{state=idle, rstate=null},
+                     {continue,close_request}};
+                _ ->
+                    {stop, {body_remains,Rest}, State}
+            end
     end.
 
 %%% request helper functions
@@ -220,7 +218,6 @@ send_lines([], _) ->
     ok;
 
 send_lines([X|L], State) ->
-    %%io:format("DBG: send_lines X=~p~n", [X]),
     case send(X, State) of
         {error, Reason} ->
             {error, Reason};

@@ -12,14 +12,7 @@ stop() ->
     gen_server:stop(piclient_inbound).
 
 dump({ok,Res}=Result) ->
-    dump_body(Res),
-    Result;
-
-dump(X) ->
-    X.
-
-dump_body(Response) ->
-    {StatusLine, ResHeaders, Body} = Response,
+    {StatusLine, ResHeaders, Body} = Res,
     %%io:format("*DBG* received response:~n~w~n", [{StatusLine, ResHeaders, Body}]),
     {{Major, Minor}, Status, _} = StatusLine,
     io:format("-{ STATUS }-------------------"
@@ -33,7 +26,10 @@ dump_body(Response) ->
               "------------------------------"
               "------------------------------~n",
               [Body]),
-    ok.
+    Result;
+
+dump(X) ->
+    X.
 
 hostinfo({Schema,_,Host,Port,_,_}) ->
     {Schema,Host,Port};

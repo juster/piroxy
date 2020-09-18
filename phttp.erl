@@ -1,10 +1,12 @@
 -module(phttp).
 
 -export([centenc/1, formenc/1, compose_uri/1]).
--export([status_line/2, request_line/2, header_line/2]).
--export([response_head/0, response_head/3]).
--export([body_length/3, body_reader/1, body_next/3]).
+-export([status_line/1, request_line/2]).
+-export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
+-export([body_length/1, response_length/3]).
 -export([method_bin/1]).
+
+-import(lists, [reverse/1]).
 
 -include("phttp.hrl").
 
@@ -70,31 +72,35 @@ compose3(_, Host, Port) ->
 compose4(Path, Query, Fragment) ->
         Path ++ Query ++ Fragment.
 
+concat(?EMPTY, Bin2) -> Bin2;
+concat(Bin1, ?EMPTY) -> Bin1;
+concat(Bin1, Bin2) -> <<Bin1/binary,Bin2/binary>>.
+
 next_line(Bin1, ?EMPTY, _Max) ->
     {skip, Bin1};
 
 next_line(Bin1, Bin2, Max) ->
-    %%io:format("DBG next_line: ~p --- ~p~n", [Bin1, Bin2]),
-    Bin3 = case Bin1 of
-               ?EMPTY ->
-                   Bin2;
-               _ ->
-                   <<Bin1/binary,Bin2/binary>>
-           end,
-    N = min(Max,byte_size(Bin3)),
-    case binary:match(Bin3, <<?CRLF>>, [{scope,{0,N}}]) of
-        nomatch when byte_size(Bin3) >= Max ->
+    if
+        byte_size(Bin1) + byte_size(Bin2) > Max ->
             {error, line_too_long};
+        true ->
+            next_line_(Bin1, Bin2)
+    end.
+
+next_line_(Bin1, Bin2) ->
+    %%io:format("DBG next_line: ~p --- ~p~n", [Bin1, Bin2]),
+    case binary:match(Bin2, <<?CRLF>>) of
         nomatch ->
-            {skip, Bin3};
-        {0,_} when byte_size(Bin3) =:= 2 ->
-            {ok, ?EMPTY, ?EMPTY};
+            {skip, concat(Bin1, Bin2)};
         {0,_} ->
-            {ok, ?EMPTY, binary_part(Bin3, 2, byte_size(Bin3)-2)};
-        {Pos,_} when byte_size(Bin3) =:= Pos+2 ->
+            {ok, Bin1, binary_part(Bin2, 2, byte_size(Bin2)-2)};
+        {Pos,_} when byte_size(Bin2) == Pos+2 ->
+            %% CRLF is at the end of Bin2
+            Bin3 = concat(Bin1, Bin2),
             Line = binary_part(Bin3, 0, Pos),
             {ok, Line, ?EMPTY};
         {Pos,_} ->
+            Bin3 = concat(Bin1, Bin2),
             Line = binary_part(Bin3, 0, Pos),
             Rest = binary_part(Bin3, Pos+2, byte_size(Bin3)-Pos-2),
             {ok, Line, Rest}
@@ -119,185 +125,184 @@ request_line(Bin1, Bin2) ->
             end
     end.
 
-status_line(Bin1, Bin2) ->
-    %%io:format("DBG: status_line: ~p --- ~p~n", [Bin1, Bin2]),
-    case next_line(Bin1, Bin2, ?STATUS_MAX) of
-        {skip,_} = T ->
-            T;
-        {error,_} = T ->
-            T;
-        {ok, ?EMPTY, _} ->
-            {error,status_line_empty};
-        {ok, Line, Rest} ->
-            case Line of
-                <<"HTTP/",VerMaj," ",Status:3/binary," ">> ->
-                    {ok, {{{VerMaj-$0, 0}, Status, ?EMPTY}, Rest}};
-                <<"HTTP/",VerMaj," ",Status:3/binary," ",Phrase/binary>> ->
-                    {ok, {{{VerMaj-$0, 0}, Status, Phrase}, Rest}};
-                <<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">> ->
-                    %% Ignore a missing reason-phrase.
-                    {ok, {{{VerMaj-$0, VerMin-$0}, Status, ?EMPTY}, Rest}};
-                <<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ",
-                  Phrase/binary>> ->
-                    {ok, {{{VerMaj-$0, VerMin-$0}, Status, Phrase}, Rest}};
-                _ ->
-                    {error, {bad_status_line, Line}}
-            end
-    end.
+status_line(<<"HTTP/",VerMaj," ",Status:3/binary," ">>) ->
+    {ok, {{VerMaj-$0, 0}, Status, ?EMPTY}};
+status_line(<<"HTTP/",VerMaj," ",Status:3/binary," ",Phrase/binary>>) ->
+    {ok, {{VerMaj-$0, 0}, Status, Phrase}};
+status_line(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">>) ->
+    %% Ignore a missing reason-phrase.
+    {ok, {{VerMaj-$0, VerMin-$0}, Status, ?EMPTY}};
+status_line(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ", Phrase/binary>>) ->
+    {ok, {{VerMaj-$0, VerMin-$0}, Status, Phrase}};
+status_line(Line) ->
+    {error, {bad_status_line,Line}}.
 
-header_line(Bin1, Bin2) ->
-    next_line(Bin1, Bin2, ?HEADER_MAX).
+%% HTTP message reader.
 
-%%collect_headers(Headers, Buff, ?EMPTY) ->
-%%    {skip, Buff, Headers};
-
-collect_headers(Headers0, Buff, Next) ->
-    case header_line(Buff, Next) of
-        {skip, Bin} ->
-            {skip, Bin, Headers0};
-        {error,_} = T ->
-            T;
-        {ok, ?EMPTY, Rest} ->
-            {ok, Rest, Headers0};
-        {ok, Header, Rest} ->
-            %%io:format("DBG adding field: ~p~n", [Header]),
-            case fieldlist:add(Header, Headers0) of
-                {ok, Headers} ->
-                    collect_headers(Headers, ?EMPTY, Rest);
-                {error, Reason} ->
-                    {error, {Reason, Header}}
-            end
-    end.
-
-response_head() ->
-    #headstate{state = http_status}.
-
-response_head(Bin1, Bin2, RespState = #headstate{state=http_status}) ->
-    case phttp:status_line(Bin1, Bin2) of
-        {error,_} = T ->
-            T;
-        {skip, Buff} ->
-            {skip, Buff, RespState};
-        {ok, {Status, Rest}} ->
-            %%{status, Status, Rest, RespState#headstate{state=http_headers}}
-            {redo, Rest, RespState#headstate{state=http_headers, status=Status}}
-    end;
-
-response_head(Bin1, Bin2, RespState = #headstate{state=http_headers}) ->
-    Headers0 = RespState#headstate.headers,
-    case collect_headers(Headers0, Bin1, Bin2) of
-        {error,_} = T ->
-            T;
-        {skip, Buff} ->
-            {skip, Buff, RespState};
-        {redo, Rest, Headers} ->
-            {redo, Rest, RespState#headstate{headers=Headers}};
-        {ok, Rest, Headers} ->
-            {last, Rest, RespState#headstate.status, Headers}
-    end.
-
-body_reader(chunked) ->
-    #bodystate{state=between_chunks, nread=0, length=unused};
-
-body_reader(ContentLength) ->
-    #bodystate{state=dumb, nread=0, length=ContentLength}.
-
-%% Works like a lexer, works at reading the entire body. Returns
-%% Returns one of:
-%%   {skip, Buffer, State}
-%%     ... when we need more input to read more of the body
-%%   {wait, Done, State}
-%%     ... when we need more input, but we don't need to buffer anything
-%%   {redo, Done, Buffer, Rest, State}
-%%     ... when the caller should call again with Buffer, Rest, and State
-%%         (Done is a chunk of Body data that has passed through the lexing)
-%%   {last, Done, Rest}
-%%     ... when the last chunk of body data is Done and Rest is any extra
-%%
-body_next(_, Bin, State0 = #bodystate{state=dumb}) ->
-    #bodystate{nread=NRead0, length=Length} = State0,
-    NRead = byte_size(Bin) + NRead0,
+track_header(N0, Bin) ->
+    N = N0 + byte_size(Bin),
     if
-        NRead < Length ->
-            {wait, Bin, ?EMPTY, State0#bodystate{nread=NRead}};
-        NRead =:= Length ->
-            {last, Bin, ?EMPTY};
-        NRead > Length ->
-            Bin1 = binary_part(Bin, 0, Length - NRead0),
-            Bin2 = binary_part(Bin, byte_size(Bin), -1 * (NRead-Length)),
-            {last, Bin1, Bin2}
+        N > ?HEADER_MAX ->
+            exit(header_too_big);
+        true ->
+            N
+    end.
+
+head_reader() -> {start,0,?EMPTY}.
+
+head_reader({start,N,Bin1}, Bin2) ->
+    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
+        {error,_} = T -> T;
+        {skip,Bin3} ->
+            {continue, {start, track_header(N, Bin3), Bin3}};
+        {ok,Line,Bin3} ->
+            head_reader({headers,0,Line,[],?EMPTY}, Bin3)
     end;
 
-body_next(Bin1, Bin2, State0 = #bodystate{state=between_chunks}) ->
-    io:format("*DBG* between_cheeks -- ~p -- ~p~n", [Bin1, Bin2]),
+head_reader({headers,N0,StatusLine,Headers0,Bin1}, Bin2) ->
+    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
+        {error,_} = T -> T;
+        {skip,Bin3} ->
+            N = track_header(N0, Bin3),
+            {continue, {headers,N,StatusLine,Headers0,Bin3}};
+        {ok,?EMPTY,Bin3} ->
+            %% end of header lines
+            {done,StatusLine,Headers0,Bin3};
+            %%head_reader({endline,N0+2,StatusLine,Headers0,?EMPTY}, Bin3);
+        {ok,Line,Bin3} ->
+            case fieldlist:add(Line, Headers0) of
+                {error,_} = Err -> Err;
+                {ok,Headers} ->
+                    N = track_header(N0, Line) + 2,
+                    head_reader({headers,N,StatusLine,Headers,?EMPTY}, Bin3)
+            end
+    end;
+
+head_reader({endline,N,StatusLine,Headers,Bin1}, Bin2) ->
+    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
+        {error,_} = T -> T;
+        {skip,Bin3} -> {continue,{endline,N,StatusLine,Headers,Bin3}};
+        {ok,?EMPTY,Bin3} -> {done,StatusLine,Headers,Bin3};
+        {ok,Line,_} -> {error,{expected_empty_line,Line}}
+    end.
+
+fixed({I,N}, Bin) when I >= N -> {done, Bin, ?EMPTY};
+fixed({I0,N}, Bin) ->
+    I = I0 + byte_size(Bin),
+    if
+        I < N ->
+            {continue, Bin, {I,N}};
+        I =:= N ->
+            {done, Bin, ?EMPTY};
+        I > N ->
+            %% Returns the part within the boundary of length and
+            %% the overflow (if any)
+            Bin1 = binary_part(Bin, 0, N - I0),
+            Bin2 = binary_part(Bin, byte_size(Bin), -1 * (I-N)),
+            {done, Bin1, Bin2}
+    end.
+
+chunk(State, Bin) -> chunk(State, Bin, []).
+
+%% Returns
+%%  {error,Reason} in case of error
+%%  {continue,Scanned,State}
+%%  {done,Scanned,Rest}
+%%
+%% State
+%%  {between,Keep}
+%%    We are between chunks and are still scanning for end of line.
+%%  {inside,I,N}
+%%    We are inside a chunk and have not read the entire thing.
+%%
+chunk({between,Bin1}, Bin2, L) ->
     case chunk_size(Bin1, Bin2) of
-        {error,_} = Error ->
-            Error;
+        {error,_} = Err ->
+            Err;
         {skip,Rest} ->
-            {wait, ?EMPTY, Rest, State0};
-        {ok, 0, Line, Rest0} ->
+            {continue, reverse(L), {between,Rest}};
+        {ok,0,_,Rest0} ->
             %% The last chunk should have size zero (0) and have an empty
             %% line immediately after the size line.
             case Rest0 of
+                <<?CRLF>> ->
+                    {done,reverse(L),?EMPTY};
                 <<?CRLF,Rest/binary>> ->
-                    {last, <<Line/binary,?CRLF>>, Rest};
+                    {done,reverse(L),Rest};
                 _ ->
-                    {error, lastchunk_not_emptyline}
+                    {error,expected_crlf}
             end;
-        {ok, Size, Line, Rest} ->
-            State = State0#bodystate{state=inside_chunk, nread=0, length=Size},
-            {redo, <<Line/binary,?CRLF>>, ?EMPTY, Rest, State}
+        {ok,Size,_,Rest} ->
+            chunk({inside,0,Size}, Rest, L)
     end;
 
-body_next(_, Bin, State0 = #bodystate{state=inside_chunk}) ->
-    #bodystate{nread=NRead0, length=Length} = State0,
-    %%io:format("*DBG* inside_cheeks -- ~p~n", [Bin]),
-    NRead = NRead0 + byte_size(Bin),
-    if
-        NRead < Length ->
-            State = State0#bodystate{state=inside_chunk, nread=NRead},
-            {redo, Bin, ?EMPTY, ?EMPTY, State};
-        NRead =:= Length ->
-            State = State0#bodystate{state=between_chunks, nread=0,
-                                     length=unused},
-            {redo, Bin, ?EMPTY, ?EMPTY, State};
-        NRead > Length ->
-            Bin1 = binary_part(Bin, 0, Length - NRead0),
-            Bin2 = binary_part(Bin, byte_size(Bin), -1 * (NRead-Length)),
-            State = State0#bodystate{state=between_chunks,
-                                     nread=0, length=unused},
-            {redo, Bin1, ?EMPTY, Bin2, State}
-    end.
+chunk({inside,I1,N}, Bin1, L) ->
+    case fixed({I1,N}, Bin1) of
+        {skip,I2} ->
+            Bin2 = binary_part(Bin1, 0, I2),
+            {continue, reverse([Bin2|L]), {inside,I1+I2,N}};
+        {done,Bin2,Bin3} ->
+            chunk(trailing_crlf, Bin3, [Bin2|L])
+    end;
+
+chunk(trailing_crlf, <<?CRLF>>, L) ->
+    {continue, reverse(L), {between,?EMPTY}};
+
+chunk(trailing_crlf, <<?CRLF,Bin1/binary>>, L) ->
+    chunk({between,?EMPTY}, Bin1, L);
+
+chunk(trailing_crlf, ?EMPTY, L) ->
+    {continue, reverse(L), trailing_crlf};
+
+chunk(trailing_crlf, Bin, _L) ->
+    {error,{expected_crlf,Bin}}.
 
 chunk_size(Bin1, Bin2) ->
     case next_line(Bin1, Bin2, ?CHUNKSZ_MAX) of
-        {skip,_} = T ->
-            T;
-        {error,_} = T ->
-            T;
-        {ok, ?EMPTY, _Rest} ->
-            {error,chunk_size_empty};
-        {ok, Line, Rest} ->
+        {skip,_} = T -> T;
+        {error,_} = T -> T;
+        {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
+        {ok,Line,Rest} ->
             Hex = case binary:match(Line, <<";">>) of
-                      nomatch ->
-                          Line;
-                      {Pos,_Len} ->
-                          binary_part(Line, 0, Pos)
+                      nomatch -> Line;
+                      {Pos,_Len} -> binary_part(Line, 0, Pos)
                   end,
             case catch(binary_to_integer(Hex, 16)) of
                 {'EXIT', {badarg, _}} ->
-                    {error, {invalid_chunk_size, Hex}};
+                    {error,{invalid_chunk_size,Hex}};
                 {'EXIT', Reason} ->
-                    {error, Reason}; % should not happen
+                    {error,Reason}; % should not happen
                 Size ->
                     {ok, Size, <<Line/binary,?CRLF>>, Rest}
             end
     end.
 
-body_length_by_headers(Headers) ->
+%% Pass the body_reader the result of body_length.
+%% Returns the initial state of the reader.
+body_reader(chunked) ->
+    %%{chunked,{between,?EMPTY}};
+    {chunked,trailing_crlf};
+body_reader(ContentLength) when is_integer(ContentLength) ->
+    {fixed,{0,ContentLength}}.
+
+body_reader({chunked,State0}, Bin) ->
+    case chunk(State0, Bin) of
+        {continue,B,State} -> {continue,B,{chunked,State}};
+        T -> T
+    end;
+body_reader({fixed,State0}, Bin) ->
+    X = fixed(State0, Bin),
+    case X of
+        {continue,B,State} -> {continue,B,{fixed,State}};
+        T -> T
+    end.
+
+body_length(Headers) ->
     %%io:format("DBG body_length_by_headers: Headers=~p~n", [Headers]),
-    TransferEncoding = fieldlist:get_value(<<"transfer-encoding">>, Headers),
-    ContentLength = fieldlist:get_value(<<"content-length">>, Headers),
+    TransferEncoding = fieldlist:get_value(<<"transfer-encoding">>,
+                                           Headers, ?EMPTY),
+    ContentLength = fieldlist:get_value(<<"content-length">>,
+                                        Headers, ?EMPTY),
     case {ContentLength, TransferEncoding} of
         {?EMPTY, ?EMPTY} ->
             {error, missing_length};
@@ -314,26 +319,14 @@ body_length_by_headers(Headers) ->
             {ok, binary_to_integer(Bin)}
     end.
 
-body_length(<<"HEAD">>, <<"200">>, _) ->
-    {ok, 0};
-
-body_length(_, <<"200">>, Headers) ->
-    body_length_by_headers(Headers);
-
-body_length(_, <<"1",_,_>>, _) ->
-    {ok, 0};
-
-body_length(_, <<"204">>, _) ->
-    {ok, 0};
-
-body_length(_, <<"304">>, _) ->
-    {ok, 0};
-
-body_length(<<"HEAD">>, _, _) ->
-    {ok, 0};
-
-body_length(_ReqMethod, _RespStatus, RespHeaders) ->
-    body_length_by_headers(RespHeaders).
+response_length(<<"HEAD">>, <<"200">>, _) -> {ok, 0};
+response_length(_, <<"200">>, Headers) -> body_length(Headers);
+response_length(_, <<"1",_,_>>, _) -> {ok, 0};
+response_length(_, <<"204">>, _) -> {ok, 0};
+response_length(_, <<"304">>, _) -> {ok, 0};
+response_length(<<"HEAD">>, _, _) -> {ok, 0};
+response_length(_ReqMethod, _ResStatus, ResHeaders) ->
+    body_length(ResHeaders).
 
 method_bin(get) -> <<"GET">>;
 method_bin(post) -> <<"POST">>;
