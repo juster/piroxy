@@ -7,14 +7,14 @@
 -record(outstate, {state, socket, ssl, hstate, buffer=?EMPTY, close=false,
                    req=null}).
 
--export([connect_http/2, connect_https/2, new_request/1]).
+-export([connect/3, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
          terminate/2]).
 
-connect_http(Host, Port) ->
-    gen_server:start_link(?MODULE, [Host, Port, false], [debug,{[trace]}]).
+connect(http, Host, Port) ->
+    gen_server:start_link(?MODULE, [Host, Port, false], []);
 
-connect_https(Host, Port) ->
+connect(https, Host, Port) ->
     gen_server:start_link(?MODULE, [Host, Port, true], []).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv

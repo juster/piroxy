@@ -127,21 +127,12 @@ open_connection(HostInfo, #rmstate{hosttab=HostTab,pidtab=PidTab}) ->
             {error, {max_connection_fail, Nfail}};
         _ ->
             %% No matching record or pid is null.
-            {ok, OutPid} = connect(HostInfo),
+            {ok, OutPid} = apply(outbound, connect, tuple_to_list(HostInfo)),
             %% Overwrite any existing hostconn record for that host.
             ets:insert(HostTab, #hostconn{hostinfo=HostInfo, pid=OutPid}),
             ets:insert(PidTab, {OutPid, HostInfo}),
             {ok, OutPid}
     end.
-
-connect({http,Host,Port}) ->
-    outbound:connect_http(Host, Port);
-
-connect({https,Host,Port}) ->
-    outbound:connect_https(Host, Port);
-
-connect(_) ->
-    {error, badarg}.
 
 cleanup_pid(OutPid, #rmstate{pidtab=PidTab,hosttab=HostTab}) ->
     case ets:lookup(PidTab, OutPid) of
