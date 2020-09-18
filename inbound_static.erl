@@ -84,7 +84,7 @@ handle_cast({reset, Ref}, {ReqTab,ResTab} = State) ->
             {noreply, State}
     end;
 
-handle_cast({respond, Ref, {head, StatusLine, Headers}}, State) ->
+handle_cast({respond, Ref, {head,StatusLine,Headers}}, State) ->
     {_ReqTab,ResTab} = State,
     %%{{Major, Minor}, Status, _} = StatusLine,
     case ets:update_element(ResTab, Ref, [{#response.status, StatusLine},
@@ -95,11 +95,11 @@ handle_cast({respond, Ref, {head, StatusLine, Headers}}, State) ->
             {stop, {request_missing, Ref}, State}
     end;
 
-handle_cast({respond, Ref, {body, Body}}, {_ReqTab,ResTab} = State) ->
-    [#response{body = PrevBody}] = ets:lookup(ResTab, Ref),
+handle_cast({respond, Ref, {body,Body}}, {_ReqTab,ResTab} = State) ->
+    [#response{body=PrevBody}] = ets:lookup(ResTab, Ref),
     NewBody = case PrevBody of
                   ?EMPTY -> Body;
-                  PrevBody -> <<PrevBody/binary,Body/binary>>
+                  PrevBody -> [PrevBody|Body] % append to iolist
               end,
     ets:update_element(ResTab, Ref, {#response.body, NewBody}),
     {noreply, State}.
