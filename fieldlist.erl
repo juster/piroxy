@@ -2,7 +2,8 @@
 
 -include("phttp.hrl").
 
--export([add/2, add_value/3, find/2, at/2, remove/2, get_value/2]).
+-export([add/2, add_value/3, find/2, at/2, remove/2]).
+-export([get_value/2, get_value/3]).
 -export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
 
 trimows(?EMPTY) ->
@@ -76,10 +77,12 @@ at(I, FL) ->
 remove(I, FL) ->
     lists:sublist(FL, 1, I-1) ++ lists:nthtail(I, FL).
 
-get_value(_Field, []) ->
-    not_found;
+get_value(Field, FL) -> get_value(Field, FL, not_found).
 
-get_value(Field, [{Len,Line}|FL]) ->
+get_value(_Field, [], Default) ->
+    Default;
+
+get_value(Field, [{Len,Line}|FL], Default) ->
     case binary_lcase(binary_part(Line, 0, Len)) of
         Field when byte_size(Line) =< Len-1 ->
             ?EMPTY;
@@ -87,7 +90,7 @@ get_value(Field, [{Len,Line}|FL]) ->
             Value0 = binary_part(Line, Len+1, byte_size(Line) - Len - 1),
             trimows(binary_lcase(Value0));
         _ ->
-            get_value(Field, FL)
+            get_value(Field, FL, Default)
     end.
 
 to_iolist([]) ->
