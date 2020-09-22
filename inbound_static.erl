@@ -2,6 +2,9 @@
 %%%
 %%% Implements all of the "incoming" gen_server callbacks as well as new
 %%% interface functions which send requests manually.
+%%%
+%%% Blocks on sends, calling send does not return until the HTTP response
+%%% has been received. The response is returned as the result of the send.
 
 -module(inbound_static).
 -behavior(gen_server).
@@ -12,7 +15,7 @@
 -record(request, {ref, from, hostinfo, head, body}).
 -record(response, {ref, status, headers, body}).
 
--export([start_link/0, start_link/1, send/3, send/4]).
+-export([start_link/0, start_link/1]).
 -export([init/1, handle_cast/2, handle_call/3]).
 
 %%%
@@ -20,17 +23,10 @@
 %%%
 
 start_link() ->
-    gen_server:start_link(?MODULE, [], []).
+    gen_server:start_link(?MODULE, [], [{timeout,?TIMEOUT}]).
 
 start_link(Name) ->
-    gen_server:start_link({local, Name}, ?MODULE, [], []).
-
-%% Returns a request Ref as provided from request_manager.
-send(Pid, HostInfo, Head) ->
-    gen_server:call(Pid, {send, HostInfo, Head}, ?TIMEOUT).
-
-send(Pid, HostInfo, Head, Body) ->
-    gen_server:call(Pid, {send, HostInfo, Head, Body}, ?TIMEOUT).
+    gen_server:start_link({local, Name}, ?MODULE, [], [{timeout,?TIMEOUT}]).
 
 %%%
 %%% behavior callbacks
@@ -39,9 +35,6 @@ send(Pid, HostInfo, Head, Body) ->
 init([]) ->
     {ok, {ets:new(requests, [set,private,{keypos,#request.ref}]),
           ets:new(responses, [set,private,{keypos,#response.ref}])}}.
-
-handle_call({send, HostInfo, Head}, From, State) ->
-    handle_call({send, HostInfo, Head, ?EMPTY}, From, State);
 
 handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
     {Method, Uri, Headers} = Head,
