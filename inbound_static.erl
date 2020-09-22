@@ -37,10 +37,7 @@ init([]) ->
           ets:new(responses, [set,private,{keypos,#response.ref}])}}.
 
 handle_call({send, HostInfo, Head, Body}, From, {ReqTab,ResTab} = State) ->
-    {Method, Uri, Headers} = Head,
-    MethodBin = phttp:method_bin(Method),
-    UriBin = unicode:characters_to_binary(Uri),
-    case request_manager:new_request(HostInfo, {MethodBin, UriBin, Headers}) of
+    case request_manager:new_request(HostInfo, Head) of
         {error,Reason} ->
             {stop, Reason, State};
         {ok,Ref} ->
