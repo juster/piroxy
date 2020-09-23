@@ -10,23 +10,29 @@
 
 %%% external interface
 
+%% called by outbound to signal the end of a response
 close(Pid, Ref) ->
     gen_server:cast(Pid, {close, Ref}).
 
+%% called by outbound to signal failure in the middle of a response
 reset(Pid, Ref) ->
     gen_server:cast(Pid, {reset, Ref}).
 
+%% i forget??
 abort(Pid, Ref, Reason) ->
     gen_server:cast(Pid, {abort, Ref, Reason}).
 
+%% called by client or user agent creating requests
 send(Pid, HostInfo, Head) ->
     send(Pid, HostInfo, Head, ?EMPTY).
 
 send(Pid, HostInfo, Head, Body) ->
     gen_server:call(Pid, {send, HostInfo, Head, Body}).
 
+%% called by outbound to fetch the body of the request
 request(Pid, Ref, Request) ->
     gen_server:call(Pid, {request, Ref, Request}).
 
+%% called by outbound to stream the response to a request
 respond(Pid, Ref, Response) ->
     gen_server:cast(Pid, {respond, Ref, Response}).
