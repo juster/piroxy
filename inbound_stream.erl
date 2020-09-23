@@ -12,7 +12,7 @@
 -record(state, {bufi=0, reqi=0, buffer, restab}).
 
 -import(lists, [foreach/2, reverse/1]).
--export([start_link/0]).
+-export([start_link/0, receive_body/2]).
 -export([init/1, terminate/2, handle_cast/2, handle_call/3]).
 
 %%% external interface
@@ -20,8 +20,8 @@
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
-body(ServerRef, RequestRef, Chunk) ->
-    gen_server:cast(ServerRef, {append_body,RequestRef,Chunk}).
+receive_body(ServerRef, Chunk) ->
+    gen_server:cast(ServerRef, {append_body,Chunk}).
 
 %%% behavior callbacks
 
@@ -51,21 +51,22 @@ handle_call({new,HostInfo,Head}, From, State) ->
 handle_call({request_body,Ref}, _From, State) ->
     Tab = State#state.restab,
     [Res] = ets:lookup(Tab, Ref),
-    Body = reverse(Res#session.body),
+    Body = reverse(Res#session.cache),
     case Res#session.closed of
         true ->
             {reply, {last,Body}, State};
         false ->
-            ets:update(Tab, Ref, {#session.body,[]}),
+            ets:update(Tab, Ref, {#session.cache,[]}),
             {reply, {some,Body}, State}
     end.
 
-handle_cast({append_body,Ref,Chunk}, State) ->
+handle_cast({append_body,Chunk}, State) ->
     Tab = State#state.restab,
+    Ref = input_ref(State),
     [Res] = ets:lookup(Tab, Ref),
-    Body = Res#session.body,
-    ets:update(Tab, Ref, {#session.body,[Chunk|Body]}),
-    {noreply, State}.
+    Cache = Res#session.cache,
+    ets:update(Tab, Ref, {#session.cache,[Chunk|Cache]}),
+    {noreply, State};
 
 handle_cast({close,Ref} = Msg, State) ->
     case send_if_active(Ref, Msg, State) of
@@ -126,11 +127,14 @@ send_if_active(Ref, Msg, State) ->
             active
     end.
 
-active_ref(State) ->
+output_ref(State) ->
     array:get(State#state.bufi rem ?MAX_ACTIVE, State#state.buffer).
 
 is_active(Ref, State) ->
-    case active_ref(State) of Ref -> true; _ -> false end.
+    case output_ref(State) of Ref -> true; _ -> false end.
+
+input_ref(State) ->
+    array:get(State#state.reqi rem ?MAX_ACTIVE, State#state.buffer).
 
 buffer_empty(State) ->
     State#state.bufi =:= State#state.reqi.
@@ -142,7 +146,7 @@ next_todo(State0) ->
         false ->
             I = State0#state.bufi,
             State = State0#state{bufi = I+1},
-            Ref = active_ref(State),
+            Ref = output_ref(State),
             [Req] = ets:lookup(State#state.restab, Ref),
             Pid = Req#session.pid,
             case Req of
