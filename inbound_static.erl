@@ -16,7 +16,7 @@
 -record(response, {ref, status, headers, body=[]}).
 
 -export([start_link/0, start_link/1, send/3, send/4]).
--export([init/1, handle_cast/2, handle_call/3]).
+-export([init/1, terminate/2, handle_cast/2, handle_call/3]).
 
 %%%
 %%% new interface functions
@@ -41,6 +41,11 @@ send(ServerRef, HostInfo, Head, Body) ->
 init([]) ->
     {ok, {ets:new(requests, [set,private,{keypos,#request.ref}]),
           ets:new(responses, [set,private,{keypos,#response.ref}])}}.
+
+terminate(_Reason, State) ->
+    {ReqTab,ResTab} = State,
+    ets:delete(ReqTab),
+    ets:delete(ResTab).
 
 handle_call({new, HostInfo, Head}, From, State) ->
     case request_manager:new_request(HostInfo, Head) of
