@@ -2,7 +2,7 @@
 
 -compile(export_all).
 
--include("phttp.hrl").
+-include("pimsg.hrl").
 
 -import(lists, [foreach/2]).
 
@@ -12,7 +12,7 @@
 start(_Addr, Port) ->
     {ok,Listen} = gen_tcp:listen(Port, [inet,{active,true}]),
     {ok,Socket} = gen_tcp:accept(Listen),
-    Reader = phttp:head_reader(),
+    Reader = pimsg:head_reader(),
     InPid = inbound_stream:start_link(),
     loop(Socket, InPid, head, Reader).
 
@@ -36,13 +36,13 @@ recv(Socket, InPid, head, Reader, ?EMPTY) ->
     loop(Socket, InPid, head, Reader);
 
 recv(Socket, InPid, head, Reader0, Data) ->
-    case phttp:head_reader(Reader0, Data) of
+    case pimsg:head_reader(Reader0, Data) of
         {error,_} = Err -> Err;
         {continue,Reader} -> {ok,Reader};
         {done,Line,Headers,Rest} ->
-            BodyLen = phttp:body_length(Headers),
+            BodyLen = pimsg:body_length(Headers),
             new_request(InPid, Line, Headers, BodyLen),
-            Reader = phttp:body_reader(BodyLen),
+            Reader = pimsg:body_reader(BodyLen),
             recv(Socket, InPid, body, Reader, Rest)
     end;
 
@@ -50,24 +50,24 @@ recv(Socket, InPid, body, Reader, ?EMPTY) ->
     loop(Socket, InPid, body, Reader);
 
 recv(Socket, InPid, body, Reader0, Data) ->
-    case phttp:body_reader(Reader0, Data) of
+    case pimsg:body_reader(Reader0, Data) of
         {error,_} = Err -> Err;
         {continue,Reader,Bin} ->
             inbound_stream:receive_body(InPid, Bin),
             recv(Socket, InPid, body, Reader, Bin);
         {done,?EMPTY,Rest} ->
             %% skip sending receive_body message
-            Reader = phttp:head_reader(),
+            Reader = pimsg:head_reader(),
             recv(Socket, InPid, head, Reader, Rest);
         {done,Bin,Rest} ->
             inbound_stream:receive_body(InPid, Bin),
-            Reader = phttp:head_reader(),
+            Reader = pimsg:head_reader(),
             recv(Socket, InPid, head, Reader, Rest)
     end.
 
 new_request(Pid, Line, Headers, BodyLen) ->
     %% may fail hard here
-    {ok,[MethodBin,UriBin,<<"HTTP/1.1">>]} = phttp:nsplit(3, Line),
+    {ok,[MethodBin,UriBin,<<"HTTP/1.1">>]} = pimsg:nsplit(3, Line),
     Method = phttp:method_atom(MethodBin),
     case http_uri:parse(UriBin) of
         {error,Reason} ->

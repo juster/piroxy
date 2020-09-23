@@ -1,7 +1,7 @@
 -module(outbound).
 -behavior(gen_server).
 
--include("phttp.hrl").
+-include("pimsg.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -record(outstate, {state, socket, ssl, rstate=null, close=false, req=null,
@@ -130,13 +130,13 @@ terminate(_Reason, #outstate{socket=Sock, ssl=true}) ->
 %%% receiving states
 
 head_begin(State) ->
-    HReader = phttp:head_reader(),
+    HReader = pimsg:head_reader(),
     head_data(State#outstate.buffer,
               State#outstate{state=head, rstate=HReader}).
 
 head_data(?EMPTY, State) -> {ok,State};
 head_data(Bin, #outstate{rstate=RState0} = State) ->
-    case phttp:head_reader(RState0, Bin) of
+    case pimsg:head_reader(RState0, Bin) of
         {error,Reason} ->
             {stop,Reason,State};
         {continue, RState} ->
@@ -152,7 +152,7 @@ head_data(Bin, #outstate{rstate=RState0} = State) ->
 head_end(StatusLn, Headers, Rest, State) ->
     {Pid,Ref,ReqHead} = State#outstate.req,
     Method = ReqHead#head.method,
-    case phttp:response_length(Method, StatusLn, Headers) of
+    case pimsg:response_length(Method, StatusLn, Headers) of
         {ok,0} ->
             ResHead = #head{method=Method, line=StatusLn,
                             headers=Headers, bodylen=0},
@@ -169,14 +169,14 @@ head_end(StatusLn, Headers, Rest, State) ->
     end.
 
 body_begin(Bin, BodyLen, State) ->
-    RState = phttp:body_reader(BodyLen),
+    RState = pimsg:body_reader(BodyLen),
     body_data(Bin, State#outstate{state=body, rstate=RState}).
 
 body_data(?EMPTY, State) ->
     {noreply, State};
 
 body_data(Data, #outstate{rstate=RState0} = State) ->
-    case phttp:body_reader(RState0, Data) of
+    case pimsg:body_reader(RState0, Data) of
         {error,Reason} ->
             {stop,Reason,State};
         {continue,?EMPTY,RState} ->

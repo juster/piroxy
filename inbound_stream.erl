@@ -5,7 +5,7 @@
 
 -module(inbound_stream).
 -behavior(gen_server).
--include("phttp.hrl").
+-include("pimsg.hrl").
 
 -define(MAX_ACTIVE, 128).
 -record(session, {ref, pid, index, reqbody=[], cache, closed=false}).
