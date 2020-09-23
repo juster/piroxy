@@ -6,7 +6,7 @@
 -module(inbound).
 -include("phttp.hrl").
 
--export([close/2, reset/2, abort/3, new/3]).
+-export([close/2, reset/2, fail/3, new/3]).
 -export([request_body/2, respond/3]).
 
 %%% external interface
@@ -19,9 +19,9 @@ close(Pid, Ref) ->
 reset(Pid, Ref) ->
     gen_server:cast(Pid, {reset, Ref}).
 
-%% i forget??
-abort(Pid, Ref, Reason) ->
-    gen_server:cast(Pid, {abort, Ref, Reason}).
+%% called by request_manager to indicate total failure
+fail(Pid, Ref, Reason) ->
+    gen_server:cast(Pid, {fail, Ref, Reason}).
 
 %% called by client or user agent creating requests
 new(Pid, HostInfo, Head) ->

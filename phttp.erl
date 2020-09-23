@@ -4,7 +4,7 @@
 -export([status_line/1, request_line/2]).
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
 -export([body_length/1, response_length/3]).
--export([method_bin/1]).
+-export([method_bin/1, method_atom/1]).
 
 -import(lists, [reverse/1]).
 
@@ -344,3 +344,11 @@ method_bin(options) -> <<"OPTIONS">>;
 method_bin(delete) -> <<"DELETE">>;
 method_bin(patch) -> <<"PATCH">>;
 method_bin(Method) -> exit({unknown_method, Method}).
+
+method_atom(<<"GET">>) -> get;
+method_atom(<<"POST">>) -> post;
+method_atom(<<"HEAD">>) -> head;
+method_atom(<<"PUT">>) -> put;
+method_atom(<<"OPTIONS">>) -> options;
+method_atom(<<"DELETE">>) -> delete;
+method_atom(<<"PATCH">>) -> patch.

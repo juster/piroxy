@@ -10,6 +10,7 @@
 -record(hostconn, {hostinfo, pid, nfail=0}).
 
 -export([start_link/0, new_request/2, next_request/0, close_request/1]).
+-export([cancel_request/1]).
 
 %%% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -32,6 +33,9 @@ next_request() ->
 
 close_request(Ref) ->
     gen_server:cast(?MODULE, {close_request, self(), Ref}).
+
+cancel_request(Ref) ->
+    gen_server:call(?MODULE, {cancel_request, Ref}).
 
 %%% gen_server callbacks
 %%%
@@ -80,7 +84,11 @@ handle_cast({close_request, OutPid, Ref}, State) ->
             inbound:close(InPid, Ref),
             ets:match_delete(State#rmstate.reqtab, {OutPid, InPid, Ref, '_'}),
             {noreply, State}
-    end.
+    end;
+
+handle_cast({cancel_request,_Ref}, State) ->
+    %% XXX: not yet implemented
+    {noreply, State}.
 
 handle_info({'EXIT', Pid, Reason}, State) ->
     %% A normal exit can happen if the connection automatically closes when
@@ -158,6 +166,6 @@ has_requests(OutPid, State) ->
 abort_requests(OutPid, State, Reason) ->
     L = ets:lookup(State#rmstate.reqtab, OutPid),
     lists:foreach(fun ({_, InPid, Ref}) ->
-                          inbound:abort_request(InPid, Ref, Reason)
+                          inbound:fail(InPid, Ref, Reason)
                   end, L),
     ets:delete(State#rmstate.reqtab, OutPid).

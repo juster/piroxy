@@ -31,7 +31,14 @@ init([]) ->
     {ok, #state{buffer=Buf, restab=Tab}}.
 
 terminate(_Reason, State) ->
-    ets:delete(State#state.restab).
+    Tab = State#state.restab,
+    cancel_requests(ets:first(Tab), Tab),
+    ets:delete(Tab).
+
+cancel_requests('$end_of_table', _) -> ok;
+cancel_requests(Ref, Tab) ->
+    request_manager:cancel_request(Ref),
+    cancel_requests(ets:next(Ref, Tab), Tab).
 
 handle_call({new,HostInfo,Head}, From, State) ->
     case request_manager:new_request(HostInfo, Head) of
