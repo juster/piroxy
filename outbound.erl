@@ -50,8 +50,8 @@ handle_cast(new_request, State) ->
 handle_continue(next_request, #outstate{state=idle} = State0) ->
     case request_manager:next_request() of
         null -> {noreply,State0};
-        {DataPid,Ref,Request} = Req ->
-            case relay_request(DataPid, Ref, Request, State0) of
+        {DataPid,Ref,Head} = Req ->
+            case relay_request(DataPid, Ref, Head, State0) of
                 {error,Reason} -> {stop,Reason,State0};
                 ok ->
                     case head_begin(State0#outstate{req=Req}) of
@@ -142,23 +142,30 @@ head_data(Bin, #outstate{rstate=RState0} = State) ->
         {continue, RState} ->
             {noreply, State#outstate{rstate=RState}};
         {done, StatusLine, Headers, Rest} ->
-            case phttp:status_line(StatusLine) of
-                {error,Reason} -> {stop,Reason,State};
-                {ok,Status} -> head_end(Status, Headers, Rest, State)
-            end
+            head_end(StatusLine, Headers, Rest, State)
+            %case phttp:status_line(StatusLine) of
+            %    {error,Reason} -> {stop,Reason,State};
+            %    {ok,Status} -> head_end(Status, Headers, Rest, State)
+            %end
     end.
 
-head_end(Status, Headers, Rest, State) ->
-    {DataPid, Ref, {Method,_,_}} = State#outstate.req,
-    inbound:respond(DataPid, Ref, {head,Status,Headers}),
-    case phttp:response_length(Method, Status, Headers) of
+head_end(StatusLn, Headers, Rest, State) ->
+    {Pid,Ref,ReqHead} = State#outstate.req,
+    Method = ReqHead#head.method,
+    case phttp:response_length(Method, StatusLn, Headers) of
         {ok,0} ->
-            inbound:respond(DataPid, Ref, {body,?EMPTY}),
+            ResHead = #head{method=Method, line=StatusLn,
+                            headers=Headers, bodylen=0},
+            inbound:respond(Pid, Ref, {head,ResHead}),
+            inbound:respond(Pid, Ref, {body,?EMPTY}),
             {noreply, State#outstate{rstate=null}, {continue,close_request}};
         {ok,BodyLen} ->
+            ResHead = #head{method=Method, line=StatusLn,
+                            headers=Headers, bodylen=BodyLen},
+            inbound:respond(Pid, Ref, {head,ResHead}),
             body_begin(Rest, BodyLen, State);
         {error,missing_length} ->
-            {error, {missing_length,Status,Headers}}
+            {stop, {missing_length,StatusLn,Headers}, State}
     end.
 
 body_begin(Bin, BodyLen, State) ->
@@ -201,14 +208,15 @@ send(Data, #outstate{socket=Sock, ssl=false}) ->
 send(Data, #outstate{socket=Sock, ssl=true}) ->
     ssl:send(Sock, Data).
 
-relay_request(DataPid, Ref, {Method, Url, Headers}, State) ->
-    Lines = [<<Method/binary, " ", Url/binary, " ", ?HTTP11>>,
-             fieldlist:to_binary(Headers)],
-    case send_lines(Lines, State) of
-        {error, Reason} ->
-            {error, Reason};
+relay_request(DataPid, Ref, Head, State) ->
+    #head{line=Line, headers=Headers} = Head,
+    case send_lines([Line, fieldlist:to_binary(Headers)], State) of
+        {error, Reason} -> {error, Reason};
         ok ->
-            relay_body_out(DataPid, Ref, State)
+            case Head#head.bodylen of
+                0 -> ok;
+                _ -> relay_body_out(DataPid, Ref, State)
+            end
     end.
 
 send_lines([], _) ->
@@ -216,14 +224,11 @@ send_lines([], _) ->
 
 send_lines([X|L], State) ->
     case send(X, State) of
-        {error, Reason} ->
-            {error, Reason};
+        {error,_} = Err -> Err;
         ok ->
             case send(<<?CRLF>>, State) of
-                {error, Reason} ->
-                    {error, Reason};
-                ok ->
-                    send_lines(L, State)
+                {error,_} = Err -> Err;
+                ok -> send_lines(L, State)
             end
     end.
 

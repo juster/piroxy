@@ -1,4 +1,5 @@
 -module(piclient).
+-include("phttp.hrl").
 
 -export([start/0, stop/0]).
 -export([send/2, send/3, dump/1, param_body/1]).
@@ -12,15 +13,14 @@ stop() ->
     gen_server:stop(piclient_inbound).
 
 dump({ok,Res}=Result) ->
-    {StatusLine, ResHeaders, Body} = Res,
+    {StatusLn, ResHeaders, Body} = Res,
     %%io:format("*DBG* received response:~n~w~n", [{StatusLine, ResHeaders, Body}]),
-    {{Major, Minor}, Status, _} = StatusLine,
     io:format("-{ STATUS }-------------------"
               "------------------------------~n"
-              "~s HTTP/~B.~B~n"
+              "~s~n"
               "-[ HEADERS ]------------------"
               "------------------------------~n~s",
-              [Status, Major, Minor, fieldlist:to_iolist(ResHeaders)]),
+              [StatusLn, fieldlist:to_iolist(ResHeaders)]),
     io:format("-< BODY >---------------------"
               "------------------------------~n~s~n"
               "------------------------------"
@@ -37,7 +37,7 @@ hostinfo({Schema,_,Host,Port,_,_}) ->
 hostinfo({Schema,_,Host,Port,_,_,_}) ->
     {Schema,Host,Port}.
 
-headers(UriT) ->
+default_headers(UriT) ->
     lists:foldl(fun ({K,V}, FL) -> fieldlist:add_value(K, V, FL) end,
                 [],
                 [{"host", element(3, UriT)},
@@ -56,25 +56,30 @@ param_body(Params) ->
     ParamsEnc = encode_params(Params),
     string:join([string:join([K, V], "=") || {K,V} <- ParamsEnc], "&").
 
-send(Method, Uri) ->
-    {ok,UriT} = http_uri:parse(Uri),
-    Headers = headers(UriT),
-    HostInfo = hostinfo(UriT),
-    Request = {Method, reluri(UriT), Headers},
-    inbound_static:send(piclient_inbound, HostInfo, Request).
+request_line(Method, Uri) ->
+    MethodBin = phttp:method_bin(Method),
+    UriBin = iolist_to_binary(Uri),
+    <<MethodBin/binary, " ", UriBin/binary, " ", ?HTTP11>>.
+
+send(Method, Uri) -> send(Method, Uri, ?EMPTY).
 
 send(Method, Uri, Body) ->
     {ok,UriT} = http_uri:parse(Uri),
-    CLength = if
-                  is_binary(Body) -> byte_size(Body);
-                  is_list(Body) -> length(Body)
-              end,
-    Headers = lists:foldl(fun ({K,V}, FL) -> fieldlist:add_value(K, V, FL) end,
-                          headers(UriT),
-                          [{"content-type",
-                            "application/x-www-form-urlencoded"},
-                           {"content-length",
-                            integer_to_list(CLength)}]),
+    CLength = case Body of ?EMPTY -> 0; _ -> iolist_size(Body) end,
+    case CLength of
+        0 -> Headers = default_headers(UriT);
+        _ ->
+            %% sends request bodies using smooth (not chunky) transfer
+            %% encoding.
+            Fun = fun ({K,V}, FL) -> fieldlist:add_value(K, V, FL) end,
+            Headers = lists:foldl(Fun,
+                                  default_headers(UriT),
+                                  [{"content-type",
+                                    "application/x-www-form-urlencoded"},
+                                   {"content-length",
+                                    integer_to_list(CLength)}])
+    end,
+    ReqHead = #head{method=Method, headers=Headers, bodylen=CLength,
+                    line=request_line(Method, reluri(UriT))},
     HostInfo = hostinfo(UriT),
-    Request = {Method, reluri(UriT), Headers},
-    inbound_static:send(piclient_inbound, HostInfo, Request, Body).
+    inbound_static:send(piclient_inbound, HostInfo, ReqHead, Body).

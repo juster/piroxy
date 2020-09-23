@@ -11,5 +11,6 @@
 -define(REQUEST_MAX, 256).
 -define(CHUNKSZ_MAX, 128).
 
+-record(head, {method, line, headers, bodylen}).
 -record(hstate, {buffer=?EMPTY, state=smooth, nread=0, headers=[]}).
 -record(bstate, {state=smooth, nread=0, length}).

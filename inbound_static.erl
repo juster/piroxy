@@ -99,18 +99,16 @@ handle_cast({reset, Ref}, State) ->
             true = ets:update_element(ResTab, Ref, [{#response.status, null},
                                                     {#response.headers, null},
                                                     {#response.body, []}]),
-            {noreply, State}
+            {noreply,State}
     end;
 
-handle_cast({respond, Ref, {head,StatusLine,Headers}}, State) ->
+handle_cast({respond, Ref, {head,Head}}, State) ->
+    #head{line=StatusLine, headers=Headers} = Head,
     {_ReqTab,ResTab} = State,
-    %%{{Major, Minor}, Status, _} = StatusLine,
     case ets:update_element(ResTab, Ref, [{#response.status, StatusLine},
                                           {#response.headers, Headers}]) of
-        true ->
-            {noreply, State};
-        false ->
-            {stop, {request_missing, Ref}, State}
+        true -> {noreply,State};
+        false -> {stop, {request_missing,Ref}, State}
     end;
 
 handle_cast({respond, Ref, {body,Body}}, {_ReqTab,ResTab} = State) ->
@@ -120,7 +118,7 @@ handle_cast({respond, Ref, {body,Body}}, {_ReqTab,ResTab} = State) ->
                   PrevBody -> [PrevBody|Body] % append to iolist
               end,
     ets:update_element(ResTab, Ref, {#response.body, NewBody}),
-    {noreply, State}.
+    {noreply,State}.
 
 %%new_request(HostInfo, Head) ->
 %%    case request_manager:new_request(HostInfo, Head) of

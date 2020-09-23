@@ -282,6 +282,7 @@ chunk_size(Bin1, Bin2) ->
 body_reader(chunked) ->
     %%{chunked,{between,?EMPTY}};
     {chunked,trailing_crlf};
+
 body_reader(ContentLength) when is_integer(ContentLength) ->
     {fixed,{0,ContentLength}}.
 
@@ -290,6 +291,7 @@ body_reader({chunked,State0}, Bin) ->
         {continue,B,State} -> {continue,B,{chunked,State}};
         T -> T
     end;
+
 body_reader({fixed,State0}, Bin) ->
     X = fixed(State0, Bin),
     case X of
@@ -319,14 +321,20 @@ body_length(Headers) ->
             {ok, binary_to_integer(Bin)}
     end.
 
-response_length(<<"HEAD">>, <<"200">>, _) -> {ok, 0};
-response_length(_, <<"200">>, Headers) -> body_length(Headers);
-response_length(_, <<"1",_,_>>, _) -> {ok, 0};
-response_length(_, <<"204">>, _) -> {ok, 0};
-response_length(_, <<"304">>, _) -> {ok, 0};
-response_length(<<"HEAD">>, _, _) -> {ok, 0};
-response_length(_ReqMethod, _ResStatus, ResHeaders) ->
-    body_length(ResHeaders).
+response_length_(head, <<"200">>, _) -> {ok, 0};
+response_length_(_, <<"200">>, Headers) -> body_length(Headers);
+response_length_(_, <<"1",_,_>>, _) -> {ok, 0};
+response_length_(_, <<"204">>, _) -> {ok, 0};
+response_length_(_, <<"304">>, _) -> {ok, 0};
+response_length_(head, _, _) -> {ok, 0};
+response_length_(_, _, ResHeaders) -> body_length(ResHeaders).
+
+response_length(Method, Line, Headers) ->
+    response_length_(Method, response_code(Line), Headers).
+
+response_code(StatusLn) ->
+    {ok,[_,Status,_]} = nsplit(3, StatusLn, <<" ">>),
+    Status.
 
 method_bin(get) -> <<"GET">>;
 method_bin(post) -> <<"POST">>;

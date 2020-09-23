@@ -48,17 +48,14 @@ init([]) ->
             {stop, Reason}
     end.
 
-handle_call({new_request, HostInfo, Request0}, {InPid, _Tag}, State) ->
+handle_call({new_request, HostInfo, Head}, {InPid, _Tag}, State) ->
     %% convert data types first so we can fail before opening a socket
-    Request = try convert_request(Request0)
-              catch error:badarg -> {reply, {error,badarg}, State}
-              end,
     case open_connection(HostInfo, State) of
         {error, Reason} ->
             {reply, {error,Reason}, State};
         {ok, OutPid} ->
             Ref = erlang:make_ref(),
-            ets:insert(State#rmstate.reqtab, {OutPid, InPid, Ref, Request}),
+            ets:insert(State#rmstate.reqtab, {OutPid, InPid, Ref, Head}),
             outbound:new_request(OutPid),
             {reply, {ok,Ref}, State}
     end;
@@ -69,8 +66,8 @@ handle_call({next_request}, {OutPid,_Tag}, State) ->
             {reply, null, State};
         {[], _Cont} ->
             {reply, null, State};
-        {[[InPid, Ref, Request]], _Cont} ->
-            {reply, {InPid, Ref, Request}, State}
+        {[[InPid, Ref, Head]], _Cont} ->
+            {reply, {InPid, Ref, Head}, State}
     end.
 
 handle_cast({close_request, OutPid, Ref}, State) ->
@@ -119,12 +116,6 @@ handle_info({'EXIT', Pid, Reason}, State) ->
 %%%
 %%% internal utility functions
 %%%
-
-convert_request(Request) ->
-    {Method, Uri, Headers} = Request,
-    MethodBin = phttp:method_bin(Method),
-    UriBin = unicode:characters_to_binary(Uri),
-    {MethodBin, UriBin, Headers}.
 
 %% Use a pre-existing connection to connect to the host if it already exists.
 %% If not, create a new outgoing process.
