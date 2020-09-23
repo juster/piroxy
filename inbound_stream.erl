@@ -8,7 +8,7 @@
 -include("phttp.hrl").
 
 -define(MAX_ACTIVE, 128).
--record(session, {ref, pid, index, reqbody, cache, closed=false}).
+-record(session, {ref, pid, index, reqbody=[], cache, closed=false}).
 -record(state, {bufi=0, reqi=0, buffer, restab}).
 
 -import(lists, [foreach/2, reverse/1]).
@@ -20,6 +20,9 @@
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
+body(ServerRef, RequestRef, Chunk) ->
+    gen_server:cast(ServerRef, {append_body,RequestRef,Chunk}).
+
 %%% behavior callbacks
 
 init([]) ->
@@ -30,13 +33,13 @@ init([]) ->
 terminate(_Reason, State) ->
     ets:delete(State#state.restab).
 
-handle_call({send,HostInfo,Head,Body}, From, State) ->
+handle_call({new,HostInfo,Head}, From, State) ->
     case request_manager:new_request(HostInfo, Head) of
         {error,Reason} ->
             {stop, Reason, State};
         {ok,Ref} ->
             I = State#state.reqi+1,
-            Ses = #session{ref=Ref, pid=From, index=I, reqbody=Body},
+            Ses = #session{ref=Ref, pid=From, index=I},
             ets:insert(State#state.restab, Ses),
             case is_active(Ref, State) of
                 true -> {reply, Ref, State#state{reqi=I}};
@@ -44,9 +47,25 @@ handle_call({send,HostInfo,Head,Body}, From, State) ->
             end
     end;
 
-handle_call({request,Ref,body}, _From, State) ->
-    [Res] = ets:lookup(State#state.restab, Ref),
-    {reply, {last,Res#session.reqbody}, State}.
+%% called by outgoing process to retrieve the request body
+handle_call({request_body,Ref}, _From, State) ->
+    Tab = State#state.restab,
+    [Res] = ets:lookup(Tab, Ref),
+    Body = reverse(Res#session.body),
+    case Res#session.closed of
+        true ->
+            {reply, {last,Body}, State};
+        false ->
+            ets:update(Tab, Ref, {#session.body,[]}),
+            {reply, {some,Body}, State}
+    end.
+
+handle_cast({append_body,Ref,Chunk}, State) ->
+    Tab = State#state.restab,
+    [Res] = ets:lookup(Tab, Ref),
+    Body = Res#session.body,
+    ets:update(Tab, Ref, {#session.body,[Chunk|Body]}),
+    {noreply, State}.
 
 handle_cast({close,Ref} = Msg, State) ->
     case send_if_active(Ref, Msg, State) of

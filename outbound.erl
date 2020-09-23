@@ -49,22 +49,19 @@ handle_cast(new_request, State) ->
 %% new_request notification is received (and we are idle)
 handle_continue(next_request, #outstate{state=idle} = State0) ->
     case request_manager:next_request() of
-        null ->
-            {noreply, State0};
-        {DataPid, Ref, Request} = Req ->
+        null -> {noreply,State0};
+        {DataPid,Ref,Request} = Req ->
             case relay_request(DataPid, Ref, Request, State0) of
-                {error, Reason} ->
-                    {stop, Reason, State0};
+                {error,Reason} -> {stop,Reason,State0};
                 ok ->
                     case head_begin(State0#outstate{req=Req}) of
-                        {error, Reason} ->
-                            {stop, Reason, State0};
-                        {ok, State} ->
+                        {error,Reason} -> {stop,Reason,State0};
+                        {ok,State} ->
                             % TODO: relay multiple requests at a time
                             % (needs a queue or something to track request
                             % refs)
                             %{noreply, State, {continue, next_request}}
-                            {noreply, State}
+                            {noreply,State}
                     end
             end
     end;
@@ -231,20 +228,20 @@ send_lines([X|L], State) ->
     end.
 
 relay_body_out(DataPid, Ref, State) ->
-    case inbound:request(DataPid, Ref, body) of
+    case inbound:request_body(DataPid, Ref) of
         {error, Reason} ->
             {error, Reason};
-        {more, ?EMPTY} ->
+        {some, []} ->
             relay_body_out(DataPid, Ref, State);
-        {more, Bin} ->
-            case send(Bin, State) of
+        {some, Io} ->
+            case send(Io, State) of
                 {error, Reason} ->
                     {error, Reason};
                 ok ->
                     relay_body_out(DataPid, Ref, State)
             end;
-        {last, ?EMPTY} ->
+        {last, []} ->
             ok;
-        {last, Bin} ->
-            send(Bin, State)
+        {last, Io} ->
+            send(Io, State)
     end.
