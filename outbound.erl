@@ -143,7 +143,7 @@ head_data(Bin, #outstate{rstate=RState0} = State) ->
             {noreply, State#outstate{rstate=RState}};
         {done, StatusLine, Headers, Rest} ->
             head_end(StatusLine, Headers, Rest, State)
-            %case phttp:status_line(StatusLine) of
+            %case phttp:status_split(StatusLine) of
             %    {error,Reason} -> {stop,Reason,State};
             %    {ok,Status} -> head_end(Status, Headers, Rest, State)
             %end

@@ -6,7 +6,8 @@
 -module(phttp).
 
 -export([nsplit/3, centenc/1, formenc/1, compose_uri/1]).
--export([status_line/1, method_bin/1, method_atom/1]).
+-export([status_split/1, method_bin/1, method_atom/1, version_atom/1]).
+-export([status_bin/1]).
 
 -import(lists, [reverse/1, flatten/1]).
 -include("pimsg.hrl").
@@ -73,16 +74,16 @@ compose3(_, Host, Port) ->
 compose4(Path, Query, Fragment) ->
         Path ++ Query ++ Fragment.
 
-status_line(<<"HTTP/",VerMaj," ",Status:3/binary," ">>) ->
+status_split(<<"HTTP/",VerMaj," ",Status:3/binary," ">>) ->
     {ok, {{VerMaj-$0, 0}, Status, ?EMPTY}};
-status_line(<<"HTTP/",VerMaj," ",Status:3/binary," ",Phrase/binary>>) ->
+status_split(<<"HTTP/",VerMaj," ",Status:3/binary," ",Phrase/binary>>) ->
     {ok, {{VerMaj-$0, 0}, Status, Phrase}};
-status_line(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">>) ->
+status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">>) ->
     %% Ignore a missing reason-phrase.
     {ok, {{VerMaj-$0, VerMin-$0}, Status, ?EMPTY}};
-status_line(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ", Phrase/binary>>) ->
+status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ", Phrase/binary>>) ->
     {ok, {{VerMaj-$0, VerMin-$0}, Status, Phrase}};
-status_line(Line) ->
+status_split(Line) ->
     {error, {bad_status_line,Line}}.
 
 method_bin(get) -> <<"GET">>;
@@ -92,6 +93,7 @@ method_bin(put) -> <<"PUT">>;
 method_bin(options) -> <<"OPTIONS">>;
 method_bin(delete) -> <<"DELETE">>;
 method_bin(patch) -> <<"PATCH">>;
+method_bin(connect) -> <<"CONNECT">>;
 method_bin(Method) -> exit({unknown_method, Method}).
 
 method_atom(<<"GET">>) -> get;
@@ -100,4 +102,18 @@ method_atom(<<"HEAD">>) -> head;
 method_atom(<<"PUT">>) -> put;
 method_atom(<<"OPTIONS">>) -> options;
 method_atom(<<"DELETE">>) -> delete;
-method_atom(<<"PATCH">>) -> patch.
+method_atom(<<"PATCH">>) -> patch;
+method_atom(<<"CONNECT">>) -> connect;
+method_atom(_) -> unknown.
+
+version_atom(?HTTP11) -> http11;
+version_atom(<<"HTTP/1.0">>) -> http10;
+version_atom(<<"HTTP/2.0">>) -> http20;
+version_atom(_) -> unknown.
+
+status_bin(http_bad_request) -> {ok,<<"400 Bad Request">>};
+status_bin(http_server_error) -> {ok,<<"500 Server Error">>};
+status_bin(http_not_implemented) -> {ok,<<"501 Not Implemented">>};
+status_bin(http_bad_gateway) -> {ok,<<"502 Bad Gateway">>};
+status_bin(http_ver_not_supported) -> {ok,<<"505 HTTP Version Not Supported">>};
+status_bin(_) -> not_found.

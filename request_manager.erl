@@ -35,7 +35,7 @@ close_request(Ref) ->
     gen_server:cast(?MODULE, {close_request, self(), Ref}).
 
 cancel_request(Ref) ->
-    gen_server:call(?MODULE, {cancel_request, Ref}).
+    gen_server:cast(?MODULE, {cancel_request, Ref}).
 
 %%% gen_server callbacks
 %%%

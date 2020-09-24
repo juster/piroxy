@@ -7,7 +7,7 @@
 -module(pimsg).
 
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
--export([body_length/1, response_code/1, response_length/3]).
+-export([body_length/1, request_length/2, response_code/1, response_length/3]).
 
 -import(lists, [reverse/1]).
 -include("pimsg.hrl").
@@ -212,6 +212,10 @@ response_length_(_, _, ResHeaders) -> body_length(ResHeaders).
 
 response_length(Method, Line, Headers) ->
     response_length_(Method, response_code(Line), Headers).
+
+request_length(connect, _) -> 0;
+request_length(get, _) -> 0;
+request_length(_, Headers) -> body_length(Headers).
 
 %%%
 %%% internal functions
