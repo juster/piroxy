@@ -4,8 +4,8 @@
 -include("pimsg.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--record(outstate, {state, socket, ssl, rstate=null, close=false, req=null,
-                   buffer=?EMPTY, lastrecv}).
+-record(outstate, {state, socket, ssl, rstate=null, close=false,
+                   req=null, lastrecv}).
 
 -export([connect/3, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
@@ -28,7 +28,7 @@ init([Host, Port, false]) ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
             {ok, clock_recv(#outstate{state=idle, socket=Sock,
-                                      ssl=false, buffer=?EMPTY})};
+                                      ssl=false})};
         {error, Reason} ->
             error(Reason)
     end;
@@ -38,7 +38,7 @@ init([Host, Port, true]) ->
     case ssl:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
             {ok, clock_recv(#outstate{state=idle, socket=Sock,
-                                      ssl=true, buffer=?EMPTY})};
+                                      ssl=true})};
         {error, Reason} ->
             error(Reason)
     end.
@@ -154,8 +154,7 @@ terminate(_Reason, #outstate{socket=Sock, ssl=true}) ->
 
 head_begin(State) ->
     HReader = pimsg:head_reader(),
-    head_data(State#outstate.buffer,
-              State#outstate{state=head, rstate=HReader}).
+    head_data(?EMPTY, State#outstate{state=head, rstate=HReader}).
 
 head_data(?EMPTY, State) -> {ok,State};
 head_data(Bin, #outstate{rstate=RState0} = State) ->
