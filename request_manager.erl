@@ -1,13 +1,11 @@
 -module(request_manager).
 -behavior(gen_server).
 
+-import(lists, [flatmap/2, reverse/1, foreach/2]).
 -include_lib("kernel/include/logger.hrl").
 
--define(OUTGOING_ERR_MAX, 3).
-
--record(rmstate, {hosttab, reqtab, pidtab}).
-
--record(hostconn, {hostinfo, pid, nfail=0}).
+-define(TARGET_FAIL_MAX, 3).
+-define(REQUEST_FAIL_MAX, 5).
 
 -export([start_link/0, new_request/2, next_request/0, close_request/1]).
 -export([cancel_request/1]).
@@ -18,7 +16,7 @@
 %%% exported interface functions
 
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], [{debug,[trace]}]).
 
 %%% called by the inbound process
 
@@ -42,130 +40,206 @@ cancel_request(Ref) ->
 
 init([]) ->
     case application:ensure_all_started(ssl) of
-        {ok, _} ->
+        {ok,_} ->
             process_flag(trap_exit, true),
-            HostTab = ets:new(hosts, [set,private,{keypos,#hostconn.hostinfo}]),
-            ReqTab = ets:new(requests, [bag,private]),
-            PidTab = ets:new(pids, [set,private]),
-            {ok, #rmstate{hosttab=HostTab, reqtab=ReqTab, pidtab=PidTab}};
-        {error, Reason} ->
-            {stop, Reason}
+            Tab = ets:new(?MODULE, [set,private]),
+            {ok,Tab};
+        {error,Reason} ->
+            {stop,Reason}
     end.
 
-handle_call({new_request, HostInfo, Head}, {InPid, _Tag}, State) ->
+handle_call({new_request,Target,Head}, {InPid,_Tag}, Tab) ->
     %% convert data types first so we can fail before opening a socket
-    case open_connection(HostInfo, State) of
-        {error, Reason} ->
-            {reply, {error,Reason}, State};
-        {ok, OutPid} ->
-            Ref = erlang:make_ref(),
-            ets:insert(State#rmstate.reqtab, {OutPid, InPid, Ref, Head}),
+    case connect_target(Tab, Target) of
+        {error,Reason} ->
+            {reply, {error,Reason}, Tab};
+        {ok,OutPid} ->
+            Ref = insert_request(Tab, {Target,Head,InPid}),
+            %% notify outbound there is a request waiting for them
             outbound:new_request(OutPid),
-            {reply, {ok,Ref}, State}
+            {reply, {ok,Ref}, Tab}
     end;
 
-handle_call({next_request}, {OutPid,_Tag}, State) ->
-    case ets:match(State#rmstate.reqtab, {OutPid, '$1', '$2', '$3'}, 1) of
-        '$end_of_table' ->
-            {reply, null, State};
-        {[], _Cont} ->
-            {reply, null, State};
-        {[[InPid, Ref, Head]], _Cont} ->
-            {reply, {InPid, Ref, Head}, State}
-    end.
+handle_call({next_request}, {OutPid,_}, Tab) ->
+    {reply, pop_request(Tab, OutPid), Tab}.
 
-handle_cast({close_request, OutPid, Ref}, State) ->
-    case ets:match(State#rmstate.reqtab, {OutPid, '$1', Ref, '_'}, 1) of
-        '$end_of_table' ->
-            {stop, {unknown_request, Ref}, State};
-        {[], _} ->
-            {stop, {unknown_request, Ref}, State};
-        {[[InPid]], _} ->
+%% request is gracefully closed (i.e. finished)
+handle_cast({close_request,OutPid,Ref}, Tab) ->
+    case lookup_request(Tab, Ref) of
+        not_found -> error({not_found,Ref});
+        {_,_,_,InPid,_} ->
+            true = ets:update_element(Tab, {pid,OutPid}, {3,null}),
+            ets:delete(Tab, {request,Ref}),
             inbound:close(InPid, Ref),
-            ets:match_delete(State#rmstate.reqtab, {OutPid, InPid, Ref, '_'}),
-            {noreply, State}
+            {noreply,Tab}
     end;
 
-handle_cast({cancel_request,_Ref}, State) ->
+handle_cast({cancel_request,_Ref,_InPid}, Tab) ->
     %% XXX: not yet implemented
-    {noreply, State}.
+    {stop,not_implemented,Tab}.
 
-handle_info({'EXIT', Pid, Reason}, State) ->
-    %% A normal exit can happen if the connection automatically closes when
-    %% finished.
-    case cleanup_pid(Pid, State) of
-        {error, Reason} ->
-            {stop, Reason, State};
-        {ok, HostInfo} ->
-            %% Reset the failure counter or increment it.
-            HostTab = State#rmstate.hosttab,
-            case Reason of
-                normal ->
-                    ets:update_element(HostTab, HostInfo, {#hostconn.nfail, 0});
+%% A normal exit can happen if the connection automatically closes when
+%% finished.
+handle_info({'EXIT',OldPid,normal}, Tab) ->
+    case lookup_pid(Tab, OldPid) of
+        not_found ->
+            {stop,{not_found,OldPid},Tab};
+        {_,Target,null} ->
+            {_,_,Reqs,_} = lookup_target(Tab, Target),
+            %% make sure there are more requests for this target before
+            %% reconnecting it
+            case Reqs of
+                [] ->
+                    ets:delete(Tab, {pid,OldPid}),
+                    {noreply, Tab};
                 _ ->
-                    ets:update_counter(HostTab, HostInfo, {#hostconn.nfail, 1})
-            end,
-            %% Spawn a new outgoing process if there are more requests.
-            case has_requests(Pid, State) of
-                true ->
-                    case open_connection(HostInfo, State) of
-                        {error, Reason} ->
-                            abort_requests(Pid, State, Reason);
-                        {ok, NewPid} ->
-                            ets:update_element(State#rmstate.reqtab, Pid,
-                                               {1, NewPid})
-                    end;
-                false ->
-                    ok
-            end,
-            {noreply, State}
+                    case reconnect_target(Tab, Target, OldPid) of
+                        {error,Reason} -> {stop,Reason,Tab};
+                        {ok,_NewPid} -> {noreply,Tab}
+                    end
+            end;
+        {_,_,Ref} ->
+            %% if Req is not null, then it was not closed by outbound
+            {stop,{request_not_closed,Ref},Tab}
+    end;
+
+%% outbound process failed abnormally.
+handle_info({'EXIT',OldPid,Reason}, Tab) ->
+    case lookup_pid(Tab, OldPid) of
+        {_,Target,null} ->
+            %% outbound did not even get a chance to fetch a request
+            case fail_target(Tab, Target) of
+                N when N > ?TARGET_FAIL_MAX ->
+                    ets:delete(Tab, {pid,OldPid}),
+                    reset_target(Tab, Target, Reason),
+                    {noreply,Tab};
+                _ ->
+                    case reconnect_target(Tab, Target, OldPid) of
+                        {error,Reason} -> {stop,Reason,Tab};
+                        {ok,_} -> {noreply,Tab}
+                    end
+            end;
+        {_,Target,Ref} ->
+            %% stop retrying the request if it keeps failing
+            case fail_request(Tab, Ref) of
+                N when N > ?REQUEST_FAIL_MAX ->
+                    {_,_,_,InPid,_} = lookup_request(Tab, Ref),
+                    inbound:fail(InPid, Ref, Reason),
+                    ets:delete(Tab, {request,Ref}),
+                    ets:delete(Tab, {pid,OldPid});
+                _ ->
+                    %% reconnect the target and re-insert the request to
+                    %% the front of the target's queue
+                    case reconnect_target(Tab, Target, OldPid) of
+                        {error,Reason} -> {stop,Reason,Tab};
+                        {ok,_Pid} -> set_next_request(Tab, Target, Ref)
+                    end
+            end
     end.
 
 %%%
 %%% internal utility functions
 %%%
 
-%% Use a pre-existing connection to connect to the host if it already exists.
-%% If not, create a new outgoing process.
-%%
-open_connection(HostInfo, #rmstate{hosttab=HostTab,pidtab=PidTab}) ->
-    case ets:lookup(HostTab, HostInfo) of
-        [#hostconn{pid=OutPid}] when OutPid =/= null ->
-            {ok, OutPid};
-        [#hostconn{pid=null,nfail=Nfail}] when Nfail > ?OUTGOING_ERR_MAX ->
-            {error, {max_connection_fail, Nfail}};
+%% Requirements:
+%%  1. Store new requests {inbound Pid, Head, Ref} so they can be queued and
+%%     sent to outbound Pids.
+%%  2. Crossref hosts to outbound Pids when deciding whether to spawn a
+%%     new outbound Pid or whether to reuse an existing one.
+%%  3. Crossref outbound Pids to active requests so that I know which requests
+%%     failed, when an outbound Pid exits on error.
+
+%% Record types:
+%% 1. {{request,Ref}, Target, Head, InPid, Nfail}
+%% 2. {{target,Target}, Pid, Reqs, Nfail}
+%% 3. {{pid,Pid}, Target, Req}
+
+lookup(Tab, Key) ->
+    case ets:lookup(Tab, Key) of
+        [] -> not_found;
+        [T] -> T
+    end.
+
+lookup_request(Tab, Ref) -> lookup(Tab, {request,Ref}).
+lookup_pid(Tab, Pid) -> lookup(Tab, {pid,Pid}).
+lookup_target(Tab, Target) -> lookup(Tab, {target,Target}).
+
+%% When a request is added, append it to the Target's request queue.
+insert_request(Tab, {Target,Head,InPid}) ->
+    Ref = make_ref(),
+    ets:insert(Tab, {{request,Ref},Target,Head,InPid,0}),
+    {_,_,Reqs,_} = lookup_target(Tab, Target),
+    true = ets:update_element(Tab, {target,Target}, {3,[Ref|Reqs]}),
+    Ref.
+
+%% Bypass the queue.
+set_next_request(Tab, Target, Ref) ->
+    {_,_,Reqs0,_} = lookup_target(Tab, Target),
+    Reqs = reverse([Ref|reverse(Reqs0)]),
+    true = ets:update_element(Tab, {target,Target}, {3,Reqs}).
+
+%% Pop a new request from the request queue and associate it with an
+%% outbound Pid.
+pop_request(Tab, Pid) ->
+    {_,Target,_} = lookup_pid(Tab, Pid),
+    {_,_,Reqs0,_} = lookup_target(Tab, Target),
+    Ref = case Reqs0 of
+              [] -> null;
+              _ ->
+                  [Req|Reqs] = reverse(Reqs0),
+                  true = ets:update_element(Tab, {target,Target},
+                                            {3, reverse(Reqs)}),
+                  Req
+          end,
+    true = ets:update_element(Tab, {pid,Pid}, {3,Ref}),
+    case Ref of
+        null -> null;
         _ ->
-            %% No matching record or pid is null.
-            {ok, OutPid} = apply(outbound, connect, tuple_to_list(HostInfo)),
-            %% Overwrite any existing hostconn record for that host.
-            ets:insert(HostTab, #hostconn{hostinfo=HostInfo, pid=OutPid}),
-            ets:insert(PidTab, {OutPid, HostInfo}),
-            {ok, OutPid}
+            {_,_Target,Head,InPid,_} = lookup_request(Tab, Ref),
+            {InPid,Ref,Head}
     end.
 
-cleanup_pid(OutPid, #rmstate{pidtab=PidTab,hosttab=HostTab}) ->
-    case ets:lookup(PidTab, OutPid) of
-        [] ->
-            {error, {unknown_pid, OutPid}};
-        [{_, HostInfo}] ->
-            ets:delete(PidTab, OutPid),
-            ets:update_element(HostTab, HostInfo, {#hostconn.pid, null}),
-            {ok, HostInfo}
+reset_target(Tab, Target, Reason) ->
+    {_,_,Reqs,_} = lookup_target(Tab, Target),
+    foreach(fun (Ref) ->
+                    {_,_,_,InPid,_} = lookup_request(Tab, Ref),
+                    inbound:fail_request(InPid, Ref, Reason),
+                    ets:delete(Tab, {request,Ref})
+            end, Reqs),
+    ets:update_element({target,Target}, [{2,null},{3,[]}]).
+
+fail_target(Tab, Target) ->
+    {_,_,_,Nfail} = lookup_target(Tab, Target),
+    ets:update_element(Tab, {target,Target}, {4,Nfail+1}),
+    Nfail+1.
+
+fail_request(Tab, Ref) ->
+    {_,_,_,_,Nfail} = lookup_request(Tab, Ref),
+    ets:update_element(Tab, {request,Ref}, {5,Nfail+1}),
+    Nfail+1.
+
+connect_target(Tab, Target) ->
+    case lookup_target(Tab, Target) of
+        {_,Pid,_,_} -> {ok,Pid};
+        not_found ->
+            case apply(outbound, connect, tuple_to_list(Target)) of
+                {error,_} = Err -> Err;
+                {ok,Pid} ->
+                    %% initialize empty request queue
+                    ets:insert(Tab, {{target,Target}, Pid, [], 0}),
+                    %% outbound request is null, starts off idle
+                    ets:insert(Tab, {{pid,Pid}, Target, null}),
+                    {ok,Pid}
+            end
     end.
 
-has_requests(OutPid, State) ->
-    case ets:match(State#rmstate.reqtab, OutPid, 1) of
-        '$end_of_table' ->
-            false;
-        [] ->
-            false;
-        [_] ->
-            true
+reconnect_target(Tab, Target, OldPid) ->
+    case apply(outbound, connect, tuple_to_list(Target)) of
+        {error,_} = Err -> Err;
+        {ok,Pid} ->
+            %% do not modify the request queue of the target
+            true = ets:update_element(Tab, {target,Target}, {2,Pid}),
+            ets:delete(Tab, {pid,OldPid}),
+            ets:insert(Tab, {{pid,Pid}, Target, null}),
+            {ok,Pid}
     end.
-
-abort_requests(OutPid, State, Reason) ->
-    L = ets:lookup(State#rmstate.reqtab, OutPid),
-    lists:foreach(fun ({_, InPid, Ref}) ->
-                          inbound:fail(InPid, Ref, Reason)
-                  end, L),
-    ets:delete(State#rmstate.reqtab, OutPid).
