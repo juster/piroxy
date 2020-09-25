@@ -2,7 +2,7 @@
 -include("pimsg.hrl").
 
 -export([start/0, stop/0]).
--export([send/2, send/3, dump/1, param_body/1]).
+-export([send/2, send/3, dump/1, dumpsend/2, dumpsend/3, param_body/1]).
 
 start() ->
     request_manager:start_link(),
@@ -26,10 +26,7 @@ dump({ok,Res}=Result) ->
               "------------------------------"
               "------------------------------~n",
               [Body]),
-    Result;
-
-dump(X) ->
-    X.
+    ok.
 
 hostinfo({Schema,_,Host,Port,_,_}) ->
     {Schema,Host,Port};
@@ -83,3 +80,9 @@ send(Method, Uri, Body) ->
                     line=request_line(Method, reluri(UriT))},
     HostInfo = hostinfo(UriT),
     inbound_static:send(piclient_inbound, HostInfo, ReqHead, Body).
+
+dumpsend(Method, Uri) ->
+    dump(send(Method, Uri)).
+
+dumpsend(Method, Uri, Body) ->
+    dump(send(Method, Uri, Body)).

@@ -5,7 +5,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 -record(outstate, {state, socket, ssl, rstate=null, close=false, req=null,
-                   buffer=?EMPTY}).
+                   buffer=?EMPTY, lastrecv}).
 
 -export([connect/3, new_request/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
@@ -24,23 +24,27 @@ new_request(Pid) ->
 %%% behavior functions
 
 init([Host, Port, false]) ->
+    {ok,_} = timer:send_interval(100, heartbeat),
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
-            {ok, #outstate{state=idle, socket=Sock, ssl=false, buffer=?EMPTY}};
+            {ok, clock_recv(#outstate{state=idle, socket=Sock,
+                                      ssl=false, buffer=?EMPTY})};
         {error, Reason} ->
             error(Reason)
     end;
 
 init([Host, Port, true]) ->
+    {ok,_} = timer:send_interval(100, heartbeat),
     case ssl:connect(Host, Port, [binary, {packet, 0}]) of
         {ok, Sock} ->
-            {ok, #outstate{state=idle, socket=Sock, ssl=true, buffer=?EMPTY}};
+            {ok, clock_recv(#outstate{state=idle, socket=Sock,
+                                      ssl=true, buffer=?EMPTY})};
         {error, Reason} ->
             error(Reason)
     end.
 
-handle_call(_Msg, _From, _State) ->
-    error(unimplemented).
+handle_call(_Msg, _From, State) ->
+    {noreply, not_implemented, State}.
 
 handle_cast(new_request, State) ->
     {noreply, State, {continue, next_request}}.
@@ -54,14 +58,15 @@ handle_continue(next_request, #outstate{state=idle} = State0) ->
             case relay_request(DataPid, Ref, Head, State0) of
                 {error,Reason} -> {stop,Reason,State0};
                 ok ->
-                    case head_begin(State0#outstate{req=Req}) of
+                    State1 = clock_recv(State0#outstate{req=Req}),
+                    case head_begin(State1) of
                         {error,Reason} -> {stop,Reason,State0};
-                        {ok,State} ->
+                        {ok,State2} ->
                             % TODO: relay multiple requests at a time
                             % (needs a queue or something to track request
                             % refs)
                             %{noreply, State, {continue, next_request}}
-                            {noreply,State}
+                            {noreply,State2}
                     end
             end
     end;
@@ -73,34 +78,40 @@ handle_continue(next_request, State) ->
 handle_continue(close_request, State0) ->
     case State0#outstate.req of
         null ->
-            {stop, no_active_request, State0};
+            %% should not happen
+            {stop, internal_error, State0};
         {_,Ref,_} ->
             request_manager:close_request(Ref),
-            case State0#outstate.close of
-                true ->
+            case {State0#outstate.close, State0#outstate.ssl} of
+                {true,false} ->
                     %% The last response requested that we close the connection.
+                    ok = gen_tcp:shutdown(State0#outstate.socket, write),
                     {stop, normal, State0};
-                false ->
+                {true,true} ->
+                    %% The last response requested that we close the connection.
+                    ok = ssl:shutdown(State0#outstate.socket, write),
+                    {stop, normal, State0};
+                {false,_} ->
                     State = State0#outstate{state=idle, rstate=null, req=null},
                     {noreply, State, {continue, next_request}}
             end
     end.
 
 handle_info({tcp_closed, _}, State) ->
-    {stop, normal, State};
+    {stop, normal, State#outstate{socket=null}};
 
 handle_info({tcp_error, Reason}, State) ->
     {stop, Reason, State};
 
 handle_info({tcp, _Sock, Data}, #outstate{state=head} = State) ->
-    head_data(Data, State);
+    head_data(Data, clock_recv(State));
 
 handle_info({tcp, _Sock, Data}, #outstate{state=body} = State) ->
-    body_data(Data, State);
+    body_data(Data, clock_recv(State));
 
-handle_info({tcp, _Sock, Bin}, State) ->
-    %% TODO: shutdown socket?
-    {stop, {unexpected_recv, Bin}, State};
+handle_info({tcp, _Sock, _Bin}, #outstate{state=idle} = State) ->
+    %% ignore data when receiving while in the idle state
+    {noreply, State};
 
 handle_info({ssl_closed, _}, State) ->
     {stop, normal, State#outstate{socket=null}};
@@ -116,7 +127,19 @@ handle_info({ssl, _Sock, Data}, State = #outstate{state=body}) ->
 
 handle_info({ssl, _Sock, Bin}, State) ->
     %% TODO: shutdown socket?
-    {stop, {unexpected_recv, Bin}, State}.
+    {stop, {unexpected_recv, Bin}, State};
+
+handle_info(heartbeat, State) ->
+    Delta = erlang:convert_time_unit(erlang:system_time() - State#outstate.lastrecv,
+                                     native, millisecond),
+    if
+        State#outstate.state =:= idle ->
+            {noreply, State};
+        Delta > ?REQUEST_TIMEOUT ->
+            {stop, timeout, State};
+        true ->
+            {noreply, State}
+    end.
 
 terminate(_Reason, #outstate{socket=null}) ->
     ok;
@@ -201,6 +224,9 @@ body_data(Data, #outstate{rstate=RState0} = State) ->
     end.
 
 %%% request helper functions
+
+clock_recv(State) ->
+    State#outstate{lastrecv=erlang:system_time()}.
 
 send(Data, #outstate{socket=Sock, ssl=false}) ->
     gen_tcp:send(Sock, Data);

@@ -27,8 +27,8 @@ server(Pid, Listen) ->
 loop(Socket, InPid, HttpState, Reader) ->
     receive
         {tcp,_,Data} ->
-            io:format("*DBG* loop: ~p~n", [{socket,Socket,httpState,HttpState,
-                                            data,Data}]),
+            ?DBG("loop", {socket,Socket,httpState,HttpState,
+                          data,Data}),
             recv(Socket, InPid, HttpState, Reader, Data);
         {tcp_closed, _Sock} ->
             io:format("*DBG* [loop] tcp_closed~n"),

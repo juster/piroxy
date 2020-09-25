@@ -3,9 +3,7 @@
 
 -import(lists, [flatmap/2, reverse/1, foreach/2]).
 -include_lib("kernel/include/logger.hrl").
-
--define(TARGET_FAIL_MAX, 3).
--define(REQUEST_FAIL_MAX, 5).
+-include("pimsg.hrl").
 
 -export([start_link/0, new_request/2, next_request/0, close_request/1]).
 -export([cancel_request/1]).
@@ -65,14 +63,11 @@ handle_call({next_request}, {OutPid,_}, Tab) ->
 
 %% request is gracefully closed (i.e. finished)
 handle_cast({close_request,OutPid,Ref}, Tab) ->
-    case lookup_request(Tab, Ref) of
-        not_found -> error({not_found,Ref});
-        {_,_,_,InPid,_} ->
-            true = ets:update_element(Tab, {pid,OutPid}, {3,null}),
-            ets:delete(Tab, {request,Ref}),
-            inbound:close(InPid, Ref),
-            {noreply,Tab}
-    end;
+    {_,_,_,InPid,_} = lookup_request(Tab, Ref),
+    true = ets:update_element(Tab, {pid,OutPid}, {3,null}),
+    ets:delete(Tab, {request,Ref}),
+    inbound:close(InPid, Ref),
+    {noreply,Tab};
 
 handle_cast({cancel_request,_Ref,_InPid}, Tab) ->
     %% XXX: not yet implemented
@@ -90,6 +85,8 @@ handle_info({'EXIT',OldPid,normal}, Tab) ->
             %% reconnecting it
             case Reqs of
                 [] ->
+                    %% delete target entry so that a new Pid is spawned
+                    ets:delete(Tab, {target,Target}),
                     ets:delete(Tab, {pid,OldPid}),
                     {noreply, Tab};
                 _ ->
@@ -100,7 +97,7 @@ handle_info({'EXIT',OldPid,normal}, Tab) ->
             end;
         {_,_,Ref} ->
             %% if Req is not null, then it was not closed by outbound
-            {stop,{request_not_closed,Ref},Tab}
+            {stop,internal_error,Tab}
     end;
 
 %% outbound process failed abnormally.

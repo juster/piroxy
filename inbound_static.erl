@@ -16,23 +16,23 @@
 -record(response, {ref, status, headers, body=[]}).
 
 -export([start_link/0, start_link/1, send/3, send/4]).
--export([init/1, terminate/2, handle_cast/2, handle_call/3]).
+-export([init/1, handle_cast/2, handle_call/3]).
 
 %%%
 %%% new interface functions
 %%%
 
 start_link() ->
-    gen_server:start_link(?MODULE, [], [{timeout,?TIMEOUT}]).
+    gen_server:start_link(?MODULE, [], []).
 
 start_link(Name) ->
-    gen_server:start_link({local, Name}, ?MODULE, [], [{timeout,?TIMEOUT}]).
+    gen_server:start_link({local, Name}, ?MODULE, [], []).
 
 send(ServerRef, HostInfo, Head) ->
     send(ServerRef, HostInfo, Head, []).
 
 send(ServerRef, HostInfo, Head, Body) ->
-    gen_server:call(ServerRef, {send,HostInfo,Head,Body}).
+    gen_server:call(ServerRef, {send,HostInfo,Head,Body}, infinity).
 
 %%%
 %%% behavior callbacks
@@ -41,11 +41,6 @@ send(ServerRef, HostInfo, Head, Body) ->
 init([]) ->
     {ok, {ets:new(requests, [set,private,{keypos,#request.ref}]),
           ets:new(responses, [set,private,{keypos,#response.ref}])}}.
-
-terminate(_Reason, State) ->
-    {ReqTab,ResTab} = State,
-    ets:delete(ReqTab),
-    ets:delete(ResTab).
 
 handle_call({new, HostInfo, Head}, From, State) ->
     case request_manager:new_request(HostInfo, Head) of
@@ -118,7 +113,17 @@ handle_cast({respond, Ref, {body,Body}}, {_ReqTab,ResTab} = State) ->
                   PrevBody -> [PrevBody|Body] % append to iolist
               end,
     ets:update_element(ResTab, Ref, {#response.body, NewBody}),
-    {noreply,State}.
+    {noreply,State};
+
+handle_cast({fail,Ref,Reason}, {ReqTab,ResTab}=State) ->
+    case ets:lookup(ReqTab, Ref) of
+        [] -> {noreply, State};
+        [Req] ->
+            ets:delete(ReqTab, Ref),
+            ets:delete(ResTab, Ref),
+            gen_server:reply(Req#request.from, {error,Reason}),
+            {noreply, State}
+    end.
 
 %%new_request(HostInfo, Head) ->
 %%    case request_manager:new_request(HostInfo, Head) of

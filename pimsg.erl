@@ -139,7 +139,7 @@ chunk_size(Bin1, Bin2) ->
         {error,_} = T -> T;
         {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
         {ok,Line,Rest} ->
-            ?DBG("chunk_size", {line,Line}),
+            %%?DBG("chunk_size", {line,Line}),
             Hex = case binary:match(Line, <<";">>) of
                       nomatch -> Line;
                       {Pos,_Len} -> binary_part(Line, 0, Pos)
@@ -187,7 +187,7 @@ body_length(Headers) ->
             {error, missing_length};
         {?EMPTY, Bin} ->
             %% XXX: not precise, potentially buggy/insecure. needs a rewrite.
-            io:format("*DBG* transfer-encoding: ~s~n", [Bin]),
+            %%io:format("*DBG* transfer-encoding: ~s~n", [Bin]),
             case binary:match(Bin, <<"chunked">>) of
                 nomatch ->
                     {error, missing_length};
