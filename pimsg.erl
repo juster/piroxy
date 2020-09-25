@@ -115,9 +115,8 @@ chunk({between,Bin1}, Bin2, L) ->
 
 chunk({inside,I1,N}, Bin1, L) ->
     case fixed({I1,N}, Bin1) of
-        {skip,I2} ->
-            Bin2 = binary_part(Bin1, 0, I2),
-            {continue, reverse([Bin2|L]), {inside,I1+I2,N}};
+        {continue,Bin2,{I2,N}} ->
+            {continue, reverse([Bin2|L]), {inside,I2,N}};
         {done,Bin2,Bin3} ->
             chunk(trailing_crlf, Bin3, [Bin2|L])
     end;
@@ -140,6 +139,7 @@ chunk_size(Bin1, Bin2) ->
         {error,_} = T -> T;
         {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
         {ok,Line,Rest} ->
+            ?DBG("chunk_size", {line,Line}),
             Hex = case binary:match(Line, <<";">>) of
                       nomatch -> Line;
                       {Pos,_Len} -> binary_part(Line, 0, Pos)
@@ -157,8 +157,8 @@ chunk_size(Bin1, Bin2) ->
 %% Pass the body_reader the result of body_length.
 %% Returns the initial state of the reader.
 body_reader(chunked) ->
-    %%{chunked,{between,?EMPTY}};
-    {chunked,trailing_crlf};
+    {chunked,{between,?EMPTY}};
+    %%{chunked,trailing_crlf};
 
 body_reader(ContentLength) when is_integer(ContentLength) ->
     {fixed,{0,ContentLength}}.
