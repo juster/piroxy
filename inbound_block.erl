@@ -1,4 +1,4 @@
-%%% incoming_static
+%%% inbound_static
 %%%
 %%% Implements all of the "incoming" gen_server callbacks as well as new
 %%% interface functions which send requests manually.
@@ -6,7 +6,7 @@
 %%% Blocks on sends, calling send does not return until the HTTP response
 %%% has been received. The response is returned as the result of the send.
 
--module(inbound_static).
+-module(inbound_block).
 -behavior(gen_server).
 -include("phttp.hrl").
 

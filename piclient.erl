@@ -6,7 +6,7 @@
 
 start() ->
     request_manager:start_link(),
-    inbound_static:start_link(piclient_inbound),
+    inbound_block:start_link(piclient_inbound),
     ok.
 
 stop() ->
@@ -79,7 +79,7 @@ send(Method, Uri, Body) ->
     ReqHead = #head{method=Method, headers=Headers, bodylen=CLength,
                     line=request_line(Method, reluri(UriT))},
     HostInfo = hostinfo(UriT),
-    inbound_static:send(piclient_inbound, HostInfo, ReqHead, Body).
+    inbound_block:send(piclient_inbound, HostInfo, ReqHead, Body).
 
 dumpsend(Method, Uri) ->
     dump(send(Method, Uri)).
