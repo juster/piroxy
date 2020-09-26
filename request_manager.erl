@@ -48,15 +48,11 @@ init([]) ->
 
 handle_call({new_request,Target,Head}, {InPid,_Tag}, Tab) ->
     %% convert data types first so we can fail before opening a socket
-    case connect_target(Tab, Target) of
-        {error,Reason} ->
-            {reply, {error,Reason}, Tab};
-        {ok,OutPid} ->
-            Ref = insert_request(Tab, {Target,Head,InPid}),
-            %% notify outbound there is a request waiting for them
-            outbound:new_request(OutPid),
-            {reply, {ok,Ref}, Tab}
-    end;
+    OutPid = connect_target(Tab, Target),
+    Ref = insert_request(Tab, {Target,Head,InPid}),
+    %% notify outbound there is a request waiting for them
+    outbound:new_request(OutPid),
+    {reply, {ok,Ref}, Tab};
 
 handle_call({next_request}, {OutPid,_}, Tab) ->
     {reply, pop_request(Tab, OutPid), Tab}.
@@ -95,7 +91,7 @@ handle_info({'EXIT',OldPid,normal}, Tab) ->
                         {ok,_NewPid} -> {noreply,Tab}
                     end
             end;
-        {_,_,Ref} ->
+        {_,_,_Ref} ->
             %% if Req is not null, then it was not closed by outbound
             {stop,internal_error,Tab}
     end;
@@ -217,17 +213,14 @@ fail_request(Tab, Ref) ->
 
 connect_target(Tab, Target) ->
     case lookup_target(Tab, Target) of
-        {_,Pid,_,_} -> {ok,Pid};
+        {_,Pid,_,_} -> Pid;
         not_found ->
-            case apply(outbound, connect, tuple_to_list(Target)) of
-                {error,_} = Err -> Err;
-                {ok,Pid} ->
-                    %% initialize empty request queue
-                    ets:insert(Tab, {{target,Target}, Pid, [], 0}),
-                    %% outbound request is null, starts off idle
-                    ets:insert(Tab, {{pid,Pid}, Target, null}),
-                    {ok,Pid}
-            end
+            Pid = apply(outbound, connect, tuple_to_list(Target)),
+            %% initialize empty request queue
+            ets:insert(Tab, {{target,Target}, Pid, [], 0}),
+            %% outbound request is null, starts off idle
+            ets:insert(Tab, {{pid,Pid}, Target, null}),
+            Pid
     end.
 
 reconnect_target(Tab, Target, OldPid) ->

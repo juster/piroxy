@@ -1,156 +1,141 @@
 -module(outbound).
--behavior(gen_server).
 
 -include("pimsg.hrl").
 -include_lib("kernel/include/logger.hrl").
+-import(erlang, [system_time/0, convert_time_unit/3]).
 
 -record(outstate, {state, socket, ssl, rstate=null, close=false,
                    req=null, lastrecv}).
 
 -export([connect/3, new_request/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2,
-         terminate/2]).
+
+%%% external functions
+%%%
 
 connect(http, Host, Port) ->
-    gen_server:start_link(?MODULE, [Host, Port, false], []);
+    spawn_link(fun () -> start(Host, Port, false) end);
 
 connect(https, Host, Port) ->
-    gen_server:start_link(?MODULE, [Host, Port, true], []).
+    spawn_link(fun () -> start(Host, Port, true) end).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
-    gen_server:cast(Pid, new_request).
+    Pid ! new_request,
+    ok.
 
-%%% behavior functions
+%%% internal functions
+%%%
 
-init([Host, Port, false]) ->
+start(Host, Port, false) ->
     {ok,_} = timer:send_interval(100, heartbeat),
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
+        {error, Reason} -> exit(Reason);
         {ok, Sock} ->
-            {ok, clock_recv(#outstate{state=idle, socket=Sock,
-                                      ssl=false})};
-        {error, Reason} ->
-            error(Reason)
+            State = clock_recv(#outstate{state=idle, socket=Sock, ssl=false}),
+            loop(State)
     end;
 
-init([Host, Port, true]) ->
+start(Host, Port, true) ->
     {ok,_} = timer:send_interval(100, heartbeat),
     case ssl:connect(Host, Port, [binary, {packet, 0}]) of
-        {ok, Sock} ->
-            {ok, clock_recv(#outstate{state=idle, socket=Sock,
-                                      ssl=true})};
-        {error, Reason} ->
-            error(Reason)
+        {error,Reason} -> exit(Reason);
+        {ok,Sock} ->
+            State = clock_recv(#outstate{state=idle, socket=Sock, ssl=true}),
+            loop(State)
     end.
 
-handle_call(_Msg, _From, State) ->
-    {noreply, not_implemented, State}.
+loop(State) ->
+    receive
+        new_request ->
+            next_request(State);
+        {tcp_closed, _} ->
+            ok;
+        {ssl_closed, _} ->
+            ok;
+        {tcp_error, Reason} ->
+            exit(Reason);
+        {ssl_error, Reason} ->
+            exit(Reason);
+        {tcp, _Sock, Data} ->
+            recv_data(Data, State);
+        {ssl, _Sock, Data} ->
+            recv_data(Data, State);
+        heartbeat ->
+            heartbeat(State);
+        Msg ->
+            ?DBG("loop", {unknown_msg,Msg}),
+            loop(State)
+    end.
 
-handle_cast(new_request, State) ->
-    {noreply, State, {continue, next_request}}.
+recv_data(Data, State) ->
+    case State#outstate.state of
+        head ->
+            head_data(Data, clock_recv(State));
+        body ->
+            body_data(Data, clock_recv(State));
+        idle ->
+            error(internal)
+    end.
 
-%% continuation is used after a request is finished and when a
-%% new_request notification is received (and we are idle)
-handle_continue(next_request, #outstate{state=idle} = State0) ->
+clock_recv(State) ->
+    State#outstate{lastrecv=system_time()}.
+
+next_request(#outstate{state=idle} = State0) ->
     case request_manager:next_request() of
-        null -> {noreply,State0};
+        null -> loop(State0);
         {DataPid,Ref,Head} = Req ->
             case relay_request(DataPid, Ref, Head, State0) of
-                {error,Reason} -> {stop,Reason,State0};
+                {error,Reason} -> exit(Reason);
                 ok ->
                     State1 = clock_recv(State0#outstate{req=Req}),
                     case head_begin(State1) of
-                        {error,Reason} -> {stop,Reason,State0};
+                        {error,Reason} -> exit(Reason);
                         {ok,State2} ->
                             % TODO: relay multiple requests at a time
                             % (needs a queue or something to track request
                             % refs)
                             %{noreply, State, {continue, next_request}}
-                            {noreply,State2}
+                            loop(State2)
                     end
             end
-    end;
+    end.
 
-handle_continue(next_request, State) ->
-    %% If we are not idle, wait until we are before sending the next request.
-    {noreply, State};
-
-handle_continue(close_request, State0) ->
+close_request(State0) ->
     case State0#outstate.req of
         null ->
             %% should not happen
-            {stop, internal_error, State0};
+            error(internal);
         {_,Ref,_} ->
             request_manager:close_request(Ref),
             case {State0#outstate.close, State0#outstate.ssl} of
                 {true,false} ->
                     %% The last response requested that we close the connection.
                     ok = gen_tcp:shutdown(State0#outstate.socket, write),
-                    {stop, normal, State0};
+                    loop(State0);
                 {true,true} ->
                     %% The last response requested that we close the connection.
                     ok = ssl:shutdown(State0#outstate.socket, write),
-                    {stop, normal, State0};
+                    loop(State0);
                 {false,_} ->
                     State = State0#outstate{state=idle, rstate=null, req=null},
-                    {noreply, State, {continue, next_request}}
+                    next_request(State)
             end
     end.
 
-handle_info({tcp_closed, _}, State) ->
-    {stop, normal, State#outstate{socket=null}};
-
-handle_info({tcp_error, Reason}, State) ->
-    {stop, Reason, State};
-
-handle_info({tcp, _Sock, Data}, #outstate{state=head} = State) ->
-    head_data(Data, clock_recv(State));
-
-handle_info({tcp, _Sock, Data}, #outstate{state=body} = State) ->
-    body_data(Data, clock_recv(State));
-
-handle_info({tcp, _Sock, _Bin}, #outstate{state=idle} = State) ->
-    %% ignore data when receiving while in the idle state
-    {noreply, State};
-
-handle_info({ssl_closed, _}, State) ->
-    {stop, normal, State#outstate{socket=null}};
-
-handle_info({ssl_error, Reason}, State) ->
-    {stop, Reason, State};
-
-handle_info({ssl, _Sock, Data}, State = #outstate{state=head}) ->
-    head_data(Data, State);
-
-handle_info({ssl, _Sock, Data}, State = #outstate{state=body}) ->
-    body_data(Data, State);
-
-handle_info({ssl, _Sock, Bin}, State) ->
-    %% TODO: shutdown socket?
-    {stop, {unexpected_recv, Bin}, State};
-
-handle_info(heartbeat, State) ->
-    Delta = erlang:convert_time_unit(erlang:system_time() - State#outstate.lastrecv,
-                                     native, millisecond),
+heartbeat(State) ->
+    Delta = convert_time_unit(system_time() - State#outstate.lastrecv,
+                              native, millisecond),
     if
         State#outstate.state =:= idle ->
-            {noreply, State};
+            loop(State);
         Delta > ?REQUEST_TIMEOUT ->
-            {stop, timeout, State};
+            exit(timeout);
         true ->
-            {noreply, State}
+            loop(State)
     end.
 
-terminate(_Reason, #outstate{socket=null}) ->
-    ok;
-
-terminate(_Reason, #outstate{socket=Sock, ssl=false}) ->
-    ok = gen_tcp:close(Sock);
-
-terminate(_Reason, #outstate{socket=Sock, ssl=true}) ->
-    ok = ssl:close(Sock, infinity).
-
-%%% receiving states
+%%% parsing/receiving HTTP message portions
+%%%
 
 head_begin(State) ->
     HReader = pimsg:head_reader(),
@@ -160,10 +145,10 @@ head_data(?EMPTY, State) -> {ok,State};
 head_data(Bin, #outstate{rstate=RState0} = State) ->
     case pimsg:head_reader(RState0, Bin) of
         {error,Reason} ->
-            {stop,Reason,State};
-        {continue, RState} ->
-            {noreply, State#outstate{rstate=RState}};
-        {done, StatusLine, Headers, Rest} ->
+            exit(Reason);
+        {continue,RState} ->
+            loop(State#outstate{rstate=RState});
+        {done,StatusLine,Headers,Rest} ->
             head_end(StatusLine, Headers, Rest, State)
             %case phttp:status_split(StatusLine) of
             %    {error,Reason} -> {stop,Reason,State};
@@ -180,14 +165,14 @@ head_end(StatusLn, Headers, Rest, State) ->
                             headers=Headers, bodylen=0},
             inbound:respond(Pid, Ref, {head,ResHead}),
             inbound:respond(Pid, Ref, {body,?EMPTY}),
-            {noreply, State#outstate{rstate=null}, {continue,close_request}};
+            close_request(State#outstate{rstate=null});
         {ok,BodyLen} ->
             ResHead = #head{method=Method, line=StatusLn,
                             headers=Headers, bodylen=BodyLen},
             inbound:respond(Pid, Ref, {head,ResHead}),
             body_begin(Rest, BodyLen, State);
         {error,missing_length} ->
-            {stop, {missing_length,StatusLn,Headers}, State}
+            exit({missing_length,StatusLn,Headers})
     end.
 
 body_begin(Bin, BodyLen, State) ->
@@ -195,19 +180,19 @@ body_begin(Bin, BodyLen, State) ->
     body_data(Bin, State#outstate{state=body, rstate=RState}).
 
 body_data(?EMPTY, State) ->
-    {noreply, State};
+    loop(State);
 
 body_data(Data, #outstate{rstate=RState0} = State) ->
     case pimsg:body_reader(RState0, Data) of
         {error,Reason} ->
-            {stop,Reason,State};
+            exit(Reason);
         {continue,?EMPTY,RState} ->
             %% Avoids sending messages about nothing.
-            {noreply, State#outstate{rstate=RState}};
+            loop(State#outstate{rstate=RState});
         {continue,Scanned,RState} ->
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body,Scanned}),
-            {noreply, State#outstate{rstate=RState}};
+            loop(State#outstate{rstate=RState});
         {done,Scanned,Rest} ->
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body,Scanned}),
@@ -215,61 +200,52 @@ body_data(Data, #outstate{rstate=RState0} = State) ->
             %% XXX: Because there is no request pipelining ... yet.
             case Rest of
                 ?EMPTY ->
-                    {noreply, State#outstate{state=idle, rstate=null},
-                     {continue,close_request}};
+                    close_request(State#outstate{state=idle, rstate=null});
                 _ ->
-                    {stop, {body_remains,Rest}, State}
+                    exit({body_remains,Rest})
             end
     end.
 
-%%% request helper functions
-
-clock_recv(State) ->
-    State#outstate{lastrecv=erlang:system_time()}.
+%%% sending data over sockets
+%%%
 
 send(Data, #outstate{socket=Sock, ssl=false}) ->
-    gen_tcp:send(Sock, Data);
+    case gen_tcp:send(Sock, Data) of
+        {error,Reason} -> exit(Reason);
+        ok -> ok
+    end;
 
 send(Data, #outstate{socket=Sock, ssl=true}) ->
-    ssl:send(Sock, Data).
-
-relay_request(DataPid, Ref, Head, State) ->
-    #head{line=Line, headers=Headers} = Head,
-    case send_lines([Line, fieldlist:to_binary(Headers)], State) of
-        {error, Reason} -> {error, Reason};
-        ok ->
-            case Head#head.bodylen of
-                0 -> ok;
-                _ -> relay_body_out(DataPid, Ref, State)
-            end
+    case ssl:send(Sock, Data) of
+        {error,Reason} -> exit(Reason);
+        ok -> ok
     end.
 
 send_lines([], _) ->
     ok;
 
 send_lines([X|L], State) ->
-    case send(X, State) of
-        {error,_} = Err -> Err;
-        ok ->
-            case send(<<?CRLF>>, State) of
-                {error,_} = Err -> Err;
-                ok -> send_lines(L, State)
-            end
+    send(X, State),
+    send(<<?CRLF>>, State),
+    send_lines(L, State).
+
+relay_request(DataPid, Ref, Head, State) ->
+    #head{line=Line, headers=Headers} = Head,
+    send_lines([Line, fieldlist:to_binary(Headers)], State),
+    case Head#head.bodylen of
+        0 -> ok;
+        _ -> relay_body_out(DataPid, Ref, State)
     end.
 
 relay_body_out(DataPid, Ref, State) ->
     case inbound:request_body(DataPid, Ref) of
-        {error, Reason} ->
-            {error, Reason};
+        {error,Reason} ->
+            exit(Reason);
         {some, []} ->
             relay_body_out(DataPid, Ref, State);
         {some, Io} ->
-            case send(Io, State) of
-                {error, Reason} ->
-                    {error, Reason};
-                ok ->
-                    relay_body_out(DataPid, Ref, State)
-            end;
+            send(Io, State),
+            relay_body_out(DataPid, Ref, State);
         {last, []} ->
             ok;
         {last, Io} ->
