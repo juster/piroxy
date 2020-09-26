@@ -1,6 +1,6 @@
 -module(fieldlist).
 
--include("pimsg.hrl").
+-include("phttp.hrl").
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
 -export([get_value/2, get_value/3]).

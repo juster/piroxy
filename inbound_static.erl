@@ -8,7 +8,7 @@
 
 -module(inbound_static).
 -behavior(gen_server).
--include("pimsg.hrl").
+-include("phttp.hrl").
 
 -define(TIMEOUT, 20000).
 

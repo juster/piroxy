@@ -4,7 +4,7 @@
 %%%
 
 -module(inbound).
--include("pimsg.hrl").
+-include("phttp.hrl").
 
 -export([close/2, reset/2, fail/3, new/3]).
 -export([request_body/2, respond/3]).

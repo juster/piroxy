@@ -1,5 +1,5 @@
 -module(piclient).
--include("pimsg.hrl").
+-include("phttp.hrl").
 
 -export([start/0, stop/0]).
 -export([send/2, send/3, dump/1, dumpsend/2, dumpsend/3, param_body/1]).

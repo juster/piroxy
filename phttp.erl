@@ -10,7 +10,7 @@
 -export([status_bin/1]).
 
 -import(lists, [reverse/1, flatten/1]).
--include("pimsg.hrl").
+-include("phttp.hrl").
 
 %% Split Subject into exactly N fields. Fields are separated by Pattern.
 nsplit(N, _, _) when N < 1 ->

@@ -15,10 +15,8 @@
 -define(TARGET_FAIL_MAX, 3).
 -define(REQUEST_FAIL_MAX, 5).
 
-%% 
+%% outbound default request timeout
 -define(REQUEST_TIMEOUT, 5000).
 
 -define(DBG(Fname, T), io:format("*DBG* {~s} [~s] ~p~n", [?MODULE, Fname, T])).
 -record(head, {line, method, version, headers=[], bodylen}).
--record(hstate, {buffer=?EMPTY, state=smooth, nread=0, headers=[]}).
--record(bstate, {state=smooth, nread=0, length}).
