@@ -28,7 +28,7 @@ new_request(Pid) ->
 
 start(Host, Port, false) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case gen_tcp:connect(Host, Port, [binary, {packet, 0}]) of
+    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], ?CONNECT_TIMEOUT) of
         {error, Reason} -> exit(Reason);
         {ok, Sock} ->
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=false}),
@@ -37,7 +37,7 @@ start(Host, Port, false) ->
 
 start(Host, Port, true) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case ssl:connect(Host, Port, [binary, {packet, 0}]) of
+    case ssl:connect(Host, Port, [binary, {packet, 0}], ?CONNECT_TIMEOUT) of
         {error,Reason} -> exit(Reason);
         {ok,Sock} ->
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=true}),
@@ -84,19 +84,15 @@ next_request(#outstate{state=idle} = State0) ->
     case request_manager:next_request() of
         null -> loop(State0);
         {DataPid,Ref,Head} = Req ->
-            case relay_request(DataPid, Ref, Head, State0) of
+            relay_request(DataPid, Ref, Head, State0),
+            case head_begin(clock_recv(State0#outstate{req=Req})) of
                 {error,Reason} -> exit(Reason);
-                ok ->
-                    State1 = clock_recv(State0#outstate{req=Req}),
-                    case head_begin(State1) of
-                        {error,Reason} -> exit(Reason);
-                        {ok,State2} ->
-                            % TODO: relay multiple requests at a time
-                            % (needs a queue or something to track request
-                            % refs)
-                            %{noreply, State, {continue, next_request}}
-                            loop(State2)
-                    end
+                {ok,State} ->
+                    % TODO: relay multiple requests at a time
+                    % (needs a queue or something to track request
+                    % refs)
+                    %{noreply, State, {continue, next_request}}
+                    loop(State)
             end
     end.
 
@@ -240,14 +236,12 @@ relay_request(DataPid, Ref, Head, State) ->
 relay_body_out(DataPid, Ref, State) ->
     case inbound:request_body(DataPid, Ref) of
         {error,Reason} ->
-            exit(Reason);
+            error(Reason);
         {some, []} ->
             relay_body_out(DataPid, Ref, State);
         {some, Io} ->
             send(Io, State),
             relay_body_out(DataPid, Ref, State);
-        {last, []} ->
-            ok;
-        {last, Io} ->
-            send(Io, State)
+        done ->
+            ok
     end.

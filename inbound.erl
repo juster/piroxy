@@ -32,10 +32,10 @@ new(Pid, HostInfo, Head) ->
 
 %% called by outbound to fetch the body of the request
 %% returns:
-%%  {some,iolist()} to signal there are more chunks coming
-%%  {last,iolist()} to signal this is the last chunk of body
+%%  {some,iolist()} - signal there are more chunks coming
+%%  done - signal this is the end of the stream
 request_body(Pid, Ref) ->
-    gen_server:call(Pid, {request_body, Ref}).
+    gen_server:call(Pid, {request_body, Ref}, ?REQUEST_TIMEOUT).
 
 %% called by outbound to stream the response to a request
 respond(Pid, Ref, Response) ->

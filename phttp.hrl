@@ -12,11 +12,12 @@
 -define(CHUNKSZ_MAX, 16384).
 
 %% request_manager fail count limits
--define(TARGET_FAIL_MAX, 3).
+-define(TARGET_FAIL_MAX, 2).
 -define(REQUEST_FAIL_MAX, 5).
 
 %% outbound default request timeout
 -define(REQUEST_TIMEOUT, 5000).
+-define(CONNECT_TIMEOUT, 15000).
 
 -define(DBG(Fname, T), io:format("*DBG* {~s} [~s] ~p~n", [?MODULE, Fname, T])).
 -record(head, {line, method, version, headers=[], bodylen}).

@@ -43,16 +43,12 @@ init([]) ->
           ets:new(responses, [set,private,{keypos,#response.ref}])}}.
 
 handle_call({new, HostInfo, Head}, From, State) ->
-    case request_manager:new_request(HostInfo, Head) of
-        {error,Reason} ->
-            {stop, Reason, State};
-        {ok,Ref} ->
-            {ReqTab,ResTab} = State,
-            ets:insert(ReqTab, #request{ref=Ref, from=From, head=Head,
-                                        hostinfo=HostInfo}),
-            ets:insert(ResTab, #response{ref=Ref}),
-            {reply, Ref, State}
-    end;
+    Ref = request_manager:new_request(HostInfo, Head),
+    {ReqTab,ResTab} = State,
+    ets:insert(ReqTab, #request{ref=Ref, from=From, head=Head,
+                                hostinfo=HostInfo}),
+    ets:insert(ResTab, #response{ref=Ref}),
+    {reply, Ref, State};
 
 handle_call({send, HostInfo, Head, Body}, From, State0) ->
     case handle_call({new,HostInfo,Head}, From, State0) of
@@ -89,7 +85,7 @@ handle_cast({reset, Ref}, State) ->
         [] ->
             {stop, {request_missing, Ref}, State};
         [#request{hostinfo=HostInfo,head=Head}] ->
-            {ok,NewRef} = request_manager:new_request(HostInfo, Head),
+            NewRef = request_manager:new_request(HostInfo, Head),
             true = ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
             true = ets:update_element(ResTab, Ref, [{#response.status, null},
                                                     {#response.headers, null},
@@ -124,12 +120,3 @@ handle_cast({fail,Ref,Reason}, {ReqTab,ResTab}=State) ->
             gen_server:reply(Req#request.from, {error,Reason}),
             {noreply, State}
     end.
-
-%%new_request(HostInfo, Head) ->
-%%    case request_manager:new_request(HostInfo, Head) of
-%%        {ok,Ref} = Result ->
-%%            %%io:format("*DBG* started request: ~p~n", [Ref]),
-%%            Result;
-%%        Etc ->
-%%            Etc
-%%    end.

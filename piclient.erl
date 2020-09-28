@@ -12,7 +12,7 @@ start() ->
 stop() ->
     gen_server:stop(piclient).
 
-dump({ok,Res}=Result) ->
+dump({ok,Res}) ->
     {StatusLn, ResHeaders, Body} = Res,
     %%io:format("*DBG* received response:~n~w~n", [{StatusLine, ResHeaders, Body}]),
     io:format("-{ STATUS }-------------------"
@@ -34,11 +34,19 @@ hostinfo({Schema,_,Host,Port,_,_}) ->
 hostinfo({Schema,_,Host,Port,_,_,_}) ->
     {Schema,Host,Port}.
 
-default_headers(UriT) ->
-    lists:foldl(fun ({K,V}, FL) -> fieldlist:add_value(K, V, FL) end,
-                [],
-                [{"host", element(3, UriT)},
-                 {"accept-encoding", "identity"}]).
+default_headers(Method, UriT, ContentLen) ->
+    Host = element(3, UriT) ++ ":" ++ integer_to_list(element(4, UriT)),
+    PostHeaders = case Method of
+                      post ->
+                          [{"content-type",
+                            "application/x-www-form-urlencoded"},
+                           {"content-length",
+                            integer_to_list(ContentLen)}];
+                      _ -> []
+                  end,
+    fieldlist:from_proplist([{"host", Host},
+                             {"accept-encoding", "identity"}]
+                            ++ PostHeaders).
 
 reluri({_,_,_,_,Path,Query}) ->
     Path++Query;
@@ -63,19 +71,7 @@ send(Method, Uri) -> send(Method, Uri, ?EMPTY).
 send(Method, Uri, Body) ->
     {ok,UriT} = http_uri:parse(Uri),
     CLength = case Body of ?EMPTY -> 0; _ -> iolist_size(Body) end,
-    case CLength of
-        0 -> Headers = default_headers(UriT);
-        _ ->
-            %% sends request bodies using smooth (not chunky) transfer
-            %% encoding.
-            Fun = fun ({K,V}, FL) -> fieldlist:add_value(K, V, FL) end,
-            Headers = lists:foldl(Fun,
-                                  default_headers(UriT),
-                                  [{"content-type",
-                                    "application/x-www-form-urlencoded"},
-                                   {"content-length",
-                                    integer_to_list(CLength)}])
-    end,
+    Headers = default_headers(Method, UriT, CLength),
     ReqHead = #head{method=Method, headers=Headers, bodylen=CLength,
                     line=request_line(Method, reluri(UriT))},
     HostInfo = hostinfo(UriT),
