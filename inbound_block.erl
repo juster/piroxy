@@ -1,19 +1,13 @@
-%%% inbound_static
+%%% inbound_block
 %%%
-%%% Implements all of the "incoming" gen_server callbacks as well as new
-%%% interface functions which send requests manually.
-%%%
-%%% Blocks on sends, calling send does not return until the HTTP response
-%%% has been received. The response is returned as the result of the send.
+%%% Blocks on sends: calling send does not return until the HTTP response
+%%% has been received. The response is returned as the result of the call
+%%% to send.
 
 -module(inbound_block).
 -behavior(gen_server).
 -include("phttp.hrl").
-
--define(TIMEOUT, 20000).
-
--record(request, {ref, from, hostinfo, head, body=[]}).
--record(response, {ref, status, headers, body=[]}).
+-import(lists, [reverse/1]).
 
 -export([start_link/0, start_link/1, send/3, send/4]).
 -export([init/1, handle_cast/2, handle_call/3]).
@@ -39,84 +33,44 @@ send(ServerRef, HostInfo, Head, Body) ->
 %%%
 
 init([]) ->
-    {ok, {ets:new(requests, [set,private,{keypos,#request.ref}]),
-          ets:new(responses, [set,private,{keypos,#response.ref}])}}.
+    {ok, idle}.
 
-handle_call({new, HostInfo, Head}, From, State) ->
+handle_call({new,_,_}, _, State) ->
+    %% use send instead of new
+    {stop, unimplemented, State};
+
+handle_call({send, HostInfo, Head, Body}, From, idle) ->
     Ref = request_manager:new_request(HostInfo, Head),
-    {ReqTab,ResTab} = State,
-    ets:insert(ReqTab, #request{ref=Ref, from=From, head=Head,
-                                hostinfo=HostInfo}),
-    ets:insert(ResTab, #response{ref=Ref}),
-    {reply, Ref, State};
+    {noreply, {Ref,From,Body,null,[]}};
 
-handle_call({send, HostInfo, Head, Body}, From, State0) ->
-    case handle_call({new,HostInfo,Head}, From, State0) of
-        {stop,_,_} = T -> T;
-        {reply,Ref,State} ->
-            {ReqTab,_} = State,
-            case Body of
-                [] -> ok;
-                _ ->
-                    ets:update_element(ReqTab, Ref, {#request.body,Body})
-            end,
-            {noreply, State} % don't return but block
-    end;
+handle_call({send,_,_,_}, _, _) ->
+    {reply, {error,already_sending}};
 
-handle_call({request_body, Ref}, _From, State) ->
-    {ReqTab,_} = State,
-    [Req] = ets:lookup(ReqTab, Ref),
-    {reply, {last, Req#request.body}, State}.
+handle_call({request_body,Ref}, _From, {Ref,_,Body,_,_}=S) ->
+    {reply, {last,Body}, S}.
 
-handle_cast({close, Ref}, State) ->
-    {ReqTab,ResTab} = State,
-    [Req] = ets:lookup(ReqTab, Ref),
-    [Res] = ets:lookup(ResTab, Ref),
-    From = Req#request.from,
-    #response{status=StatusLine,headers=Headers,body=Body} = Res,
-    ets:delete(ReqTab, Ref),
-    ets:delete(ResTab, Ref),
-    gen_server:reply(From, {ok,{StatusLine,Headers,Body}}),
-    {noreply, State};
+%% called by request_manager to notify end of response
+handle_cast({close,Ref}, {Ref,From,_,Head,Body}) ->
+    case Head of
+        null ->
+            gen_server:reply(From, {error,head_missing});
+        #head{line=StatusLine, headers=Headers} ->
+            T = {StatusLine,Headers,reverse(Body)},
+            gen_server:reply(From, {ok,T});
+        _ ->
+            error({unknown,Head})
+    end,
+    {noreply,idle};
 
-handle_cast({reset, Ref}, State) ->
-    {ReqTab,ResTab} = State,
-    case ets:lookup(ReqTab, Ref) of
-        [] ->
-            {stop, {request_missing, Ref}, State};
-        [#request{hostinfo=HostInfo,head=Head}] ->
-            NewRef = request_manager:new_request(HostInfo, Head),
-            true = ets:update_element(ReqTab, Ref, {#request.ref, NewRef}),
-            true = ets:update_element(ResTab, Ref, [{#response.status, null},
-                                                    {#response.headers, null},
-                                                    {#response.body, []}]),
-            {noreply,State}
-    end;
+handle_cast({reset,Ref}, {Ref,From,Body,_,_}) ->
+    {noreply, {Ref,From,Body,null,[]}};
 
-handle_cast({respond, Ref, {head,Head}}, State) ->
-    #head{line=StatusLine, headers=Headers} = Head,
-    {_ReqTab,ResTab} = State,
-    case ets:update_element(ResTab, Ref, [{#response.status, StatusLine},
-                                          {#response.headers, Headers}]) of
-        true -> {noreply,State};
-        false -> {stop, {request_missing,Ref}, State}
-    end;
+handle_cast({respond,Ref,{head,Head}}, {Ref,_,_,null,_}=S) ->
+    {noreply, setelement(4, S, Head)};
 
-handle_cast({respond, Ref, {body,Body}}, {_ReqTab,ResTab} = State) ->
-    [#response{body=PrevBody}] = ets:lookup(ResTab, Ref),
-    NewBody = case PrevBody of
-                  ?EMPTY -> Body;
-                  PrevBody -> [PrevBody|Body] % append to iolist
-              end,
-    ets:update_element(ResTab, Ref, {#response.body, NewBody}),
-    {noreply,State};
+handle_cast({respond,Ref,{body,Chunk}}, {Ref,_,_,_,Body}=S) ->
+    {noreply, setelement(5, S, [Chunk|Body])};
 
-handle_cast({fail,Ref,Reason}, {ReqTab,ResTab}=State) ->
-    case ets:lookup(ReqTab, Ref) of
-        [] -> {noreply, State};
-        [Req] ->
-            ets:delete(ReqTab, Ref),
-            ets:delete(ResTab, Ref),
-            gen_server:reply(Req#request.from, {error,Reason}),
-            {noreply, State}
-    end.
+handle_cast({fail,Ref,Reason}, {Ref,From,_,_,_}) ->
+    gen_server:reply(From, {error,Reason}),
+    {noreply, idle}.

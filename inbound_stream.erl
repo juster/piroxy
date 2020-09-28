@@ -33,7 +33,7 @@
 -record(state, {pid, reqQ=[], respQ=[]}).
 
 -import(lists, [foreach/2, reverse/1, reverse/2]).
--export([start_link/0, request_body/2, request_end/1, reflect/2, disconnect/1]).
+-export([start_link/0, start_link/1, stream_request/2, reflect/2, disconnect/1]).
 -export([init/1, terminate/2, handle_cast/2, handle_call/3]).
 
 %%% external interface
@@ -41,11 +41,11 @@
 start_link() ->
     gen_server:start_link(?MODULE, [self()], []).
 
-request_body(ServerRef, Chunk) ->
-    gen_server:cast(ServerRef, {request_body,Chunk}).
+start_link(Name) ->
+    gen_server:start_link({local,Name}, ?MODULE, [self()], [{debug,[trace]}]).
 
-request_end(ServerRef) ->
-    gen_server:cast(ServerRef, request_end).
+stream_request(ServerRef, Chunk) ->
+    gen_server:cast(ServerRef, {stream_request,Chunk}).
 
 reflect(ServerRef, Messages) ->
     gen_server:cast(ServerRef, {reflect,Messages}).
@@ -53,7 +53,8 @@ reflect(ServerRef, Messages) ->
 %% end the connection but only after pending responses in the
 %% pipeline are relayed
 disconnect(ServerRef) ->
-    gen_server:cast(ServerRef, disconnect).
+    error(not_yet_implemented).
+    %%gen_server:cast(ServerRef, disconnect).
 
 %%% behavior callbacks
 
@@ -69,8 +70,8 @@ handle_call({new,HostInfo,Head}, _From, S0) ->
     Ref = request_manager:new_request(HostInfo, Head),
     Q1 = S0#state.reqQ,
     Q2 = S0#state.respQ,
-    S = S0#state{reqQ=Q1 ++ [{Ref,empty}],
-                 respQ=Q2 ++ [{Ref,empty}]},
+    S = S0#state{reqQ=Q1 ++ [{Ref,[]}],
+                 respQ=Q2 ++ [{Ref,[]}]},
     {reply, Ref, S};
 
 %% called by outgoing process to retrieve the request body (out of order)
@@ -99,8 +100,30 @@ handle_call({request_body,Ref}, From, S) ->
             {reply,{some,T},S#state{reqQ=Q}}
     end.
 
+%% called by client to mark the end of request chunks (in-order)
+handle_cast({stream_request,done}, S) ->
+    case reverse(S#state.reqQ) of
+        [] ->
+            %% Queue should not be empty!
+            {stop,internal_error,S};
+        [{_,[done]}|_] ->
+            %% request_end was already called
+            {stop,request_queue_closed,S};
+        [{Ref,{blocked,From}}|Q0] ->
+            %% we have blocked an outbound call and can bypass the
+            %% queue
+            gen_server:reply(From, done),
+            Q = reverse(Q0, [{Ref,[done]}]),
+            {noreply,stream_responses(S#state{reqQ=Q})};
+        [{Ref,L0}|Q0] ->
+            %% append 'done' to the list of chunks
+            L = L0 ++ [done],
+            Q = reverse(Q0, [{Ref,L}]),
+            {noreply,S#state{reqQ=Q}}
+    end;
+
 %% called by client to append to request body (in order)
-handle_cast({request_stream,Chunk}, S) ->
+handle_cast({stream_request,Chunk}, S) ->
     %% request should be the last in the queue
     case reverse(S#state.reqQ) of
         [] ->
@@ -122,29 +145,6 @@ handle_cast({request_stream,Chunk}, S) ->
             Q = reverse(Q0, [{Ref,L}]),
             {noreply,S#state{reqQ=Q}}
     end;
-
-%% called by client to mark the end of request chunks (in-order)
-handle_cast(request_end, S) ->
-    case reverse(S#state.reqQ) of
-        [] ->
-            %% Queue should not be empty!
-            {stop,internal_error,S};
-        [{_,[done]}|_] ->
-            %% request_end was already called
-            {stop,request_queue_closed,S};
-        [{Ref,{blocked,From}}|Q0] ->
-            %% we have blocked an outbound call and can bypass the
-            %% queue
-            gen_server:reply(From, done),
-            Q = reverse(Q0, [{Ref,[done]}]),
-            {noreply,stream_responses(S#state{reqQ=Q})};
-        [{Ref,L0}|Q0] ->
-            %% append 'done' to the list of chunks
-            L = L0 ++ [done],
-            Q = reverse(Q0, [{Ref,L}]),
-            {noreply,S#state{reqQ=Q}}
-    end;
-
 %% inbound:close() called by request_manager means responses are finished
 handle_cast({close,Ref}, S) ->
     case find(Ref, S#state.respQ) of
@@ -193,6 +193,9 @@ find(X, L1) -> find(X, L1, []).
 find(X, [{X,Y}|L1], L2) -> {found,Y,L2,L1}; % reverse(L2, [T|L1]) rebuilds
 find(X, [Z|L1], L2) -> find(X, L1, [Z|L2]);
 find(_, [], _) -> not_found.
+
+stream_responses(#state{reqQ=[], respQ=[]} = S) ->
+    S;
 
 stream_responses(S) ->
     %% Assumes: queues are not empty.
