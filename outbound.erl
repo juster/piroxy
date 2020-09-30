@@ -49,9 +49,9 @@ loop(State) ->
         new_request ->
             next_request(State);
         {tcp_closed, _} ->
-            ok;
+            exit(closed);
         {ssl_closed, _} ->
-            ok;
+            exit(closed);
         {tcp_error, Reason} ->
             exit(Reason);
         {ssl_error, Reason} ->

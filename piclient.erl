@@ -2,20 +2,20 @@
 -include("phttp.hrl").
 -import(lists, [reverse/1]).
 
--export([start/0, stop/0]).
--export([send/2, send/3, sendw/2, sendw/3, recv/0]).
--export([dump/1, dumpsend/2, dumpsend/3, dumprecv/0]).
+-export([start/0, stop/1]).
+-export([send/3, send/4, sendw/3, sendw/4, recv/0]).
+-export([dump/1, dumpsend/3, dumpsend/4, dumprecv/0]).
 -export([param_body/1]).
 
 start() ->
-    request_manager:start_link(),
-    inbound_block:start_link(piclient_block),
-    inbound_stream:start_link(piclient_stream),
-    ok.
+    request_manager:start(),
+    {ok,Pid1} = inbound_block:start_link(),
+    {ok,Pid2} = inbound_stream:start_link(),
+    {Pid1,Pid2}.
 
-stop() ->
-    gen_server:stop(piclient_block),
-    gen_server:stop(piclient_stream).
+stop({Pid1,Pid2}) ->
+    gen_server:stop(Pid1),
+    gen_server:stop(Pid2).
 
 hostinfo({Schema,_,Host,Port,_,_}) ->
     {Schema,Host,Port};
@@ -65,19 +65,19 @@ send_args(Method, Uri, Body) ->
     {HostInfo, ReqHead}.
 
 %% Send request and wait (block) for response.
-sendw(Method, Uri) -> sendw(Method, Uri, ?EMPTY).
+sendw(Pids, Method, Uri) -> sendw(Pids, Method, Uri, ?EMPTY).
 
-sendw(Method, Uri, Body) ->
+sendw({Pid,_}, Method, Uri, Body) ->
     {HostInfo, ReqHead} = send_args(Method, Uri, Body),
-    inbound_block:send(piclient_block, HostInfo, ReqHead, Body).
+    inbound_block:send(Pid, HostInfo, ReqHead, Body).
 
 %% Send request but do not wait for response. {respond,...} messages are
 %% received by the piclient process.
-send(Method, Uri) -> send(Method, Uri, ?EMPTY).
+send(Pids, Method, Uri) -> send(Pids, Method, Uri, ?EMPTY).
 
-send(Method, Uri, Body) ->
+send({_,Pid}, Method, Uri, Body) ->
     {HostInfo, ReqHead} = send_args(Method, Uri, Body),
-    _Req = inbound:new(piclient_stream, HostInfo, ReqHead),
+    _Req = inbound:new(Pid, HostInfo, ReqHead),
     case Body of
         ?EMPTY -> ok;
         _ -> inbound_stream:stream_request(piclient_stream, Body)
@@ -124,11 +124,11 @@ dump({ok,Res}) ->
               [Body]),
     ok.
 
-dumpsend(Method, Uri) ->
-    dump(sendw(Method, Uri)).
+dumpsend(Pids, Method, Uri) ->
+    dump(sendw(Pids, Method, Uri)).
 
-dumpsend(Method, Uri, Body) ->
-    dump(sendw(Method, Uri, Body)).
+dumpsend(Pids, Method, Uri, Body) ->
+    dump(sendw(Pids, Method, Uri, Body)).
 
 dumprecv() ->
     dump(recv()).

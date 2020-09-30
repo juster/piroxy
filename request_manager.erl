@@ -5,16 +5,23 @@
 -include_lib("kernel/include/logger.hrl").
 -include("phttp.hrl").
 
--export([start_link/0, new_request/2, next_request/0, close_request/1]).
+-export([start/0, start_link/0, stop/0]).
+-export([new_request/2, next_request/0, close_request/1]).
 -export([cancel_request/1]).
 
 %%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
 %%% exported interface functions
 
+start() ->
+    gen_server:start({local,?MODULE}, ?MODULE, [], []).
+
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], [{debug,[trace]}]).
+    gen_server:start_link({local,?MODULE}, ?MODULE, [], []).
+
+stop() ->
+    gen_server:stop(?MODULE).
 
 %%% called by the inbound process
 
@@ -46,6 +53,17 @@ init([]) ->
             {stop,Reason}
     end.
 
+terminate(_Reason, Tab) ->
+    killout(ets:first(Tab), Tab).
+
+killout('$end_of_table', _) ->
+    ok;
+killout({pid,Pid}=K, Tab) ->
+    exit(Pid, kill),
+    killout(ets:next(Tab, K), Tab);
+killout(K, Tab) ->
+    killout(ets:next(Tab, K), Tab).
+
 handle_call({new_request,Target,Head}, {InPid,_Tag}, Tab) ->
     %% convert data types first so we can fail before opening a socket
     OutPid = connect_target(Tab, Target),
@@ -60,7 +78,7 @@ handle_call({next_request}, {OutPid,_}, Tab) ->
 %% request is gracefully closed (i.e. finished)
 handle_cast({close_request,OutPid,Ref}, Tab) ->
     {_,_,_,InPid,_} = lookup_request(Tab, Ref),
-    true = ets:update_element(Tab, {pid,OutPid}, {3,null}),
+    true = ets:update_element(Tab, {pid,OutPid}, {3,closed}),
     ets:delete(Tab, {request,Ref}),
     inbound:close(InPid, Ref),
     {noreply,Tab};
@@ -69,66 +87,56 @@ handle_cast({cancel_request,_Ref,_InPid}, Tab) ->
     %% XXX: not yet implemented
     {stop,not_implemented,Tab}.
 
-%% A normal exit can happen if the connection automatically closes when
-%% finished.
-handle_info({'EXIT',OldPid,normal}, Tab) ->
-    T = lookup_pid(Tab, OldPid),
-    ets:delete(Tab, {pid,OldPid}),
-    case T of
-        not_found ->
-            {stop,{not_found,OldPid},Tab};
-        {_,Target,null} ->
-            {_,_,Reqs,_} = lookup_target(Tab, Target),
-            %% make sure there are more requests for this target before
-            %% reconnecting it
-            case Reqs of
-                [] ->
-                    %% delete target entry so that a new Pid is spawned
-                    ets:delete(Tab, {target,Target}),
-                    ets:delete(Tab, {pid,OldPid}),
-                    {noreply, Tab};
-                _ ->
-                    case reconnect_target(Tab, Target) of
-                        {error,Reason} -> {stop,Reason,Tab};
-                        {ok,_NewPid} -> {noreply,Tab}
-                    end
-            end;
-        {_,_,_Ref} ->
-            %% if Req is not null, then it was not closed by outbound
-            {stop,internal_error,Tab}
-    end;
-
-%% outbound process failed abnormally.
-%% XXX: this is very similar to the above, but not exactly!
-handle_info({'EXIT',OldPid,Reason}, Tab) ->
-    {_,Target,Ref} = lookup_pid(Tab, OldPid),
-    ets:delete(Tab, {pid,OldPid}),
-    A = case Ref of
-            null ->
-                %% outbound did not even get a chance to send a request
-                fail_target(Tab, Target, Reason);
-            _ ->
-                %% stop retrying the request if it keeps failing
-                fail_request(Tab, Ref, Reason)
-        end,
-    case A of
-        fail ->
-            {noreply,Tab};
-        retry ->
-            %% reconnect the target
-            ?DBG("handle_info", {retrying,target,Target}),
-            case reconnect_target(Tab, Target) of
-                {error,Reason} -> {stop,Reason,Tab};
-                {ok,_Pid} ->
-                    case Ref of
-                        null -> ok;
-                        %% re-insert the request to the front of the target's
-                        %% queue IFF there was a request
-                        Ref -> queue_override(Tab, Target, Ref)
+%% track outbound processes so that was can recreate them if they exit
+handle_info({'EXIT',OldPid,Reason1}, Tab) ->
+    %%?DBG("handle_info", {'EXIT',OldPid,Reason1}),
+    {_,Target,Req} = lookup_pid(Tab, OldPid),
+    TargetRec = lookup_target(Tab, Target),
+    ReqRec = case Req of
+                 null -> null;
+                 closed -> null;
+                 _ -> lookup_request(Tab, Req)
+             end,
+    ets:delete(Tab, {pid,OldPid}), % process is gone
+    Pending = element(3, TargetRec),
+    Task = case fail_task(Reason1, Req, Pending) of
+               {target_error,Reason2} ->
+                   target_error(Tab, TargetRec, Reason2);
+               {request_error,Reason2} ->
+                   request_error(Tab, ReqRec, Reason2);
+               T -> T
+           end,
+    ?DBG("handle_info", {task,Task}),
+    case Task of
+        cleanup ->
+            %% sanity check
+            if
+                is_reference(Req) ->
+                    ?DBG("handle_info", "cleanup should have no active request!");
+                true -> ok
+            end,
+            ets:delete(Tab, {target,Target});
+        {failone,Reason3} ->
+            inbound:fail(Req, element(4, ReqRec), Reason3),
+            ets:delete(Tab, {request,Req});
+        {failall,Reason3} ->
+            if
+                is_reference(Req) ->
+                    inbound:fail(Req, element(4, ReqRec), Reason3),
+                    ets:delete(Tab, {request,Req});
+                true -> ok
+            end,
+            foreach(fun ({{request,Ref},_,_,Pid,_}) ->
+                            inbound:fail(Pid, Ref, Reason3)
                     end,
-                    {noreply,Tab}
-            end
-    end.
+                    [lookup_request(Tab, Req_) || Req_ <- element(3, TargetRec)]),
+            ets:delete(Tab, {target,Target});
+        retry when is_reference(Req) ->
+            ok = reconnect_target(Tab, Target, Pending++[Req]);
+        retry ->
+            ok = reconnect_target(Tab, Target)
+    end,
+    {noreply,Tab}.
 
 %%%
 %%% internal utility functions
@@ -165,61 +173,19 @@ insert_request(Tab, {Target,Head,InPid}) ->
     true = ets:update_element(Tab, {target,Target}, {3,[Ref|Reqs]}),
     Ref.
 
-%% Bypass the queue.
-queue_override(Tab, Target, Ref) ->
-    {_,_,Reqs0,_} = lookup_target(Tab, Target),
-    Reqs = reverse([Ref|reverse(Reqs0)]),
-    true = ets:update_element(Tab, {target,Target}, {3,Reqs}).
-
 %% Pop a new request from the request queue and associate it with an
 %% outbound Pid.
 pop_request(Tab, Pid) ->
     {_,Target,_} = lookup_pid(Tab, Pid),
     {_,_,Reqs0,_} = lookup_target(Tab, Target),
-    Ref = case Reqs0 of
-              [] -> null;
-              _ ->
-                  [Req|Reqs] = reverse(Reqs0),
-                  true = ets:update_element(Tab, {target,Target},
-                                            {3, reverse(Reqs)}),
-                  Req
-          end,
-    true = ets:update_element(Tab, {pid,Pid}, {3,Ref}),
-    case Ref of
-        null -> null;
+    case Reqs0 of
+        [] -> null;
         _ ->
-            {_,_Target,Head,InPid,_} = lookup_request(Tab, Ref),
-            {InPid,Ref,Head}
-    end.
-
-fail_request(Tab, Ref, Reason) ->
-    {_,_,_,InPid,Nfail} = lookup_request(Tab, Ref),
-    N = Nfail+1,
-    if
-        N >= ?REQUEST_FAIL_MAX ->
-            inbound:fail(InPid, Ref, Reason),
-            ets:delete(Tab, {request,Ref}),
-            fail;
-        true ->
-            ets:update_element(Tab, {request,Ref}, {5,N}),
-            retry
-    end.
-
-fail_target(Tab, Target, Reason) ->
-    {_,_,Reqs,Nfail} = lookup_target(Tab, Target),
-    N = Nfail+1,
-    if
-        N >= ?TARGET_FAIL_MAX ->
-            foreach(fun (Ref) ->
-                            InPid = element(4, lookup_request(Tab, Ref)),
-                            ets:delete(Tab, {request,Ref}),
-                            inbound:fail(InPid, Ref, Reason)
-                    end, Reqs),
-            ets:delete(Tab, {target,Target}),
-            fail;
-        true ->
-            ets:update_element(Tab, {target,Target}, [{2,null},{4,N}]),
-            retry
+            [Req|Reqs] = reverse(Reqs0),
+            true = ets:update_element(Tab, {target,Target}, {3,reverse(Reqs)}),
+            true = ets:update_element(Tab, {pid,Pid}, {3,Req}),
+            {_,_Target,Head,InPid,_} = lookup_request(Tab, Req),
+            {InPid,Req,Head}
     end.
 
 connect_target(Tab, Target) ->
@@ -234,9 +200,65 @@ connect_target(Tab, Target) ->
             Pid
     end.
 
+%% the request should be 'closed' after outbound calls close_request(Req).
+
+%% No active requests so no big deal, ignore any error.
+fail_task(_Reason,closed,[]) ->
+    cleanup;
+
+%% This is not supposed to happen. Did we spawn an outbound with no requests?
+fail_task(closed,null,[]) ->
+    ?DBG("handle_info", "outbound closed with null request"),
+    cleanup;
+
+%% Pending requests but server gracefully closed socket.
+fail_task(closed,closed,_Pending) ->
+    retry;
+
+%% Error/close before any request could be queued, not good.
+fail_task(closed,null,_Pending) ->
+    {target_error,reset};
+
+%% Pending requests but some error occurred.
+fail_task(Reason,closed,_Pending) ->
+    {target_error,Reason};
+
+%% Error or close in the middle of a request/response.
+fail_task(Reason,Req,_Pending) when is_reference(Req) ->
+    {request_error,Reason}.
+
+request_error(Tab, {{request,Ref},_,_,_,Nfail}, Reason) ->
+    N = Nfail+1,
+    ?DBG("request_error", {n,N}),
+    if
+        N >= ?REQUEST_FAIL_MAX ->
+            %%ets:delete(Tab, {request,Ref}),
+            {failone,Reason};
+        true ->
+            ets:update_element(Tab, {request,Ref}, {5,N}),
+            retry
+    end.
+
+target_error(Tab, {{target,Target},_,_,Nfail}, Reason) ->
+    N = Nfail+1,
+    ?DBG("target_error", {{target,Target},{n,N}}),
+    if
+        N >= ?TARGET_FAIL_MAX ->
+            %%ets:delete(Tab, {target,Target}),
+            {failall,Reason};
+        true ->
+            ets:update_element(Tab, {target,Target}, [{4,N}]),
+            retry
+    end.
+
 reconnect_target(Tab, Target) ->
     Pid = apply(outbound, connect, tuple_to_list(Target)),
     %% do not modify the request queue of the target
     true = ets:update_element(Tab, {target,Target}, {2,Pid}),
     ets:insert(Tab, {{pid,Pid}, Target, null}),
-    {ok,Pid}.
+    ok.
+
+reconnect_target(Tab, Target, Reqs) ->
+    ok = reconnect_target(Tab, Target),
+    true = ets:update_element(Tab, {target,Target}, {3,Reqs}),
+    ok.
