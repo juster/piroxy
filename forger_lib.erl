@@ -5,7 +5,9 @@
 
 -module(forger_lib).
 -include_lib("public_key/include/public_key.hrl").
--import(public_key, [pem_entry_encode/2, pem_encode/1]).
+-import(public_key, [generate_key/1, pem_entry_encode/3, pem_encode/1,
+                     pem_entry_decode/1, pem_entry_decode/2, pem_decode/1,
+                     pkix_sign/2]).
 -import(lists, [map/2]).
 -define(ISSUER_CN, "Pirate Proxy Root CA").
 -define(ISSUER_ORG, "Piroxy Dev Team").
@@ -13,38 +15,41 @@
 
 %% References:
 %% RFC5280: has the relevant ASN1 information
-%% RFC5480: info specific to using elliptic curve with PKI
+%% RFC5480: info specific to using elliptic curve with PKI, for example:
 %%
 %% Minimum  | ECDSA    | Message    | Curves
 %% Bits of  | Key Size | Digest     |
 %% Security |          | Algorithms |
 %% ---------+----------+------------+-----------
+%% ...      |          |            |
 %% 256      | 512      | SHA-512    | secp521r1
 %%
 %% This module is hard-coded to use the secp521r1 curve.
 
--export([write_new/2, load/2, forge/2]).
+-export([generate_pair/1, decode_private/2, forge/2]).
 
 %%%
 %%% EXPORTS
 %%%
 
-write_new(CAPemPath, PriPemPath) ->
-    PriKey = public_key:generate_key({namedCurve,secp521r1}),
+generate_pair(Passwd) ->
+    PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
     CertDer = ecc_certificate(issuer(), PubKey, PriKey, authority),
     CAPem = pem_encode([{'Certificate',CertDer,not_encrypted}]),
-    PriKeyPem = pem_encode([pem_entry_encode('ECPrivateKey', PriKey)]),
-    ok = file:write_file(CAPemPath, CAPem),
-    ok = file:write_file(PriPemPath, PriKeyPem),
-    ok.
+    CipherInfo = {"DES-CBC", crypto:strong_rand_bytes(8)},
+    PriKeyEnt = pem_entry_encode('ECPrivateKey', PriKey, {CipherInfo, Passwd}),
+    PriKeyPem = pem_encode([PriKeyEnt]),
+    {CAPem,PriKeyPem}.
 
-%% Open a CA certificate file to use later with forge/2.
-load(CAPath, PriKeyPath) ->
-    error(unimplemented).
+%% Decode the private key PEM (which requires the password used to
+%% generate it).
+decode_private(PriPem, Passwd) ->
+    [PriEntry] = pem_decode(PriPem),
+    pem_entry_decode(PriEntry, Passwd).
 
 %% Create a new cert for the given host name/ip number.
-forge(Host, CACert) ->
+forge(Host, CAPriKey) ->
     error(unimplemented).
 
 %%%
@@ -67,8 +72,6 @@ keyIdentifier(KeyBin) ->
 randSerial() ->
     <<Serial:160/integer>> = crypto:strong_rand_bytes(20),
     Serial.
-
-utf8Name(Bin) -> {rdnSequence, [{utf8String,Bin}]}.
 
 attributes(L) ->
     %% don't forget each attribute is wrapped in a list for some reason
@@ -130,4 +133,4 @@ ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
         subjectUniqueID = asn1_NOVALUE,
         extensions = extension_records(Extensions)
     },
-    public_key:pkix_sign(TBSCertificate, CaPriKey).
+    pkix_sign(TBSCertificate, CaPriKey).
