@@ -26,13 +26,13 @@
 %%
 %% This module is hard-coded to use the secp521r1 curve.
 
--export([generate_pair/1, decode_private/2, forge/2]).
+-export([generate_ca_pair/1, decode_private/2, forge/2]).
 
 %%%
 %%% EXPORTS
 %%%
 
-generate_pair(Passwd) ->
+generate_ca_pair(Passwd) ->
     PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
     CertDer = ecc_certificate(issuer(), PubKey, PriKey, authority),
@@ -48,9 +48,14 @@ decode_private(PriPem, Passwd) ->
     [PriEntry] = pem_decode(PriPem),
     pem_entry_decode(PriEntry, Passwd).
 
-%% Create a new cert for the given host name/ip number.
-forge(Host, CAPriKey) ->
-    error(unimplemented).
+%% Create a new cert/private key for the given host name/ip number.
+forge(FQDNs, CAPriKey) ->
+    [Hd|_] = FQDNs,
+    Contact = [{?'id-at-commonName', list_to_binary(Hd)}],
+    PriKey = generate_key({namedCurve,secp521r1}),
+    PubKey = PriKey#'ECPrivateKey'.publicKey,
+    CertDer = ecc_certificate(Contact, PubKey, CAPriKey, {host,FQDNs}),
+    {CertDer,PriKey}.
 
 %%%
 %%% INTERNAL
@@ -108,11 +113,12 @@ ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
              #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
             {?'id-ce-keyUsage',[digitalSignature,keyCertSign,cRLSign]}
         ];
-        host -> [
+        {host,DNSNames} -> [
             {?'id-ce-basicConstraints',
              #'BasicConstraints'{cA=false, pathLenConstraint=asn1_NOVALUE}},
             {?'id-ce-keyUsage',[keyEncipherment,keyAgreement]},
-            {?'id-ce-extKeyUsage',[?'id-kp-serverAuth']}
+            {?'id-ce-extKeyUsage',[?'id-kp-serverAuth']},
+            {?'id-ce-subjectAltName',[{'dNSName',N} || N <- DNSNames]}
         ];
         _ -> exit(badarg)
         end
