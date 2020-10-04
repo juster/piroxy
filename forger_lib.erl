@@ -6,6 +6,7 @@
 -module(forger_lib).
 -include_lib("public_key/include/public_key.hrl").
 -import(public_key, [pem_entry_encode/2, pem_encode/1]).
+-import(lists, [map/2]).
 -define(ISSUER_CN, "Pirate Proxy Root CA").
 -define(ISSUER_ORG, "Piroxy Dev Team").
 -define(ISSUER_CO, "US").
@@ -31,7 +32,7 @@
 write_new(CAPemPath, PriPemPath) ->
     PriKey = public_key:generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
-    CertDer = ecc_root_cert(PubKey,PriKey),
+    CertDer = ecc_certificate(issuer(), PubKey, PriKey, authority),
     CAPem = pem_encode([{'Certificate',CertDer,not_encrypted}]),
     PriKeyPem = pem_encode([pem_entry_encode('ECPrivateKey', PriKey)]),
     ok = file:write_file(CAPemPath, CAPem),
@@ -50,10 +51,6 @@ forge(Host, CACert) ->
 %%% INTERNAL
 %%%
 
-attributes(L) ->
-    {rdnSequence,
-     [[#'AttributeTypeAndValue'{type=T,value=V}] || {T,V} <- L]}.
-
 timefmt({Y,Mo,D},{H,Mi,S}) ->
     io_lib:format("~2..0B~2..0B~2..0B~2..0B~2..0B~2..0BZ", [Y rem 100,Mo,D,H,Mi,S]).
 
@@ -64,9 +61,6 @@ validity() ->
        notAfter = {utcTime,timefmt({Y+1,M,D},Time)}
       }.
 
-extensions(L) -> [#'Extension'{extnID=Oid, critical=Crit, extnValue=V}
-                  || {Oid,Crit,V} <- L].
-
 keyIdentifier(KeyBin) ->
     crypto:hash(sha, KeyBin).
 
@@ -76,32 +70,50 @@ randSerial() ->
 
 utf8Name(Bin) -> {rdnSequence, [{utf8String,Bin}]}.
 
-ecc_root_cert(PubKey, PriKey) ->
-    ContactInfo = attributes([
-        {?'id-at-commonName', {utf8String,<<?ISSUER_CN>>}},
-        {?'id-at-organizationName', {utf8String,<<?ISSUER_ORG>>}},
-        %%{?'id-at-countryName', {printableString,<<"us">>}}
-        %% should be the above? does not work.
-        {?'id-at-countryName', "us"}
-    ]),
-    {ok,PubKeyParams} = 'OTP-PUB-KEY':encode('EcpkParameters',
-                                             {namedCurve, ?'secp521r1'}),
+attributes(L) ->
+    %% don't forget each attribute is wrapped in a list for some reason
+    Fun = fun ({T,V}) when is_binary(V) ->
+                  [#'AttributeTypeAndValue'{type=T,value={utf8String,V}}];
+              ({T,V}) ->
+                  [#'AttributeTypeAndValue'{type=T,value=V}]
+          end,
+    {rdnSequence, map(Fun, L)}.
+
+issuer() ->
+    [{?'id-at-commonName',<<?ISSUER_CN>>},
+     {?'id-at-organizationName',<<?ISSUER_ORG>>},
+     {?'id-at-countryName',"us"}].
+
+%% all extensions are critical
+extension_records(L) -> [#'Extension'{extnID=Oid, critical=true, extnValue=V}
+                         || {Oid,V} <- L].
+
+ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
+    Subject = attributes(Subject0), % checks arguments early
     PubKeyInfo = #'OTPSubjectPublicKeyInfo'{
         algorithm = #'PublicKeyAlgorithm'{
             algorithm = ?'id-ecPublicKey',
-            %%parameters = {namedCurve, ?'secp521r1'}
             parameters = {namedCurve, ?'secp521r1'}
         },
-        % 4 means the OCTECT STREAM is uncompressed
-        subjectPublicKey = #'ECPoint'{point=PubKey}
+        subjectPublicKey = #'ECPoint'{point=SubjectPubKey}
     },
-    Extensions = extensions([
-        {?'id-ce-subjectKeyIdentifier',false,keyIdentifier(PubKey)},
-        {?'id-ce-basicConstraints',true,
-         #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
-        {?'id-ce-keyUsage',false,
-         [digitalSignature,keyEncipherment,dataEncipherment,keyCertSign,cRLSign]}
-    ]),
+    Extensions = [
+        {?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)}|
+        case Purpose of
+        authority -> [
+            {?'id-ce-basicConstraints',
+             #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
+            {?'id-ce-keyUsage',[digitalSignature,keyCertSign,cRLSign]}
+        ];
+        host -> [
+            {?'id-ce-basicConstraints',
+             #'BasicConstraints'{cA=false, pathLenConstraint=asn1_NOVALUE}},
+            {?'id-ce-keyUsage',[keyEncipherment,keyAgreement]},
+            {?'id-ce-extKeyUsage',[?'id-kp-serverAuth']}
+        ];
+        _ -> exit(badarg)
+        end
+    ],
     SignatureAlgorithm = #'SignatureAlgorithm'{
         algorithm = ?'ecdsa-with-SHA512',
         parameters = {namedCurve, ?'secp521r1'}
@@ -110,13 +122,12 @@ ecc_root_cert(PubKey, PriKey) ->
         version = v3,
         serialNumber = randSerial(),
         signature = SignatureAlgorithm,
-        issuer = ContactInfo,
+        issuer = attributes(issuer()),
         validity = validity(),
-        subject = ContactInfo,
+        subject = Subject,
         subjectPublicKeyInfo = PubKeyInfo,
         issuerUniqueID = asn1_NOVALUE,
         subjectUniqueID = asn1_NOVALUE,
-        extensions = Extensions
+        extensions = extension_records(Extensions)
     },
-    public_key:pkix_sign(TBSCertificate, PriKey).
-
+    public_key:pkix_sign(TBSCertificate, CaPriKey).
