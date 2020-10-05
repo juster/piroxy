@@ -1,5 +1,5 @@
 -module(piclient).
--include("phttp.hrl").
+-include("../include/phttp.hrl").
 -import(lists, [reverse/1]).
 
 -export([start/0, stop/1]).

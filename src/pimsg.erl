@@ -10,7 +10,7 @@
 -export([body_length/1, request_length/2, response_code/1, response_length/3]).
 
 -import(lists, [reverse/1]).
--include("phttp.hrl").
+-include("../include/phttp.hrl").
 
 %%%
 %%% exports

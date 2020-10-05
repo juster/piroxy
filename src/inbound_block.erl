@@ -6,7 +6,7 @@
 
 -module(inbound_block).
 -behavior(gen_server).
--include("phttp.hrl").
+-include("../include/phttp.hrl").
 -import(lists, [reverse/1]).
 
 -export([start_link/0, start_link/1, send/3, send/4]).

@@ -3,12 +3,15 @@
 -module(mitm).
 -behavior(gen_server).
 
--export([bridge/3]).
+-export([start/1, bridge/3]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%%
 %%% EXPORTS
 %%%
+
+start(Opts) ->
+    gen_server:start(?MODULE, [Opts], []).
 
 bridge(Sock, Host, Port) ->
     %% handle timeout elsewhere
@@ -19,17 +22,16 @@ bridge(Sock, Host, Port) ->
 %%%
 
 init([Opts]) ->
-    Tab = ets:init(?MODULE, [private]),
     {Timeout,Passwd,KeyPath} =
     try
-        {_,A} = lists:keyfind(timeout,Opts),
-        {_,B} = lists:keyfind(passwd,Opts),
-        {_,C} = lists:keyfind(keypath,Opts),
+        {_,A} = lists:keyfind(timeout,1,Opts),
+        {_,B} = lists:keyfind(passwd,1,Opts),
+        {_,C} = lists:keyfind(keypath,1,Opts),
         {A,B,C}
     catch
         error:badmatch -> exit(badarg)
     end,
-
+    Tab = ets:init(?MODULE, [private]),
     PriKey = forger_lib:decode_private(KeyPath, Passwd),
     process_flag(trap_exit, true),
     {ok,{Timeout,PriKey,Tab}}.

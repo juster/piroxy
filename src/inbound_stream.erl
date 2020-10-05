@@ -19,7 +19,7 @@
 
 -module(inbound_stream).
 -behavior(gen_server).
--include("phttp.hrl").
+-include("../include/phttp.hrl").
 
 -define(MAX_ACTIVE, 128).
 

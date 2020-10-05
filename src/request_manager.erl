@@ -3,7 +3,7 @@
 
 -import(lists, [flatmap/2, reverse/1, foreach/2]).
 -include_lib("kernel/include/logger.hrl").
--include("phttp.hrl").
+-include("../include/phttp.hrl").
 
 -export([start/0, start_link/0, stop/0]).
 -export([new_request/2, next_request/0, close_request/1]).
