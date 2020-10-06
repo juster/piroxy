@@ -106,7 +106,7 @@ handle_info({'EXIT',OldPid,Reason1}, Tab) ->
                    request_error(Tab, ReqRec, Reason2);
                T -> T
            end,
-    ?DBG("handle_info", {{'EXIT',OldPid,Reason1},{task,Task}}),
+    %%?DBG("handle_info", {{'EXIT',OldPid,Reason1},{task,Task}}),
     case Task of
         cleanup ->
             %% sanity check

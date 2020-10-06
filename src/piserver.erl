@@ -6,7 +6,6 @@
 -export([start/2, superserver/1, server/2]).
 
 start(_Addr, Port) ->
-    io:format("DING~n"),
     {ok,Listen} = gen_tcp:listen(Port, [inet,{active,true},binary]),
     register(piserver, spawn_link(?MODULE, superserver, [Listen])).
 
@@ -18,7 +17,6 @@ superserver(Listen) ->
 
 server(Pid, Listen) ->
     {ok,Socket} = gen_tcp:accept(Listen),
-    io:format("DANG~n"),
     Pid ! started,
     Reader = pimsg:head_reader(),
     {ok,InPid} = inbound_stream:start_link(),
@@ -229,12 +227,6 @@ send({tcp,Sock}, Data) ->
 
 send({ssl,Sock}, Data) ->
     ssl:send(Sock, Data).
-
-setopts({tcp,Sock}, Opts) ->
-    inet:setopts(Sock, Opts);
-
-setopts({ssl,Sock}, Opts) ->
-    ssl:setopts(Sock, Opts).
 
 send_head(Socket, Head) ->
     send(Socket, [Head#head.line|<<?CRLF>>]),

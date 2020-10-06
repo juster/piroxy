@@ -41,7 +41,7 @@
 %%% external interface
 
 start_link() ->
-    gen_server:start_link(?MODULE, [self()], [{debug,[trace]}]).
+    gen_server:start_link(?MODULE, [self()], []).
 
 start_link(Name) ->
     gen_server:start_link({local,Name}, ?MODULE, [self()], []).
