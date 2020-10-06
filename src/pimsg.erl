@@ -213,8 +213,8 @@ response_length_(_, _, ResHeaders) -> body_length(ResHeaders).
 response_length(Method, Line, Headers) ->
     response_length_(Method, response_code(Line), Headers).
 
-request_length(connect, _) -> 0;
-request_length(get, _) -> 0;
+request_length(connect, _) -> {ok,0};
+request_length(get, _) -> {ok,0};
 request_length(_, Headers) -> body_length(Headers).
 
 %%%

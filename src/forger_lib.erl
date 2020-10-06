@@ -26,32 +26,34 @@
 %%
 %% This module is hard-coded to use the secp521r1 curve.
 
--export([generate_ca_pair/1, decode_private/2, forge/2]).
+-export([generate_ca_pair/1, decode_ca_pair/2, forge/2]).
 
 %%%
 %%% EXPORTS
 %%%
 
+%% Returns a PEM-encoded binary with a Certificate entry and ECPrivateKey entry.
+%% The ECPrivateKey entry is encrypted with the provided Passwd.
 generate_ca_pair(Passwd) ->
     PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
     CertDer = ecc_certificate(issuer(), PubKey, PriKey, authority),
-    CAPem = pem_encode([{'Certificate',CertDer,not_encrypted}]),
     CipherInfo = {"DES-CBC", crypto:strong_rand_bytes(8)},
     PriKeyEnt = pem_entry_encode('ECPrivateKey', PriKey, {CipherInfo, Passwd}),
-    PriKeyPem = pem_encode([PriKeyEnt]),
-    {CAPem,PriKeyPem}.
+    %%PriKeyPem = pem_encode([PriKeyEnt]),
+    pem_encode([{'Certificate',CertDer,not_encrypted}, PriKeyEnt]).
 
-%% Decode the private key PEM (which requires the password used to
-%% generate it).
-decode_private(PriPem, Passwd) ->
-    [PriEntry] = pem_decode(PriPem),
-    pem_entry_decode(PriEntry, Passwd).
+%% Decode the certificate PEM which contains a ECPrivateKey entry
+%% Decrypt this entry, which requires the password given to generate_ca_pair.
+decode_ca_pair(PriPem, Passwd) ->
+    [Cert, PriEntry] = pem_decode(PriPem),
+    {pem_entry_decode(Cert), pem_entry_decode(PriEntry, Passwd)}.
 
 %% Create a new cert/private key for the given host name/ip number.
+%% FQDNs = [binary()]
 forge(FQDNs, CAPriKey) ->
     [Hd|_] = FQDNs,
-    Contact = [{?'id-at-commonName', list_to_binary(Hd)}],
+    Contact = [{?'id-at-commonName', Hd}],
     PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
     CertDer = ecc_certificate(Contact, PubKey, CAPriKey, {host,FQDNs}),

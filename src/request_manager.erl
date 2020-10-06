@@ -106,7 +106,7 @@ handle_info({'EXIT',OldPid,Reason1}, Tab) ->
                    request_error(Tab, ReqRec, Reason2);
                T -> T
            end,
-    ?DBG("handle_info", {task,Task}),
+    ?DBG("handle_info", {{'EXIT',OldPid,Reason1},{task,Task}}),
     case Task of
         cleanup ->
             %% sanity check
@@ -215,9 +215,13 @@ fail_task(closed,null,[]) ->
 fail_task(closed,closed,_Pending) ->
     retry;
 
-%% Error/close before any request could be queued, not good.
+%% Closed before any request could be queued, not good.
 fail_task(closed,null,_Pending) ->
     {target_error,reset};
+
+%% Erro before any request could be queued, not good.
+fail_task(Reason,null,_Pending) ->
+    {target_error,Reason};
 
 %% Pending requests but some error occurred.
 fail_task(Reason,closed,_Pending) ->

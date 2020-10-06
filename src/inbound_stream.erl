@@ -24,6 +24,7 @@
 -define(MAX_ACTIVE, 128).
 
 %%
+%% The request queue is streamed in the order that it is received from the client.
 %% Request queue is in normal order, because we must relay all request chunks
 %% we have received, anyways.
 %%
@@ -33,19 +34,23 @@
 -record(state, {pid, reqQ=[], respQ=[]}).
 
 -import(lists, [foreach/2, reverse/1, reverse/2]).
--export([start_link/0, start_link/1, stream_request/2, reflect/2, disconnect/1]).
+-export([start_link/0, start_link/1, stream_request/2, finish_request/1]).
+-export([reflect/2, disconnect/1]).
 -export([init/1, terminate/2, handle_cast/2, handle_call/3]).
 
 %%% external interface
 
 start_link() ->
-    gen_server:start_link(?MODULE, [self()], []).
+    gen_server:start_link(?MODULE, [self()], [{debug,[trace]}]).
 
 start_link(Name) ->
     gen_server:start_link({local,Name}, ?MODULE, [self()], []).
 
 stream_request(ServerRef, Chunk) ->
     gen_server:cast(ServerRef, {stream_request,Chunk}).
+
+finish_request(ServerRef) ->
+    gen_server:cast(ServerRef, finish_request).
 
 reflect(ServerRef, Messages) ->
     gen_server:cast(ServerRef, {reflect,Messages}).
@@ -54,7 +59,7 @@ reflect(ServerRef, Messages) ->
 %% pipeline are relayed
 disconnect(ServerRef) ->
     error(not_yet_implemented).
-    %%gen_server:cast(ServerRef, disconnect).
+    %gen_server:cast(ServerRef, disconnect).
 
 %%% behavior callbacks
 
@@ -100,29 +105,13 @@ handle_call({request_body,Ref}, From, S) ->
             {reply,{some,T},S#state{reqQ=Q}}
     end.
 
-%% called by client to mark the end of request chunks (in-order)
-handle_cast({stream_request,done}, S) ->
-    case reverse(S#state.reqQ) of
-        [] ->
-            %% Queue should not be empty!
-            {stop,internal_error,S};
-        [{_,[done]}|_] ->
-            %% request_end was already called
-            {stop,request_queue_closed,S};
-        [{Ref,{blocked,From}}|Q0] ->
-            %% we have blocked an outbound call and can bypass the
-            %% queue
-            gen_server:reply(From, done),
-            Q = reverse(Q0, [{Ref,[done]}]),
-            {noreply,stream_responses(S#state{reqQ=Q})};
-        [{Ref,L0}|Q0] ->
-            %% append 'done' to the list of chunks
-            L = L0 ++ [done],
-            Q = reverse(Q0, [{Ref,L}]),
-            {noreply,S#state{reqQ=Q}}
-    end;
-
 %% called by client to append to request body (in order)
+handle_cast({stream_request,?EMPTY}, S) ->
+    {noreply, S};
+
+handle_cast({stream_request,<<>>}, S) ->
+    {noreply, S};
+
 handle_cast({stream_request,Chunk}, S) ->
     %% request should be the last in the queue
     case reverse(S#state.reqQ) of
@@ -145,6 +134,28 @@ handle_cast({stream_request,Chunk}, S) ->
             Q = reverse(Q0, [{Ref,L}]),
             {noreply,S#state{reqQ=Q}}
     end;
+
+%% called by client to mark the end of request chunks (in-order)
+handle_cast(finish_request, S) ->
+    case reverse(S#state.reqQ) of
+        [] ->
+            %% Queue should not be empty!
+            {noreply,S};
+        [{_,[done]}|_] ->
+            %% request_end was already called
+            {stop,request_queue_closed,S};
+        [{Ref,{blocked,From}}|Q0] ->
+            %% we have blocked an outbound call and can bypass the
+            %% queue
+            gen_server:reply(From, done),
+            Q = reverse(Q0, [{Ref,[done]}]),
+            {noreply,stream_responses(S#state{reqQ=Q})};
+        [{Ref,L}|Q0] ->
+            %% prepend 'done' to the last request's list of chunks
+            Q = reverse(Q0, [{Ref,L++[done]}]),
+            {noreply,stream_responses(S#state{reqQ=Q})}
+    end;
+
 %% inbound:close() called by request_manager means responses are finished
 handle_cast({close,Ref}, S) ->
     case find(Ref, S#state.respQ) of
@@ -157,7 +168,7 @@ handle_cast({close,Ref}, S) ->
             {noreply, stream_responses(S#state{respQ=Q})}
     end;
 
-handle_cast({reset,Ref}, S) ->
+handle_cast({reset,_Ref}, S) ->
     %% reset both the request queue and the response queue
     {stop, not_implemented, S};
 
@@ -176,7 +187,8 @@ handle_cast({reflect,L1},S) ->
         [] ->
             {stop, response_queue_empty, S};
         [{Ref,L2}|Q0] ->
-            Q = reverse(Q0, {Ref,reverse(L1)++L2}),
+            L = reverse(L1, L2),
+            Q = reverse([{Ref,L}|Q0]),
             {noreply, stream_responses(S#state{respQ=Q})}
     end;
 

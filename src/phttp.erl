@@ -106,14 +106,16 @@ method_atom(<<"PATCH">>) -> patch;
 method_atom(<<"CONNECT">>) -> connect;
 method_atom(_) -> unknown.
 
-version_atom(?HTTP11) -> http11;
+version_atom(<<?HTTP11>>) -> http11;
 version_atom(<<"HTTP/1.0">>) -> http10;
 version_atom(<<"HTTP/2.0">>) -> http20;
 version_atom(_) -> unknown.
 
+status_bin(http_ok) -> {ok,<<"200 OK">>};
 status_bin(http_bad_request) -> {ok,<<"400 Bad Request">>};
 status_bin(http_server_error) -> {ok,<<"500 Server Error">>};
 status_bin(http_not_implemented) -> {ok,<<"501 Not Implemented">>};
 status_bin(http_bad_gateway) -> {ok,<<"502 Bad Gateway">>};
+status_bin(http_gateway_timeout) -> {ok,<<"504 Gateway Timeout">>};
 status_bin(http_ver_not_supported) -> {ok,<<"505 HTTP Version Not Supported">>};
 status_bin(_) -> not_found.

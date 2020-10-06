@@ -13,10 +13,12 @@
 %%%
 
 connect(http, Host, Port) ->
-    spawn_link(fun () -> start(Host, Port, false) end);
+    ?DBG("connect", {http,Host,Port}),
+    spawn_link(fun () -> start(binary_to_list(Host), Port, false) end);
 
 connect(https, Host, Port) ->
-    spawn_link(fun () -> start(Host, Port, true) end).
+    ?DBG("connect", {https,Host,Port}),
+    spawn_link(fun () -> start(binary_to_list(Host), Port, true) end).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
@@ -28,7 +30,7 @@ new_request(Pid) ->
 
 start(Host, Port, false) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], ?CONNECT_TIMEOUT) of
+    case gen_tcp:connect(Host, Port, [binary, {packet,0}], ?CONNECT_TIMEOUT) of
         {error, Reason} -> exit(Reason);
         {ok, Sock} ->
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=false}),
@@ -37,7 +39,7 @@ start(Host, Port, false) ->
 
 start(Host, Port, true) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case ssl:connect(Host, Port, [binary, {packet, 0}], ?CONNECT_TIMEOUT) of
+    case ssl:connect(Host, Port, [binary, {packet,0}], ?CONNECT_TIMEOUT) of
         {error,Reason} -> exit(Reason);
         {ok,Sock} ->
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=true}),
