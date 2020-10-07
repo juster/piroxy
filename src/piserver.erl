@@ -20,7 +20,9 @@ server(Pid, Listen) ->
     Pid ! started,
     Reader = pimsg:head_reader(),
     {ok,InPid} = inbound_stream:start_link(),
-    loop({tcp,Socket}, InPid, head, Reader).
+    ok = loop({tcp,Socket}, InPid, head, Reader),
+    inbound:stop(InPid),
+    ok.
 
 loop(Socket, InPid, HttpState, Reader) ->
     receive
