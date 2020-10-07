@@ -168,9 +168,16 @@ handle_cast({close,Ref}, S) ->
             {noreply, stream_responses(S#state{respQ=Q})}
     end;
 
-handle_cast({reset,_Ref}, S) ->
-    %% reset both the request queue and the response queue
-    {stop, not_implemented, S};
+handle_cast({reset,Ref}, S) ->
+    %% empty the message queue for Ref in both the request and response queue
+    case {find(Ref, S#state.reqQ), find(Ref,S#state.respQ)} of
+        {{found,_,Q1,Q2}, {found,_,Q3,Q4}} ->
+            {noreply, S#state{reqQ=reverse(Q1,[{Ref,[]}|Q2]),
+                              respQ=reverse(Q3,[{Ref,[]}|Q4])}};
+        _ ->
+            %% invalid reference, log it?
+            {noreply,S}
+    end;
 
 handle_cast({respond,Ref,T}, S) ->
     case find(Ref, S#state.respQ) of
