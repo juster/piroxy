@@ -49,6 +49,11 @@ loop(Socket, InPid, HttpState, Reader) ->
         {respond,{body,Body}} ->
             send(Socket, Body),
             loop(Socket, InPid, HttpState, Reader);
+        {response,{error,_Reason}} ->
+            %% TODO: log Reason?
+            StatusBin = phttp:status_bin(http_server_error),
+            send(Socket, <<?HTTP11," ",StatusBin/binary,?CRLF>>),
+            loop(Socket, InPid, HttpState, Reader);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
         disconnect ->

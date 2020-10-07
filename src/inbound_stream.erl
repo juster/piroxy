@@ -179,6 +179,17 @@ handle_cast({reset,Ref}, S) ->
             {noreply,S}
     end;
 
+%% TODO: change name from fail to error
+handle_cast({fail,Ref,Reason}, S) ->
+    case find(Ref, S#state.respQ) of
+        not_found ->
+            %% error?
+            {noreply, S};
+        {found, L0, Q1, Q2} ->
+            L = [{error,Reason}|L0],
+            S#state{respQ=reverse(Q1,[{Ref,L}|Q2])}
+    end;
+
 handle_cast({respond,Ref,T}, S) ->
     case find(Ref, S#state.respQ) of
         not_found ->
