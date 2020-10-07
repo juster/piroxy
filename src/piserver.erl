@@ -51,10 +51,9 @@ loop(Socket, InPid, HttpState, Reader) ->
         {respond,{body,Body}} ->
             send(Socket, Body),
             loop(Socket, InPid, HttpState, Reader);
-        {response,{error,_Reason}} ->
+        {response,{error,Reason}} ->
             %% TODO: log Reason?
-            StatusBin = phttp:status_bin(http_server_error),
-            send(Socket, <<?HTTP11," ",StatusBin/binary,?CRLF>>),
+            reflect_error(InPid, Reason),
             loop(Socket, InPid, HttpState, Reader);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
@@ -269,32 +268,33 @@ reflect_statusln(InPid, StatusBin) ->
 %% TODO: handle ssl sockets as well?
 tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
     inet:setopts(TcpSock, [{active,false}]), % XXX: may be too late...
-    try forger:forge(Host) of
-        {error,_}=Err1 -> throw(Err1);
-        {ok,{Cert,Key}} ->
-            ?DBG("tunnel", {key,Key}),
-            DerKey = public_key:der_encode('ECPrivateKey', Key),
-            %%Opts = [{active,false},{mode,binary},{packet,0},{cert,Cert},{key,Key}],
-            %%Opts = [{active,false},{mode,binary},{packet,0},{key,element(2,KeyEntry)}],
-            Opts = [{active,true},{mode,binary},{packet,0},{cert,Cert},
-                    {key,{'ECPrivateKey',DerKey}}],
-            %%inet:controlling_process(TcpSock, self()),
-            case ssl:connect(TcpSock, Opts, ?CONNECT_TIMEOUT) of
-                {error,_}=Err2 -> throw(Err2);
-                {ok,TlsSock} ->
-                    ssl:setopts(TlsSock, [{active,true}]),
-                    Reader = pimsg:head_reader(),
-                    ok = recv({ssl,TlsSock}, InPid, head, Reader, Rest),
-                    throw(cleanup)
-            end
+    try
+        case forger:forge(Host) of
+            {error,_}=Err1 -> throw(Err1);
+            {ok,{Cert,Key}} ->
+                ?DBG("tunnel", {key,Key}),
+                DerKey = public_key:der_encode('ECPrivateKey', Key),
+                %%Opts = [{active,false},{mode,binary},{packet,0},{cert,Cert},{key,Key}],
+                %%Opts = [{active,false},{mode,binary},{packet,0},{key,element(2,KeyEntry)}],
+                Opts = [{active,true},{mode,binary},{packet,0},{cert,Cert},
+                        {key,{'ECPrivateKey',DerKey}}],
+                %%inet:controlling_process(TcpSock, self()),
+                case ssl:connect(TcpSock, Opts, ?CONNECT_TIMEOUT) of
+                    {error,_}=Err2 -> throw(Err2);
+                    {ok,TlsSock} ->
+                        ssl:setopts(TlsSock, [{active,true}]),
+                        Reader = pimsg:head_reader(),
+                        ok = recv({ssl,TlsSock}, InPid, head, Reader, Rest),
+                        throw(cleanup)
+                end
+        end
     catch
-        throw:cleanup ->
+        cleanup ->
             gen_tcp:close(TcpSock), % not sure how else to cleanup
             ok;
-        throw:{error,Reason} ->
-            %%reflect_error(InPid, Reason),
+        {error,Reason} ->
+            reflect_error(InPid, Reason),
             ?DBG("tunnel", {error,Reason}),
-            %%recv_abort(TcpSock, InPid)
-            exit(Reason)
+            recv_abort(TcpSock, InPid)
     end.
 
