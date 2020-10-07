@@ -58,8 +58,7 @@ reflect(ServerRef, Messages) ->
 %% end the connection but only after pending responses in the
 %% pipeline are relayed
 disconnect(ServerRef) ->
-    error(not_yet_implemented).
-    %gen_server:cast(ServerRef, disconnect).
+    gen_server:cast(ServerRef, disconnect).
 
 %%% behavior callbacks
 
@@ -203,7 +202,8 @@ handle_cast({respond,Ref,T}, S) ->
 handle_cast({reflect,L1},S) ->
     case reverse(S#state.respQ) of
         [] ->
-            {stop, response_queue_empty, S};
+            replay(L1, S),
+            {noreply, S};
         [{Ref,L2}|Q0] ->
             L = reverse(L1, L2),
             Q = reverse([{Ref,L}|Q0]),
@@ -211,7 +211,9 @@ handle_cast({reflect,L1},S) ->
     end;
 
 handle_cast(disconnect,S) ->
-    {stop,not_implemented,S}.
+    Q1 = S#state.reqQ ++ [{null,[done]}],
+    Q2 = S#state.respQ ++ [{null, [done,disconnect]}],
+    {noreply, stream_responses(S#state{reqQ=Q1, respQ=Q2})}.
 
 relay(Msg, S) ->
     S#state.pid ! {respond,Msg}.

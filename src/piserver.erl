@@ -10,19 +10,35 @@ start(_Addr, Port) ->
     register(piserver, spawn_link(?MODULE, superserver, [Listen])).
 
 superserver(Listen) ->
-    spawn_link(?MODULE, server, [self(), Listen]),
+    Pid = spawn(?MODULE, server, [self(), Listen]),
     receive
-        started -> superserver(Listen)
+        {callback,Pid,Msg} ->
+            case Msg of
+                started ->
+                    superserver(Listen);
+                {callback,Pid,{error,_Reason1}} ->
+                    %% TODO: abort on too many errors
+                    superserver(Listen);
+                {callback,Pid,{'EXIT',Reason2}} ->
+                    %% unexpected error/exit
+                    exit(Reason2)
+            end
     end.
 
 server(Pid, Listen) ->
-    {ok,Socket} = gen_tcp:accept(Listen),
-    Pid ! started,
-    Reader = pimsg:head_reader(),
-    {ok,InPid} = inbound_stream:start_link(),
-    ok = loop({tcp,Socket}, InPid, head, Reader),
-    inbound:stop(InPid),
-    ok.
+    case catch(gen_tcp:accept(Listen)) of
+        {ok,Socket} ->
+            Pid ! {callback,self(),started},
+            Reader = pimsg:head_reader(),
+            {ok,InPid} = inbound_stream:start_link(),
+            ok = loop({tcp,Socket}, InPid, head, Reader),
+            inbound:stop(InPid),
+            ok;
+        {error,_}=Err ->
+            Pid ! {callback,self(),Err};
+        {'EXIT',_}=Exit ->
+            Pid ! {callback,self(),Exit}
+    end.
 
 loop(Socket, InPid, HttpState, Reader) ->
     receive
@@ -57,7 +73,7 @@ loop(Socket, InPid, HttpState, Reader) ->
             loop(Socket, InPid, HttpState, Reader);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
-        disconnect ->
+        {respond,disconnect} ->
             %% XXX: not sure why this is not received, maybe the socket is
             %% closed remotely first?
             ?DBG("loop", disconnect),
@@ -261,7 +277,7 @@ reflect_error(InPid, Reason) ->
 reflect_statusln(InPid, StatusBin) ->
     StatusLn = <<?HTTP11," ",StatusBin/binary>>,
     Head = #head{line=StatusLn, bodylen=0},
-    inbound_stream:reflect(InPid, [{head,Head}]).
+    inbound_stream:reflect(InPid, [Head]).
 
 %% XXX: client can keep CONNECT-ing to new hosts indefinitely...
 %% TODO: should I discard Rest?
@@ -295,6 +311,6 @@ tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
         {error,Reason} ->
             reflect_error(InPid, Reason),
             ?DBG("tunnel", {error,Reason}),
-            recv_abort(TcpSock, InPid)
+            recv_abort({tcp,TcpSock}, InPid)
     end.
 
