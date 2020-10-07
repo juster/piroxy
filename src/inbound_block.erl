@@ -65,7 +65,7 @@ handle_cast({close,Ref}, {Ref,From,_,Head,Body}) ->
 handle_cast({reset,Ref}, {Ref,From,Body,_,_}) ->
     {noreply, {Ref,From,Body,null,[]}};
 
-handle_cast({respond,Ref,{head,Head}}, {Ref,_,_,null,_}=S) ->
+handle_cast({respond,Ref,#head{}=Head}, {Ref,_,_,null,_}=S) ->
     {noreply, setelement(4, S, Head)};
 
 handle_cast({respond,Ref,{body,Chunk}}, {Ref,_,_,_,Body}=S) ->

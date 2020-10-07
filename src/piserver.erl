@@ -43,7 +43,7 @@ loop(Socket, InPid, HttpState, Reader) ->
             exit(Reason);
         {ssl_error,_Sock,Reason} ->
             exit(Reason);
-        {respond,{head,Head}} ->
+        {respond,#head{}=Head} ->
             send_head(Socket, Head),
             loop(Socket, InPid, HttpState, Reader);
         {respond,{body,Body}} ->

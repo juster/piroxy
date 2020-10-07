@@ -90,7 +90,7 @@ recv() ->
     receive
         {respond,reset} ->
             recv();
-        {respond,{head,Head}} ->
+        {respond,#head{}=Head} ->
             recv(Head, []);
         {respond,_} ->
             {error,expected_head}
@@ -100,7 +100,7 @@ recv(H, Body) ->
     receive
         {respond,reset} ->
             recv();
-        {respond,{head,_}} ->
+        {respond,#head{}} ->
             {error,expected_body};
         {respond,{body,Chunk}} ->
             recv(H, [Chunk|Body]);

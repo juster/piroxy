@@ -161,13 +161,13 @@ head_end(StatusLn, Headers, Rest, State) ->
         {ok,0} ->
             ResHead = #head{method=Method, line=StatusLn,
                             headers=Headers, bodylen=0},
-            inbound:respond(Pid, Ref, {head,ResHead}),
+            inbound:respond(Pid, Ref, ResHead),
             inbound:respond(Pid, Ref, {body,?EMPTY}),
             close_request(State#outstate{rstate=null});
         {ok,BodyLen} ->
             ResHead = #head{method=Method, line=StatusLn,
                             headers=Headers, bodylen=BodyLen},
-            inbound:respond(Pid, Ref, {head,ResHead}),
+            inbound:respond(Pid, Ref, ResHead),
             body_begin(Rest, BodyLen, State);
         {error,missing_length} ->
             exit({missing_length,StatusLn,Headers})
