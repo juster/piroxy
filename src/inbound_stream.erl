@@ -36,7 +36,7 @@
 -import(lists, [foreach/2, reverse/1, reverse/2]).
 -export([start_link/0, start_link/1, stream_request/2, finish_request/1]).
 -export([reflect/2, disconnect/1]).
--export([init/1, terminate/2, handle_cast/2, handle_call/3]).
+-export([init/1, terminate/2, handle_cast/2, handle_call/3, handle_continue/2]).
 
 %%% external interface
 
@@ -97,7 +97,7 @@ handle_call({request_body,Ref}, From, S) ->
         {found,[done],_,_} ->
             %% the request chunks are finished. if possible, stream the response
             %% back to the client.
-            {reply,done,stream_responses(S)};
+            {reply,done,S,{continue,stream_responses}};
         {found,[T|L],Q1,Q2} ->
             %% relay chunks in the order they were received
             Q = reverse(Q1, [{Ref,L}|Q2]),
@@ -148,11 +148,11 @@ handle_cast(finish_request, S) ->
             %% queue
             gen_server:reply(From, done),
             Q = reverse(Q0, [{Ref,[done]}]),
-            {noreply,stream_responses(S#state{reqQ=Q})};
+            {noreply,S#state{reqQ=Q},{continue,stream_responses}};
         [{Ref,L}|Q0] ->
             %% prepend 'done' to the last request's list of chunks
             Q = reverse(Q0, [{Ref,L++[done]}]),
-            {noreply,stream_responses(S#state{reqQ=Q})}
+            {noreply,S#state{reqQ=Q},{continue,stream_responses}}
     end;
 
 %% inbound:close() called by request_manager means responses are finished
@@ -164,7 +164,7 @@ handle_cast({close,Ref}, S) ->
             %% prepend 'done' to the message queue
             Q = reverse(Q1, [{Ref,[done|L]}|Q2]),
             %% prime the pump just in case it needs it
-            {noreply, stream_responses(S#state{respQ=Q})}
+            {noreply,S#state{respQ=Q},{continue,stream_responses}}
     end;
 
 handle_cast({reset,Ref}, S) ->
@@ -195,7 +195,7 @@ handle_cast({respond,Ref,T}, S) ->
             {stop, {unknownref,Ref}, S};
         {found, L, Q1, Q2} ->
             Q = reverse(Q1, [{Ref,[T|L]}|Q2]),
-            {noreply, stream_responses(S#state{respQ=Q})}
+            {noreply,S#state{respQ=Q},{continue,stream_responses}}
     end;
 
 %% reflect response back (called by client, in-order)
@@ -207,13 +207,13 @@ handle_cast({reflect,L1},S) ->
         [{Ref,L2}|Q0] ->
             L = reverse(L1, L2),
             Q = reverse([{Ref,L}|Q0]),
-            {noreply, stream_responses(S#state{respQ=Q})}
+            {noreply,S#state{respQ=Q},{continue,stream_responses}}
     end;
 
 handle_cast(disconnect,S) ->
     Q1 = S#state.reqQ ++ [{null,[done]}],
     Q2 = S#state.respQ ++ [{null, [done,disconnect]}],
-    {noreply, stream_responses(S#state{reqQ=Q1, respQ=Q2})}.
+    {noreply, S#state{reqQ=Q1, respQ=Q2},{continue,stream_responses}}.
 
 relay(Msg, S) ->
     S#state.pid ! {respond,Msg}.
@@ -226,31 +226,33 @@ find(X, [{X,Y}|L1], L2) -> {found,Y,L2,L1}; % reverse(L2, [T|L1]) rebuilds
 find(X, [Z|L1], L2) -> find(X, L1, [Z|L2]);
 find(_, [], _) -> not_found.
 
-stream_responses(#state{reqQ=[], respQ=[]} = S) ->
-    S;
+handle_continue(stream_responses, #state{reqQ=[], respQ=[]} = S) ->
+    {noreply, S};
 
-stream_responses(S) ->
+handle_continue(stream_responses, S) ->
     %% Assumes: queues are not empty.
     case {hd(S#state.reqQ), hd(S#state.respQ)} of
         {{Ref1,_}, {Ref2,_}} when Ref1 =/= Ref2 ->
             %% Sanity check: references should be identical
-            error(internal, S);
+            {stop, ref_mismatch, S};
         {{Ref,[done]}, {Ref,[]}} ->
             %% Special case: no responses received yet
-            S;
+            {noreply, S};
         {{Ref,[done]}, {Ref,[done|L]}} ->
             %% Both request and response queues have been tagged done
             replay(reverse(L), S),
             relay(close, S),
             %% Pop the top request/response entries in both queues
-            stream_responses(S#state{reqQ=tl(S#state.reqQ),
-                                     respQ=tl(S#state.respQ)});
+            {noreply,
+             S#state{reqQ=tl(S#state.reqQ), respQ=tl(S#state.respQ)},
+             {continue,stream_responses}};
+
         {{Ref,[done]}, {Ref,L}} ->
             %% Responses are not finished yet, relay what we have and reset
             %% the queue.
             replay(reverse(L), S),
-            S#state{respQ=[{Ref,[]}|tl(S#state.respQ)]};
+            {noreply, S#state{respQ=[{Ref,[]}|tl(S#state.respQ)]}};
         _ ->
             %% Request chunks are still coming in.
-            S
+            {noreply, S}
     end.
