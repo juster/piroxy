@@ -1,6 +1,7 @@
 -module(fieldlist).
 
 -include("../include/phttp.hrl").
+-import(lists, [reverse/1, reverse/2]).
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
 -export([get_value/2, get_value/3]).
@@ -74,8 +75,20 @@ at(I, FL) ->
     {I,F} = lists:nth(I, FL),
     binary_part(F, I+1, byte_size(F)-I-1).
 
-remove(I, FL) ->
-    lists:sublist(FL, 1, I-1) ++ lists:nthtail(I, FL).
+
+remove(Name, FL1) ->
+    remove(binary_lcase(Name), FL1, []).
+
+remove(_Name, [], FL2) ->
+    reverse(FL2);
+
+remove(Name, [{Len,F}=T|FL1], FL2) ->
+    case binary_lcase(binary_part(F, 0, Len)) of
+        Name ->
+            reverse(FL2, FL1);
+        _ ->
+            remove(Name, FL1, [T|FL2])
+    end.
 
 get_value(Field, FL) -> get_value(Field, FL, not_found).
 

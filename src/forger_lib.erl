@@ -12,6 +12,9 @@
 -define(ISSUER_CN, "Pirate Proxy Root CA").
 -define(ISSUER_ORG, "Piroxy Dev Team").
 -define(ISSUER_CO, "US").
+%% this is a little bit ridiculous...
+-define(CERT_SERIAL(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.serialNumber).
+-define(CERT_PUBKEY(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.subjectPublicKeyInfo#'SubjectPublicKeyInfo'.subjectPublicKey).
 
 %% References:
 %% RFC5280: has the relevant ASN1 information
@@ -37,7 +40,8 @@
 generate_ca_pair(Passwd) ->
     PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
-    CertDer = ecc_certificate(issuer(), PubKey, PriKey, authority),
+    Exts = ca_extensions(PubKey),
+    CertDer = ecc_certificate(issuer(), PubKey, PriKey, Exts),
     CipherInfo = {"DES-CBC", crypto:strong_rand_bytes(8)},
     PriKeyEnt = pem_entry_encode('ECPrivateKey', PriKey, {CipherInfo, Passwd}),
     %%PriKeyPem = pem_encode([PriKeyEnt]),
@@ -51,12 +55,13 @@ decode_ca_pair(PriPem, Passwd) ->
 
 %% Create a new cert/private key for the given host name/ip number.
 %% FQDNs = [binary()]
-forge(FQDNs, CAPriKey) ->
+forge(FQDNs, {CACert,CAPriKey}) ->
     [Hd|_] = FQDNs,
     Contact = [{?'id-at-commonName', Hd}],
     PriKey = generate_key({namedCurve,secp521r1}),
     PubKey = PriKey#'ECPrivateKey'.publicKey,
-    CertDer = ecc_certificate(Contact, PubKey, CAPriKey, {host,FQDNs}),
+    Exts = host_extensions(PubKey, FQDNs, CACert),
+    CertDer = ecc_certificate(Contact, PubKey, CAPriKey, Exts),
     {CertDer,PriKey}.
 
 %%%
@@ -95,10 +100,34 @@ issuer() ->
      {?'id-at-countryName',"us"}].
 
 %% all extensions are critical
-extension_records(L) -> [#'Extension'{extnID=Oid, critical=true, extnValue=V}
-                         || {Oid,V} <- L].
+extension_recs(L) ->
+    map(fun({Oid,V}) ->
+                #'Extension'{extnID=Oid, critical=true, extnValue=V};
+           ({Oid,Crit,V}) ->
+                #'Extension'{extnID=Oid, critical=Crit, extnValue=V}
+        end, L).
 
-ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
+ca_extensions(SubjectPubKey) ->
+    extension_recs([{?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)},
+                    {?'id-ce-basicConstraints',
+                     #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
+                    {?'id-ce-keyUsage',[digitalSignature,keyCertSign,cRLSign]}]).
+
+host_extensions(SubjectPubKey, DnsNames, CACert) ->
+    extension_recs([{?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)},
+                    {?'id-ce-authorityKeyIdentifier',false,
+                     #'AuthorityKeyIdentifier'{
+                        keyIdentifier=keyIdentifier(?CERT_PUBKEY(CACert)),
+                        %%authorityCertIssuer={utf8String,<<?ISSUER_CN>>},
+                        authorityCertSerialNumber=?CERT_SERIAL(CACert)
+                       }},
+                    {?'id-ce-basicConstraints',
+                     #'BasicConstraints'{cA=false, pathLenConstraint=asn1_NOVALUE}},
+                    {?'id-ce-keyUsage',[digitalSignature,keyEncipherment,keyAgreement]},
+                    {?'id-ce-extKeyUsage',[?'id-kp-serverAuth', ?'id-kp-clientAuth']},
+                    {?'id-ce-subjectAltName',[{'dNSName',N} || N <- DnsNames]}]).
+
+ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Extensions) ->
     Subject = attributes(Subject0), % checks arguments early
     PubKeyInfo = #'OTPSubjectPublicKeyInfo'{
         algorithm = #'PublicKeyAlgorithm'{
@@ -107,24 +136,6 @@ ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
         },
         subjectPublicKey = #'ECPoint'{point=SubjectPubKey}
     },
-    Extensions = [
-        {?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)}|
-        case Purpose of
-        authority -> [
-            {?'id-ce-basicConstraints',
-             #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
-            {?'id-ce-keyUsage',[digitalSignature,keyCertSign,cRLSign]}
-        ];
-        {host,DNSNames} -> [
-            {?'id-ce-basicConstraints',
-             #'BasicConstraints'{cA=false, pathLenConstraint=asn1_NOVALUE}},
-            {?'id-ce-keyUsage',[keyEncipherment,keyAgreement]},
-            {?'id-ce-extKeyUsage',[?'id-kp-serverAuth']},
-            {?'id-ce-subjectAltName',[{'dNSName',N} || N <- DNSNames]}
-        ];
-        _ -> exit(badarg)
-        end
-    ],
     SignatureAlgorithm = #'SignatureAlgorithm'{
         algorithm = ?'ecdsa-with-SHA512',
         parameters = {namedCurve, ?'secp521r1'}
@@ -139,6 +150,6 @@ ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Purpose) ->
         subjectPublicKeyInfo = PubKeyInfo,
         issuerUniqueID = asn1_NOVALUE,
         subjectUniqueID = asn1_NOVALUE,
-        extensions = extension_records(Extensions)
+        extensions = Extensions
     },
     pkix_sign(TBSCertificate, CaPriKey).

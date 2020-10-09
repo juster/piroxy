@@ -83,7 +83,8 @@ handle_cast({close_request,OutPid,Ref}, Tab) ->
     inbound:close(InPid, Ref),
     {noreply,Tab};
 
-handle_cast({cancel_request,_Ref,_InPid}, Tab) ->
+%% cancel a request, remove it from the todo list.
+handle_cast({cancel_request,_Ref}, Tab) ->
     %% XXX: not yet implemented
     {stop,not_implemented,Tab}.
 

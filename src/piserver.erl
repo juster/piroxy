@@ -3,41 +3,44 @@
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2]).
 
--export([start/2, superserver/1, server/2]).
+-export([start/2, superserver/1, server/0, listen/2]).
 
-start(_Addr, Port) ->
-    {ok,Listen} = gen_tcp:listen(Port, [inet,{active,true},binary]),
-    register(piserver, spawn_link(?MODULE, superserver, [Listen])).
+start(Addr, Port) ->
+    register(piserver, spawn(?MODULE, listen, [Addr,Port])).
 
-superserver(Listen) ->
-    Pid = spawn(?MODULE, server, [self(), Listen]),
-    receive
-        {callback,Pid,Msg} ->
-            case Msg of
-                started ->
-                    superserver(Listen);
-                {callback,Pid,{error,_Reason1}} ->
-                    %% TODO: abort on too many errors
-                    superserver(Listen);
-                {callback,Pid,{'EXIT',Reason2}} ->
-                    %% unexpected error/exit
-                    exit(Reason2)
-            end
+listen(Addr, Port) ->
+    case gen_tcp:listen(Port, [inet,{active,false},binary]) of
+        {ok,Listen} ->
+            superserver(Listen);
+        {error,Reason} ->
+            exit(Reason)
     end.
 
-server(Pid, Listen) ->
-    case catch(gen_tcp:accept(Listen)) of
+superserver(Listen) ->
+    case gen_tcp:accept(Listen) of
         {ok,Socket} ->
-            Pid ! {callback,self(),started},
+            Pid = spawn(fun ?MODULE:server/0),
+            case gen_tcp:controlling_process(Socket, Pid) of
+                ok ->
+                    Pid ! {start,Socket},
+                    superserver(Listen);
+                {error,_}=Err ->
+                    exit(Pid, kill),
+                    Err
+            end,
+            ok;
+        {error,Reason} ->
+            exit(Reason)
+    end.
+
+server() ->
+    receive
+        {start,Socket} ->
+            inet:setopts(Socket, [{active,true}]),
             Reader = pimsg:head_reader(),
             {ok,InPid} = inbound_stream:start_link(),
             ok = loop({tcp,Socket}, InPid, head, Reader),
-            inbound:stop(InPid),
-            ok;
-        {error,_}=Err ->
-            Pid ! {callback,self(),Err};
-        {'EXIT',_}=Exit ->
-            Pid ! {callback,self(),Exit}
+            inbound:stop(InPid)
     end.
 
 loop(Socket, InPid, HttpState, Reader) ->
@@ -46,19 +49,19 @@ loop(Socket, InPid, HttpState, Reader) ->
         {tcp,_,Data} ->
             ?DBG("loop", tcp),
             recv(Socket, InPid, HttpState, Reader, Data);
-        {ssl,_,Data} ->
-            ?DBG("loop", mitm_data),
-            recv(Socket, InPid, HttpState, Reader, Data);
         {tcp_closed,_Sock} ->
             %% TODO: flush buffers etc
             ?DBG("loop", tcp_closed),
             ok;
-        {ssl_closed,_TlsSock} ->
-            %% TODO: flush buffers etc
-            ?DBG("loop", mitm_closed),
-            ok;
         {tcp_error,_Sock,Reason} ->
             exit(Reason);
+        {ssl,_,Data} ->
+            ?DBG("loop", ssl),
+            recv(Socket, InPid, HttpState, Reader, Data);
+        {ssl_closed,_TlsSock} ->
+            %% TODO: flush buffers etc
+            ?DBG("loop", ssl_closed),
+            ok;
         {ssl_error,_Sock,Reason} ->
             exit(Reason);
         {respond,#head{}=Head} ->
@@ -67,10 +70,9 @@ loop(Socket, InPid, HttpState, Reader) ->
         {respond,{body,Body}} ->
             send(Socket, Body),
             loop(Socket, InPid, HttpState, Reader);
-        {response,{error,Reason}} ->
-            %% TODO: log Reason?
-            reflect_error(InPid, Reason),
-            loop(Socket, InPid, HttpState, Reader);
+        {respond,{error,Reason}} ->
+            send(Socket, error_statusln(Reason)),
+            exit(Reason);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
         {respond,disconnect} ->
@@ -256,6 +258,15 @@ send_head(Socket, Head) ->
     send(Socket, <<?CRLF>>),
     ok.
 
+error_statusln(Reason) ->
+    case phttp:status_bin(Reason) of
+        {ok,Bin} ->
+            Bin;
+        not_found ->
+            {ok,Bin} = phttp:status_bin(http_server_error),
+            Bin
+    end.
+
 reflect_status(InPid, HttpStatus) ->
     case phttp:status_bin(HttpStatus) of
         {ok,Bin} ->
@@ -265,14 +276,7 @@ reflect_status(InPid, HttpStatus) ->
     end.
 
 reflect_error(InPid, Reason) ->
-    StatusLn = case phttp:status_bin(Reason) of
-                   {ok,Bin} ->
-                       Bin;
-                   not_found ->
-                       {ok,Bin} = phttp:status_bin(http_server_error),
-                       Bin
-               end,
-    reflect_statusln(InPid, StatusLn).
+    inbound_stream:reflect(InPid, [{error,Reason}]).
 
 reflect_statusln(InPid, StatusBin) ->
     StatusLn = <<?HTTP11," ",StatusBin/binary>>,
@@ -283,34 +287,42 @@ reflect_statusln(InPid, StatusBin) ->
 %% TODO: should I discard Rest?
 %% TODO: handle ssl sockets as well?
 tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
-    inet:setopts(TcpSock, [{active,false}]), % XXX: may be too late...
+    ?DBG("tunnel",{rest,Rest,host,Host,sock,TcpSock}),
     try
+        ok = inet:setopts(TcpSock, [{active,false}]),
+        {ok,StatusBin} = phttp:status_bin(http_ok),
+        Resp = <<?HTTP11," ",StatusBin/binary,?CRLF,?CRLF>>,
+        gen_tcp:send(TcpSock, Resp),
         case forger:forge(Host) of
             {error,_}=Err1 -> throw(Err1);
-            {ok,{Cert,Key}} ->
-                ?DBG("tunnel", {key,Key}),
+            {ok,{HostCert,Key,CaCert}} ->
+                %%?DBG("tunnel", {cert,HostCert}),
+                DerCaCert = public_key:der_encode('Certificate',CaCert),
                 DerKey = public_key:der_encode('ECPrivateKey', Key),
-                %%Opts = [{active,false},{mode,binary},{packet,0},{cert,Cert},{key,Key}],
-                %%Opts = [{active,false},{mode,binary},{packet,0},{key,element(2,KeyEntry)}],
-                Opts = [{active,true},{mode,binary},{packet,0},{cert,Cert},
-                        {key,{'ECPrivateKey',DerKey}}],
+                HostOpts = [{cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
+                ok = file:write_file("lastcert.pem",
+                                     public_key:pem_encode([{'Certificate',HostCert,not_encrypted}])),
+                Opts = [{mode,binary},{packet,0},{verify,verify_none}] ++ HostOpts,
                 %%inet:controlling_process(TcpSock, self()),
-                case ssl:connect(TcpSock, Opts, ?CONNECT_TIMEOUT) of
+                case ssl:handshake(TcpSock, Opts) of
                     {error,_}=Err2 -> throw(Err2);
                     {ok,TlsSock} ->
+                        ?DBG("tunnel", {handshake,ok}),
+                        %% XXX: active does not always work when provided to handshake/2
                         ssl:setopts(TlsSock, [{active,true}]),
                         Reader = pimsg:head_reader(),
-                        ok = recv({ssl,TlsSock}, InPid, head, Reader, Rest),
+                        ok = loop({ssl,TlsSock}, InPid, head, Reader),
                         throw(cleanup)
                 end
         end
     catch
         cleanup ->
+            ?DBG("tunnel", cleanup),
             gen_tcp:close(TcpSock), % not sure how else to cleanup
             ok;
         {error,Reason} ->
-            reflect_error(InPid, Reason),
             ?DBG("tunnel", {error,Reason}),
+            reflect_error(InPid, Reason),
             recv_abort({tcp,TcpSock}, InPid)
     end.
 

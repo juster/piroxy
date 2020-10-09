@@ -33,23 +33,23 @@ init([Opts]) ->
     Tab = ets:new(?MODULE, [set,private]),
     case file:read_file(PemPath) of
         {ok,PemBin} ->
-            {_Cert,Key} = forger_lib:decode_ca_pair(PemBin, Passwd),
+            {Cert,Key} = forger_lib:decode_ca_pair(PemBin, Passwd),
             process_flag(trap_exit, true),
-            {ok,{Key,Tab}};
+            {ok,{Cert,Key,Tab}};
         {error,_}=Err ->
             Err
     end.
 
-handle_call({forge,Host}, {_Ref,Pid}, {PriKey,Tab}=State) ->
+handle_call({forge,Host}, _From, {CaCert,PriKey,Tab}=State) ->
     %% TODO: automatically expire & cleanup pairs
-    Pair = case ets:lookup(Tab, Host) of
-               [] ->
-                   T = forger_lib:forge([Host], PriKey),
-                   ets:insert(Tab, {Host,T}),
-                   T;
-               [{_,T}] -> T
-           end,
-    {reply, {ok,Pair}, State}.
+    {HostCert,HostKey} = case ets:lookup(Tab, Host) of
+                             [] ->
+                                 T = forger_lib:forge([Host], {CaCert,PriKey}),
+                                 ets:insert(Tab, {Host,T}),
+                                 T;
+                             [{_,T}] -> T
+                         end,
+    {reply, {ok,{HostCert,HostKey,CaCert}}, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
