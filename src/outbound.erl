@@ -7,18 +7,18 @@
 -record(outstate, {state, socket, ssl, rstate=null, close=false,
                    req=null, lastrecv}).
 
--export([connect/3, new_request/1]).
+-export([connect/3, new_request/1, start/3]).
 
 %%% external functions
 %%%
 
 connect(http, Host, Port) ->
     ?DBG("connect", {http,Host,Port}),
-    spawn_link(fun () -> start(binary_to_list(Host), Port, false) end);
+    spawn_link(fun () -> outbound:start(binary_to_list(Host), Port, false) end);
 
 connect(https, Host, Port) ->
     ?DBG("connect", {https,Host,Port}),
-    spawn_link(fun () -> start(binary_to_list(Host), Port, true) end).
+    spawn_link(fun () -> outbound:start(binary_to_list(Host), Port, true) end).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
@@ -30,7 +30,7 @@ new_request(Pid) ->
 
 start(Host, Port, false) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case gen_tcp:connect(Host, Port, [binary, {packet,0}], ?CONNECT_TIMEOUT) of
+    case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0}], ?CONNECT_TIMEOUT) of
         {error, Reason} -> exit(Reason);
         {ok, Sock} ->
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=false}),
@@ -39,9 +39,10 @@ start(Host, Port, false) ->
 
 start(Host, Port, true) ->
     {ok,_} = timer:send_interval(100, heartbeat),
-    case ssl:connect(Host, Port, [binary, {packet,0}], ?CONNECT_TIMEOUT) of
+    case ssl:connect(Host, Port, [{active,true},binary,{packet,0}], ?CONNECT_TIMEOUT) of
         {error,Reason} -> exit(Reason);
         {ok,Sock} ->
+            ssl:setopts(Sock, [{active,true}]),
             State = clock_recv(#outstate{state=idle, socket=Sock, ssl=true}),
             loop(State)
     end.
@@ -61,6 +62,7 @@ loop(State) ->
         {tcp, _Sock, Data} ->
             recv_data(Data, State);
         {ssl, _Sock, Data} ->
+            ?DBG("loop", ssl),
             recv_data(Data, State);
         heartbeat ->
             heartbeat(State);
@@ -96,7 +98,10 @@ next_request(#outstate{state=idle} = State0) ->
                     %{noreply, State, {continue, next_request}}
                     loop(State)
             end
-    end.
+    end;
+
+next_request(State) ->
+    loop(State).
 
 close_request(State0) ->
     case State0#outstate.req of
@@ -174,6 +179,7 @@ head_end(StatusLn, Headers, Rest, State) ->
     end.
 
 body_begin(Bin, BodyLen, State) ->
+    ?DBG("body_begin", {bodylen,BodyLen}),
     RState = pimsg:body_reader(BodyLen),
     body_data(Bin, State#outstate{state=body, rstate=RState}).
 
@@ -181,17 +187,21 @@ body_data(?EMPTY, State) ->
     loop(State);
 
 body_data(Data, #outstate{rstate=RState0} = State) ->
+    %%io:format("*****~s*****~n", [Data]),
     case pimsg:body_reader(RState0, Data) of
         {error,Reason} ->
             exit(Reason);
         {continue,?EMPTY,RState} ->
             %% Avoids sending messages about nothing.
+            ?DBG("body_data", {continue,?EMPTY,RState}),
             loop(State#outstate{rstate=RState});
         {continue,Scanned,RState} ->
+            ?DBG("body_data", {continue,RState}),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body,Scanned}),
             loop(State#outstate{rstate=RState});
         {done,Scanned,Rest} ->
+            ?DBG("body_data", done),
             {DataPid,Ref,_} = State#outstate.req,
             inbound:respond(DataPid, Ref, {body,Scanned}),
             %% There should be no extra bytes after the end of the body.

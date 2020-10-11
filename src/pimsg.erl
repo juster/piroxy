@@ -64,6 +64,7 @@ head_reader({endline,N,StatusLine,Headers,Bin1}, Bin2) ->
     end.
 
 fixed({I,N}, Bin) when I >= N -> {done, Bin, ?EMPTY};
+fixed(S, ?EMPTY) -> {continue, ?EMPTY, S};
 fixed({I0,N}, Bin) ->
     I = I0 + byte_size(Bin),
     if
@@ -98,19 +99,12 @@ chunk({between,Bin1}, Bin2, L) ->
             Err;
         {skip,Rest} ->
             {continue, reverse(L), {between,Rest}};
-        {ok,0,_,Rest0} ->
+        {ok,0,Line,Rest} ->
             %% The last chunk should have size zero (0) and have an empty
             %% line immediately after the size line.
-            case Rest0 of
-                <<?CRLF>> ->
-                    {done,reverse(L),?EMPTY};
-                <<?CRLF,Rest/binary>> ->
-                    {done,reverse(L),Rest};
-                _ ->
-                    {error,expected_crlf}
-            end;
-        {ok,Size,_,Rest} ->
-            chunk({inside,0,Size}, Rest, L)
+            chunk(end_crlf, Rest, [Line|L]);
+        {ok,Size,Line,Rest} ->
+            chunk({inside,0,Size}, Rest, [Line|L])
     end;
 
 chunk({inside,I1,N}, Bin1, L) ->
@@ -122,16 +116,23 @@ chunk({inside,I1,N}, Bin1, L) ->
     end;
 
 chunk(trailing_crlf, <<?CRLF>>, L) ->
-    {continue, reverse(L), {between,?EMPTY}};
-
+    {continue, reverse([<<?CRLF>>|L]), {between,?EMPTY}};
 chunk(trailing_crlf, <<?CRLF,Bin1/binary>>, L) ->
-    chunk({between,?EMPTY}, Bin1, L);
-
+    chunk({between,?EMPTY}, Bin1, [<<?CRLF>>|L]);
 chunk(trailing_crlf, ?EMPTY, L) ->
     {continue, reverse(L), trailing_crlf};
-
 chunk(trailing_crlf, Bin, _L) ->
-    {error,{expected_crlf,Bin}}.
+    {error,{expected_crlf,Bin}};
+
+chunk(end_crlf, <<?CRLF>>, L) ->
+    {done,reverse([<<?CRLF>>|L]),?EMPTY};
+chunk(end_crlf, <<?CRLF,Rest/binary>>, L) ->
+    {done,reverse([<<?CRLF>>|L]),Rest};
+chunk(end_crlf, ?EMPTY, L) ->
+    {continue, reverse(L), end_crlf};
+chunk(end_crlf, _, _L) ->
+    {error,expected_crlf}.
+    
 
 chunk_size(Bin1, Bin2) ->
     case next_line(Bin1, Bin2, ?CHUNKSZ_MAX) of
@@ -139,7 +140,7 @@ chunk_size(Bin1, Bin2) ->
         {error,_} = T -> T;
         {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
         {ok,Line,Rest} ->
-            %%?DBG("chunk_size", {line,Line}),
+            ?DBG("chunk_size", {line,Line}),
             Hex = case binary:match(Line, <<";">>) of
                       nomatch -> Line;
                       {Pos,_Len} -> binary_part(Line, 0, Pos)

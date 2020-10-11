@@ -67,11 +67,13 @@ loop(Socket, InPid, HttpState, Reader) ->
         {respond,#head{}=Head} ->
             send_head(Socket, Head),
             loop(Socket, InPid, HttpState, Reader);
+        {respond,{body,?EMPTY}} ->
+            loop(Socket, InPid, HttpState, Reader);
         {respond,{body,Body}} ->
             send(Socket, Body),
             loop(Socket, InPid, HttpState, Reader);
         {respond,{error,Reason}} ->
-            send(Socket, error_statusln(Reason)),
+            send(Socket, [error_statusln(Reason),<<?CRLF,?CRLF>>]),
             exit(Reason);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
@@ -147,10 +149,15 @@ body_begin(Socket, InPid, Head0, Rest) ->
         {ok,options_star} ->
             %% TODO: figure out what OPTIONS to send back
             reflect_status(InPid, http_ok);
+        {ok,{null,_RelUri}} ->
+            {ok,_Ref} = inbound:new(InPid, null, Head0),
+            Reader = pimsg:body_reader(Head0#head.bodylen),
+            recv(Socket, InPid, body, Reader, Rest);
         {ok,{HostInfo,Uri}} ->
             case Head0#head.method of
                 connect ->
                     ?DBG("body_begin", connect),
+                    inbound_stream:force_host(InPid, HostInfo),
                     tunnel(Socket, InPid, Rest, HostInfo);
                 _ ->
                     case relativize(Uri, Head0) of
@@ -159,7 +166,7 @@ body_begin(Socket, InPid, Head0, Rest) ->
                             ?DBG("body_begin", {error,Reason}),
                             recv_abort(Socket, InPid);
                         {ok,Head} ->
-                            _Ref = inbound:new(InPid, HostInfo, Head), % ignore Ref
+                            {ok,_Ref} = inbound:new(InPid, HostInfo, Head), % ignore Ref
                             Reader = pimsg:body_reader(Head#head.bodylen),
                             recv(Socket, InPid, body, Reader, Rest)
                     end
@@ -207,6 +214,7 @@ request_head(Line, Headers) ->
     end.
 
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
+%% If the Head contains a request to a relative URI, Host=null.
 request_target(Head) ->
     %% XXX: splits the request line twice (in request_head as well)
     {ok,[_,UriBin,_]} = phttp:nsplit(3, Head#head.line, <<" ">>),
@@ -221,6 +229,10 @@ request_target(Head) ->
             end;
         {options,<<"*">>} ->
             {ok,options_star};
+        {_,<<"/",_/binary>>} ->
+            %% relative URI, hopefully we are already CONNECT-ed to a
+            %% single host
+            {ok,{null,UriBin}};
         _ ->
             case http_uri:parse(UriBin) of
                 {error,{malformed_uri,_,_}} ->
@@ -295,14 +307,15 @@ tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
         gen_tcp:send(TcpSock, Resp),
         case forger:forge(Host) of
             {error,_}=Err1 -> throw(Err1);
-            {ok,{HostCert,Key,CaCert}} ->
+            {ok,{HostCert,Key,_CaCert}} ->
                 %%?DBG("tunnel", {cert,HostCert}),
-                DerCaCert = public_key:der_encode('Certificate',CaCert),
+                %%DerCaCert = public_key:der_encode('Certificate',CaCert),
                 DerKey = public_key:der_encode('ECPrivateKey', Key),
-                HostOpts = [{cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
                 ok = file:write_file("lastcert.pem",
                                      public_key:pem_encode([{'Certificate',HostCert,not_encrypted}])),
-                Opts = [{mode,binary},{packet,0},{verify,verify_none}] ++ HostOpts,
+                Opts = [{mode,binary},{packet,0},{verify,verify_none},
+                        {alpn_preferred_protocols,[<<"http/1.1">>]},
+                        {cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
                 %%inet:controlling_process(TcpSock, self()),
                 case ssl:handshake(TcpSock, Opts) of
                     {error,_}=Err2 -> throw(Err2);

@@ -31,11 +31,11 @@
 %% Response queue is in reverse order, so that we can see if the response stream
 %% has been closed, yet.
 %%
--record(state, {pid, reqQ=[], respQ=[]}).
+-record(state, {pid, host, reqQ=[], respQ=[]}).
 
 -import(lists, [foreach/2, reverse/1, reverse/2]).
 -export([start_link/0, start_link/1, stream_request/2, finish_request/1]).
--export([reflect/2, disconnect/1]).
+-export([reflect/2, disconnect/1, force_host/2]).
 -export([init/1, terminate/2, handle_cast/2, handle_call/3, handle_continue/2]).
 
 %%% external interface
@@ -60,6 +60,9 @@ reflect(ServerRef, Messages) ->
 disconnect(ServerRef) ->
     gen_server:cast(ServerRef, disconnect).
 
+force_host(ServerRef, {_,_,_} = HostInfo) ->
+    gen_server:cast(ServerRef, {force_host,HostInfo}).
+
 %%% behavior callbacks
 
 init([Pid]) ->
@@ -70,13 +73,28 @@ terminate(_Reason, S) ->
                     request_manager:cancel_request(Ref)
             end, S#state.respQ).
 
-handle_call({new,HostInfo,Head}, _From, S0) ->
-    Ref = request_manager:new_request(HostInfo, Head),
-    Q1 = S0#state.reqQ,
-    Q2 = S0#state.respQ,
-    S = S0#state{reqQ=Q1 ++ [{Ref,[]}],
-                 respQ=Q2 ++ [{Ref,[]}]},
-    {reply, Ref, S};
+handle_call({new,HostInfo1,Head}, _From, S0) ->
+    try
+        HostInfo = case {HostInfo1, S0#state.host} of
+                       {null,undefined} ->
+                           throw(host_missing);
+                       {null,HostInfo2} ->
+                           HostInfo2;
+                       {HostInfo2,undefined} ->
+                           HostInfo2;
+                       _ ->
+                           throw(host_duplicated)
+                   end,
+        Ref = request_manager:new_request(HostInfo, Head),
+        Q1 = S0#state.reqQ,
+        Q2 = S0#state.respQ,
+        S = S0#state{reqQ=Q1 ++ [{Ref,[]}],
+                     respQ=Q2 ++ [{Ref,[]}]},
+        {reply, {ok,Ref}, S}
+    catch
+        Reason ->
+            {reply, {error,Reason}, S0}
+    end;
 
 %% called by outgoing process to retrieve the request body (out of order)
 handle_call({request_body,Ref}, From, S) ->
@@ -159,10 +177,12 @@ handle_cast(finish_request, S) ->
 handle_cast({close,Ref}, S) ->
     case find(Ref, S#state.respQ) of
         not_found ->
+            ?DBG("close", notfound),
             {stop, {unknownref,Ref}, S};
         {found, L, Q1, Q2} ->
             %% prepend 'done' to the message queue
             Q = reverse(Q1, [{Ref,[done|L]}|Q2]),
+            ?DBG("close", {state,S#state{respQ=Q}}),
             %% prime the pump just in case it needs it
             {noreply,S#state{respQ=Q},{continue,stream_responses}}
     end;
@@ -184,9 +204,13 @@ handle_cast({fail,Ref,Reason}, S) ->
         not_found ->
             %% error?
             {noreply, S};
+        {found, [done|_], _, _} ->
+            ?DBG("fail", "cannot append error to closed stream"),
+            {noreply, S};
         {found, L0, Q1, Q2} ->
-            L = [{error,Reason}|L0],
-            S#state{respQ=reverse(Q1,[{Ref,L}|Q2])}
+            L = [done,{error,Reason}|L0],
+            {noreply,S#state{respQ=reverse(Q1,[{Ref,L}|Q2])},
+             {continue,stream_responses}}
     end;
 
 handle_cast({respond,Ref,T}, S) ->
@@ -213,7 +237,10 @@ handle_cast({reflect,L1},S) ->
 handle_cast(disconnect,S) ->
     Q1 = S#state.reqQ ++ [{null,[done]}],
     Q2 = S#state.respQ ++ [{null, [done,disconnect]}],
-    {noreply, S#state{reqQ=Q1, respQ=Q2},{continue,stream_responses}}.
+    {noreply, S#state{reqQ=Q1, respQ=Q2},{continue,stream_responses}};
+
+handle_cast({force_host,HostInfo}, S) ->
+    {noreply, S#state{host=HostInfo}}.
 
 relay(Msg, S) ->
     S#state.pid ! {respond,Msg}.
@@ -239,6 +266,7 @@ handle_continue(stream_responses, S) ->
             %% Special case: no responses received yet
             {noreply, S};
         {{Ref,[done]}, {Ref,[done|L]}} ->
+            ?DBG("stream_responses", both_done),
             %% Both request and response queues have been tagged done
             replay(reverse(L), S),
             relay(close, S),

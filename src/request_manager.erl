@@ -12,6 +12,10 @@
 %%% gen_server callbacks
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
+-record(request, {key,target,head,inPid,n=0}).
+-record(target, {key,outPid=null,reqs=[],n=0}).
+-record(pid, {key,target,req=null}).
+
 %%% exported interface functions
 
 start() ->
@@ -47,7 +51,7 @@ init([]) ->
     case application:ensure_all_started(ssl) of
         {ok,_} ->
             process_flag(trap_exit, true),
-            Tab = ets:new(?MODULE, [set,private]),
+            Tab = ets:new(?MODULE, [set,private,{keypos,2}]),
             {ok,Tab};
         {error,Reason} ->
             {stop,Reason}
@@ -67,7 +71,7 @@ killout(K, Tab) ->
 handle_call({new_request,Target,Head}, {InPid,_Tag}, Tab) ->
     %% convert data types first so we can fail before opening a socket
     OutPid = connect_target(Tab, Target),
-    Ref = insert_request(Tab, {Target,Head,InPid}),
+    Ref = insert_request(Tab, #request{target=Target,head=Head,inPid=InPid}),
     %% notify outbound there is a request waiting for them
     outbound:new_request(OutPid),
     {reply, Ref, Tab};
@@ -77,66 +81,79 @@ handle_call({next_request}, {OutPid,_}, Tab) ->
 
 %% request is gracefully closed (i.e. finished)
 handle_cast({close_request,OutPid,Ref}, Tab) ->
-    {_,_,_,InPid,_} = lookup_request(Tab, Ref),
-    true = ets:update_element(Tab, {pid,OutPid}, {3,closed}),
-    ets:delete(Tab, {request,Ref}),
-    inbound:close(InPid, Ref),
-    {noreply,Tab};
+    case lookup_request(Tab, Ref) of
+        not_found ->
+            %% XXX: request was cancelled by inbound proc while still in process!!
+            ?DBG("close_request", not_found),
+            {noreply,Tab};
+        #request{inPid=InPid} ->
+            ?DBG("close_request", ok),
+            true = ets:update_element(Tab, {pid,OutPid}, {#pid.req,closed}),
+            ets:delete(Tab, {request,Ref}),
+            inbound:close(InPid, Ref),
+            {noreply,Tab}
+    end;
 
 %% cancel a request, remove it from the todo list.
-handle_cast({cancel_request,_Ref}, Tab) ->
-    %% XXX: not yet implemented
-    {stop,not_implemented,Tab}.
+handle_cast({cancel_request,Ref}, Tab) ->
+    %% XXX: does not handle the case of a currently active Pid/request very well
+    ?DBG("cancel_request", {request,Ref}),
+    case lookup_request(Tab,Ref) of
+        not_found ->
+            {noreply,Tab};
+        Req ->
+            ets:delete(Tab, {request,Ref}),
+            Target = Req#request.target,
+            case lookup_target(Tab,Target) of
+                not_found ->
+                    ?DBG("cancel_request", {missing_target,Ref,Target});
+                #target{outPid=Pid,reqs=Reqs0} ->
+                    Reqs = lists:delete(Ref, Reqs0),
+                    true = ets:update_element(Tab, {target,Target}, {#target.reqs,Reqs}),
+                    case lookup_pid(Tab,Pid) of
+                        not_found ->
+                            ?DBG("cancel_request", {missing_pid,Pid}),
+                            ok;
+                        #pid{req=Ref} ->
+                            %% The reference we are cancelling is currently active!!
+                            %% The 'EXIT' handler will cleanup and handle reconnect
+                            %% if necessary.
+                            exit(Pid, closed);
+                        _ ->
+                            ok
+                    end
+            end,
+            {noreply,Tab}
+    end.
 
 %% track outbound processes so that was can recreate them if they exit
 handle_info({'EXIT',OldPid,Reason1}, Tab) ->
-    %%?DBG("handle_info", {'EXIT',OldPid,Reason1}),
-    {_,Target,Req} = lookup_pid(Tab, OldPid),
-    TargetRec = lookup_target(Tab, Target),
-    ReqRec = case Req of
-                 null -> null;
-                 closed -> null;
-                 _ -> lookup_request(Tab, Req)
+    ?DBG("handle_info", {'EXIT',OldPid,Reason1}),
+    #pid{target=Target, req=Ref} = lookup_pid(Tab, OldPid),
+    TargetR = lookup_target(Tab, Target),
+    {Req,ReqR} = case Ref of
+                     null -> {null,null};
+                     closed -> {closed,null};
+                     Ref when is_reference(Ref) ->
+                         %% XXX: if Req was cancelled it will now be not_found!
+                         case lookup_request(Tab, Ref) of
+                             not_found -> {null,null}; % override Ref to be null
+                             R -> {Ref,R}
+                         end;
+                     _ ->
+                         io:format("~p~n", [ets:tab2list(Tab)]),
+                         error({corrupt_pid_record,{OldPid,Target,Ref}})
              end,
     ets:delete(Tab, {pid,OldPid}), % process is gone
-    Pending = element(3, TargetRec),
-    Task = case fail_task(Reason1, Req, Pending) of
+    Task = case fail_task(Reason1, Req, TargetR#target.reqs) of
                {target_error,Reason2} ->
-                   target_error(Tab, TargetRec, Reason2);
+                   target_error(Tab, TargetR, Reason2);
                {request_error,Reason2} ->
-                   request_error(Tab, ReqRec, Reason2);
-               T -> T
+                   request_error(Tab, ReqR, Reason2);
+               T2 -> T2
            end,
     %%?DBG("handle_info", {{'EXIT',OldPid,Reason1},{task,Task}}),
-    case Task of
-        cleanup ->
-            %% sanity check
-            if
-                is_reference(Req) ->
-                    ?DBG("handle_info", "cleanup should have no active request!");
-                true -> ok
-            end,
-            ets:delete(Tab, {target,Target});
-        {failone,Reason3} ->
-            inbound:fail(Req, element(4, ReqRec), Reason3),
-            ets:delete(Tab, {request,Req});
-        {failall,Reason3} ->
-            if
-                is_reference(Req) ->
-                    inbound:fail(Req, element(4, ReqRec), Reason3),
-                    ets:delete(Tab, {request,Req});
-                true -> ok
-            end,
-            foreach(fun ({{request,Ref},_,_,Pid,_}) ->
-                            inbound:fail(Pid, Ref, Reason3)
-                    end,
-                    [lookup_request(Tab, Req_) || Req_ <- element(3, TargetRec)]),
-            ets:delete(Tab, {target,Target});
-        retry when is_reference(Req) ->
-            ok = reconnect_target(Tab, Target, Pending++[Req]);
-        retry ->
-            ok = reconnect_target(Tab, Target)
-    end,
+    perform_fail_task(Task, TargetR, ReqR, Tab),
     {noreply,Tab}.
 
 %%%
@@ -159,7 +176,7 @@ handle_info({'EXIT',OldPid,Reason1}, Tab) ->
 lookup(Tab, Key) ->
     case ets:lookup(Tab, Key) of
         [] -> not_found;
-        [T] -> T
+        [R] -> R
     end.
 
 lookup_request(Tab, Ref) -> lookup(Tab, {request,Ref}).
@@ -167,37 +184,38 @@ lookup_pid(Tab, Pid) -> lookup(Tab, {pid,Pid}).
 lookup_target(Tab, Target) -> lookup(Tab, {target,Target}).
 
 %% When a request is added, append it to the Target's request queue.
-insert_request(Tab, {Target,Head,InPid}) ->
+insert_request(Tab, Request) ->
     Ref = make_ref(),
-    ets:insert(Tab, {{request,Ref},Target,Head,InPid,0}),
-    {_,_,Reqs,_} = lookup_target(Tab, Target),
-    true = ets:update_element(Tab, {target,Target}, {3,[Ref|Reqs]}),
+    ets:insert(Tab, Request#request{key={request,Ref}}),
+    Target = Request#request.target,
+    #target{reqs=Reqs} = lookup_target(Tab, Target),
+    true = ets:update_element(Tab, {target,Target}, {#target.reqs,[Ref|Reqs]}),
     Ref.
 
 %% Pop a new request from the request queue and associate it with an
 %% outbound Pid.
 pop_request(Tab, Pid) ->
-    {_,Target,_} = lookup_pid(Tab, Pid),
-    {_,_,Reqs0,_} = lookup_target(Tab, Target),
-    case Reqs0 of
-        [] -> null;
-        _ ->
+    #pid{target=Target} = lookup_pid(Tab, Pid),
+    case lookup_target(Tab, Target) of
+        #target{reqs=[]} -> null;
+        #target{reqs=Reqs0} ->
             [Req|Reqs] = reverse(Reqs0),
-            true = ets:update_element(Tab, {target,Target}, {3,reverse(Reqs)}),
-            true = ets:update_element(Tab, {pid,Pid}, {3,Req}),
-            {_,_Target,Head,InPid,_} = lookup_request(Tab, Req),
+            true = ets:update_element(Tab, {target,Target}, {#target.reqs,reverse(Reqs)}),
+            true = ets:update_element(Tab, {pid,Pid}, {#pid.req,Req}),
+            #request{inPid=InPid,head=Head} = lookup_request(Tab, Req),
             {InPid,Req,Head}
     end.
 
 connect_target(Tab, Target) ->
     case lookup_target(Tab, Target) of
-        {_,Pid,_,_} -> Pid;
+        #target{outPid=Pid} ->
+            Pid;
         not_found ->
             Pid = apply(outbound, connect, tuple_to_list(Target)),
             %% initialize empty request queue
-            ets:insert(Tab, {{target,Target}, Pid, [], 0}),
+            ets:insert(Tab, #target{key={target,Target}, outPid=Pid}),
             %% outbound request is null, starts off idle
-            ets:insert(Tab, {{pid,Pid}, Target, null}),
+            ets:insert(Tab, #pid{key={pid,Pid}, target=Target}),
             Pid
     end.
 
@@ -220,7 +238,7 @@ fail_task(closed,closed,_Pending) ->
 fail_task(closed,null,_Pending) ->
     {target_error,reset};
 
-%% Erro before any request could be queued, not good.
+%% Error before any request could be queued, not good.
 fail_task(Reason,null,_Pending) ->
     {target_error,Reason};
 
@@ -232,38 +250,76 @@ fail_task(Reason,closed,_Pending) ->
 fail_task(Reason,Req,_Pending) when is_reference(Req) ->
     {request_error,Reason}.
 
-request_error(Tab, {{request,Ref},_,_,_,Nfail}, Reason) ->
+request_error(Tab, #request{key=Key, n=Nfail}, Reason) ->
     N = Nfail+1,
     ?DBG("request_error", {n,N}),
     if
         N >= ?REQUEST_FAIL_MAX ->
-            %%ets:delete(Tab, {request,Ref}),
             {failone,Reason};
         true ->
-            ets:update_element(Tab, {request,Ref}, {5,N}),
+            ets:update_element(Tab, Key, {#request.n,N}),
             retry
     end.
 
-target_error(Tab, {{target,Target},_,_,Nfail}, Reason) ->
+target_error(Tab, #target{key=Key, n=Nfail}, Reason) ->
     N = Nfail+1,
-    ?DBG("target_error", {{target,Target},{n,N}}),
+    ?DBG("target_error", {Key,{n,N}}),
     if
         N >= ?TARGET_FAIL_MAX ->
             %%ets:delete(Tab, {target,Target}),
             {failall,Reason};
         true ->
-            ets:update_element(Tab, {target,Target}, [{4,N}]),
+            ets:update_element(Tab, Key, [{#target.n,N}]),
             retry
     end.
+
+perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
+    %% sanity check
+    if
+        is_tuple(ReqR) ->
+            ?DBG("handle_info", "cleanup should have no active request!");
+        true ->
+            ok
+    end,
+    ets:delete(Tab, TargetR#target.key);
+
+perform_fail_task({failone,Reason}, _TargetR, #request{}=ReqR, Tab) ->
+    #request{key={request,Ref}, inPid=Pid} = ReqR,
+    inbound:fail(Pid, Ref, Reason),
+    ets:delete(Tab, ReqR#request.key);
+
+perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
+    %% The request of the failed proc is not in the queue for the task...
+    First = case ReqR of
+                #request{key={request,Ref}} ->
+                    [Ref];
+                null ->
+                    []
+            end,
+    Refs = First ++ reverse(TargetR#target.reqs),
+    Pids = [(lookup_request(Tab, Ref))#request.inPid || Ref <- Refs],
+    foreach(fun ({Ref, Pid}) ->
+                    inbound:fail(Pid, Ref, Reason),
+                    ets:delete(Tab, {request,Ref})
+            end, lists:zip(Refs, Pids)),
+    ets:delete(Tab, TargetR#target.key);
+
+perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
+    ok = reconnect_target(Tab, Target);
+
+perform_fail_task(retry, TargetR, ReqRec, Tab) ->
+    #target{key={target,Target}, reqs=Pending} = TargetR,
+    #request{key={request,Ref}} = ReqRec,
+    ok = reconnect_target(Tab, Target, Pending++[Ref]).
 
 reconnect_target(Tab, Target) ->
     Pid = apply(outbound, connect, tuple_to_list(Target)),
     %% do not modify the request queue of the target
-    true = ets:update_element(Tab, {target,Target}, {2,Pid}),
-    ets:insert(Tab, {{pid,Pid}, Target, null}),
+    true = ets:update_element(Tab, {target,Target}, {#target.outPid,Pid}),
+    ets:insert(Tab, #pid{key={pid,Pid}, target=Target}),
     ok.
 
 reconnect_target(Tab, Target, Reqs) ->
     ok = reconnect_target(Tab, Target),
-    true = ets:update_element(Tab, {target,Target}, {3,Reqs}),
+    true = ets:update_element(Tab, {target,Target}, {#target.reqs,Reqs}),
     ok.

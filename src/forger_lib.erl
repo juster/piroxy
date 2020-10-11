@@ -9,9 +9,10 @@
                      pem_entry_decode/1, pem_entry_decode/2, pem_decode/1,
                      pkix_sign/2]).
 -import(lists, [map/2]).
--define(ISSUER_CN, "Pirate Proxy Root CA").
--define(ISSUER_ORG, "Piroxy Dev Team").
--define(ISSUER_CO, "US").
+-define(PIROXY_ORG, "Pirate Proxy Dev Team").
+-define(PIROXYCA_CN, "Pirate Proxy Root CA").
+-define(PIROXYCA_ORG, ?PIROXY_ORG).
+-define(PIROXYCA_CO, "us").
 %% this is a little bit ridiculous...
 -define(CERT_SERIAL(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.serialNumber).
 -define(CERT_PUBKEY(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.subjectPublicKeyInfo#'SubjectPublicKeyInfo'.subjectPublicKey).
@@ -88,44 +89,59 @@ randSerial() ->
 attributes(L) ->
     %% don't forget each attribute is wrapped in a list for some reason
     Fun = fun ({T,V}) when is_binary(V) ->
-                  [#'AttributeTypeAndValue'{type=T,value={utf8String,V}}];
+                  #'AttributeTypeAndValue'{type=T,value={utf8String,V}};
               ({T,V}) ->
-                  [#'AttributeTypeAndValue'{type=T,value=V}]
+                  #'AttributeTypeAndValue'{type=T,value=V}
           end,
-    {rdnSequence, map(Fun, L)}.
+    sequence(map(Fun, L)).
+
+sequence(L) ->
+    {rdnSequence, [[X] || X <- L]}.
 
 issuer() ->
-    [{?'id-at-commonName',<<?ISSUER_CN>>},
-     {?'id-at-organizationName',<<?ISSUER_ORG>>},
-     {?'id-at-countryName',"us"}].
+    [{?'id-at-commonName',<<?PIROXYCA_CN>>},
+     {?'id-at-organizationName',<<?PIROXYCA_ORG>>},
+     {?'id-at-countryName',?PIROXYCA_CO} % use a string (list) NOT a binary
+    ].  
 
 %% all extensions are critical
 extension_recs(L) ->
-    map(fun({Oid,V}) ->
-                #'Extension'{extnID=Oid, critical=true, extnValue=V};
-           ({Oid,Crit,V}) ->
+    map(fun ({Oid,Crit,V}) ->
                 #'Extension'{extnID=Oid, critical=Crit, extnValue=V}
         end, L).
 
 ca_extensions(SubjectPubKey) ->
-    extension_recs([{?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)},
-                    {?'id-ce-basicConstraints',
+    extension_recs([{?'id-ce-subjectKeyIdentifier',false,
+                     keyIdentifier(SubjectPubKey)},
+                    {?'id-ce-basicConstraints',true,
                      #'BasicConstraints'{cA=true, pathLenConstraint=asn1_NOVALUE}},
-                    {?'id-ce-keyUsage',[digitalSignature,keyCertSign,cRLSign]}]).
+                    {?'id-ce-keyUsage',true,
+                     [digitalSignature,keyCertSign,cRLSign]},
+                    {?'id-ce-certificatePolicies',false,
+                     [#'PolicyInformation'{policyIdentifier=?'anyPolicy',
+                                           policyQualifiers=asn1_NOVALUE}]}
+                   ]).
 
 host_extensions(SubjectPubKey, DnsNames, CACert) ->
-    extension_recs([{?'id-ce-subjectKeyIdentifier',false,keyIdentifier(SubjectPubKey)},
+    extension_recs([{?'id-ce-subjectKeyIdentifier',false,
+                     keyIdentifier(SubjectPubKey)},
                     {?'id-ce-authorityKeyIdentifier',false,
                      #'AuthorityKeyIdentifier'{
-                        keyIdentifier=keyIdentifier(?CERT_PUBKEY(CACert)),
+                        keyIdentifier=keyIdentifier(?CERT_PUBKEY(CACert))
                         %%authorityCertIssuer={utf8String,<<?ISSUER_CN>>},
-                        authorityCertSerialNumber=?CERT_SERIAL(CACert)
+                        %%authorityCertSerialNumber=?CERT_SERIAL(CACert)
                        }},
-                    {?'id-ce-basicConstraints',
+                    {?'id-ce-basicConstraints',true,
                      #'BasicConstraints'{cA=false, pathLenConstraint=asn1_NOVALUE}},
-                    {?'id-ce-keyUsage',[digitalSignature,keyEncipherment,keyAgreement]},
-                    {?'id-ce-extKeyUsage',[?'id-kp-serverAuth', ?'id-kp-clientAuth']},
-                    {?'id-ce-subjectAltName',[{'dNSName',N} || N <- DnsNames]}]).
+                    {?'id-ce-keyUsage',true,
+                     [digitalSignature,keyEncipherment,keyAgreement]},
+                    {?'id-ce-certificatePolicies',false,
+                     [#'PolicyInformation'{policyIdentifier=?'anyPolicy',
+                                           policyQualifiers=asn1_NOVALUE}]},
+                    {?'id-ce-extKeyUsage',false,
+                     [?'id-kp-serverAuth', ?'id-kp-clientAuth']},
+                    {?'id-ce-subjectAltName',false,
+                     [{'dNSName',N} || N <- DnsNames]}]).
 
 ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Extensions) ->
     Subject = attributes(Subject0), % checks arguments early
@@ -138,7 +154,8 @@ ecc_certificate(Subject0, SubjectPubKey, CaPriKey, Extensions) ->
     },
     SignatureAlgorithm = #'SignatureAlgorithm'{
         algorithm = ?'ecdsa-with-SHA512',
-        parameters = {namedCurve, ?'secp521r1'}
+        %%parameters = {namedCurve, ?'secp521r1'}
+        parameters = asn1_NOVALUE
     },
     TBSCertificate = #'OTPTBSCertificate'{
         version = v3,
