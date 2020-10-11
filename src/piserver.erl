@@ -301,7 +301,10 @@ reflect_statusln(InPid, StatusBin) ->
 tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
     ?DBG("tunnel",{rest,Rest,host,Host,sock,TcpSock}),
     try
-        ok = inet:setopts(TcpSock, [{active,false}]),
+        case inet:setopts(TcpSock, [{active,false}]) of
+            {error,_}=Err -> throw(Err);
+            ok -> ok
+        end,
         {ok,StatusBin} = phttp:status_bin(http_ok),
         Resp = <<?HTTP11," ",StatusBin/binary,?CRLF,?CRLF>>,
         gen_tcp:send(TcpSock, Resp),
