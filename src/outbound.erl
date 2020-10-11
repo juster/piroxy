@@ -88,6 +88,7 @@ next_request(#outstate{state=idle} = State0) ->
     case request_manager:next_request() of
         null -> loop(State0);
         {DataPid,Ref,Head} = Req ->
+            ?DBG("next_request", {req,Ref}),
             relay_request(DataPid, Ref, Head, State0),
             case head_begin(clock_recv(State0#outstate{req=Req})) of
                 {error,Reason} -> exit(Reason);

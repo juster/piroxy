@@ -84,10 +84,10 @@ handle_cast({close_request,OutPid,Ref}, Tab) ->
     case lookup_request(Tab, Ref) of
         not_found ->
             %% XXX: request was cancelled by inbound proc while still in process!!
-            ?DBG("close_request", not_found),
+            ?DBG("close_request", {not_found,Ref}),
             {noreply,Tab};
         #request{inPid=InPid} ->
-            ?DBG("close_request", ok),
+            ?DBG("close_request", {found,Ref}),
             true = ets:update_element(Tab, {pid,OutPid}, {#pid.req,closed}),
             ets:delete(Tab, {request,Ref}),
             inbound:close(InPid, Ref),
@@ -100,6 +100,7 @@ handle_cast({cancel_request,Ref}, Tab) ->
     ?DBG("cancel_request", {request,Ref}),
     case lookup_request(Tab,Ref) of
         not_found ->
+            ?DBG("cancel_request", not_found),
             {noreply,Tab};
         Req ->
             ets:delete(Tab, {request,Ref}),
@@ -118,8 +119,13 @@ handle_cast({cancel_request,Ref}, Tab) ->
                             %% The reference we are cancelling is currently active!!
                             %% The 'EXIT' handler will cleanup and handle reconnect
                             %% if necessary.
+                            ?DBG("cancel_request", {closed,Pid}),
                             exit(Pid, closed);
-                        _ ->
+                        #pid{req=null} ->
+                            ?DBG("cancel_request", pid_null_request),
+                            ok;
+                        #pid{req=Ref2} ->
+                            ?DBG("cancel_request", {pid_other_req,Ref2}),
                             ok
                     end
             end,

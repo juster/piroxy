@@ -47,20 +47,20 @@ loop(Socket, InPid, HttpState, Reader) ->
     receive
         %% receive requests from the client and parse them out
         {tcp,_,Data} ->
-            ?DBG("loop", tcp),
+            %%?DBG("loop", tcp),
             recv(Socket, InPid, HttpState, Reader, Data);
         {tcp_closed,_Sock} ->
             %% TODO: flush buffers etc
-            ?DBG("loop", tcp_closed),
+            %%?DBG("loop", tcp_closed),
             ok;
         {tcp_error,_Sock,Reason} ->
             exit(Reason);
         {ssl,_,Data} ->
-            ?DBG("loop", ssl),
+            %%?DBG("loop", ssl),
             recv(Socket, InPid, HttpState, Reader, Data);
         {ssl_closed,_TlsSock} ->
             %% TODO: flush buffers etc
-            ?DBG("loop", ssl_closed),
+            %%?DBG("loop", ssl_closed),
             ok;
         {ssl_error,_Sock,Reason} ->
             exit(Reason);
@@ -330,7 +330,7 @@ tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
         end
     catch
         cleanup ->
-            ?DBG("tunnel", cleanup),
+            %%?DBG("tunnel", cleanup),
             gen_tcp:close(TcpSock), % not sure how else to cleanup
             ok;
         {error,Reason} ->

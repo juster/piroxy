@@ -246,13 +246,13 @@ next_line_(Bin1, Bin2) ->
             {ok, Bin1, binary_part(Bin2, 2, byte_size(Bin2)-2)};
         {Pos,_} when byte_size(Bin2) == Pos+2 ->
             %% CRLF is at the end of Bin2
-            Bin3 = concat(Bin1, Bin2),
-            Line = binary_part(Bin3, 0, Pos),
+            Bin3 = binary_part(Bin2, 0, Pos),
+            Line = concat(Bin1, Bin3),
             {ok, Line, ?EMPTY};
         {Pos,_} ->
-            Bin3 = concat(Bin1, Bin2),
-            Line = binary_part(Bin3, 0, Pos),
-            Rest = binary_part(Bin3, Pos+2, byte_size(Bin3)-Pos-2),
+            Bin3 = binary_part(Bin2, 0, Pos),
+            Line = concat(Bin1, Bin3),
+            Rest = binary_part(Bin2, Pos+2, byte_size(Bin2)-Pos-2),
             {ok, Line, Rest}
     end.
 
