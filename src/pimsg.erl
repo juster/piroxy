@@ -107,6 +107,8 @@ chunk({between,Bin1}, Bin2, L) ->
             chunk({inside,0,Size}, Rest, [Line|L])
     end;
 
+chunk({inside,_,_}=S, ?EMPTY, L) ->
+    {continue, reverse(L), S};
 chunk({inside,I1,N}, Bin1, L) ->
     case fixed({I1,N}, Bin1) of
         {continue,Bin2,{I2,N}} ->
