@@ -13,6 +13,7 @@ listen(Addr, Port) ->
         {ok,Listen} ->
             superserver(Listen);
         {error,Reason} ->
+            io:format("~p~n",{error,Reason}),
             exit(Reason)
     end.
 
@@ -270,6 +271,10 @@ send_head(Socket, Head) ->
     send(Socket, <<?CRLF>>),
     ok.
 
+%% error created by relativize
+error_statusln(missing_host) ->
+    error_statusln(http_bad_request);
+
 error_statusln(Reason) ->
     case phttp:status_bin(Reason) of
         {ok,Bin} ->
@@ -302,35 +307,39 @@ tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
     ?DBG("tunnel",{rest,Rest,host,Host,sock,TcpSock}),
     try
         case inet:setopts(TcpSock, [{active,false}]) of
-            {error,_}=Err -> throw(Err);
-            ok -> ok
+            {error,_}=Err -> % socket may have suddenly closed!
+                throw(Err);
+            ok ->
+                ok
         end,
         {ok,StatusBin} = phttp:status_bin(http_ok),
         Resp = <<?HTTP11," ",StatusBin/binary,?CRLF,?CRLF>>,
         gen_tcp:send(TcpSock, Resp),
-        case forger:forge(Host) of
-            {error,_}=Err1 -> throw(Err1);
-            {ok,{HostCert,Key,_CaCert}} ->
-                %%?DBG("tunnel", {cert,HostCert}),
-                %%DerCaCert = public_key:der_encode('Certificate',CaCert),
-                DerKey = public_key:der_encode('ECPrivateKey', Key),
-                ok = file:write_file("lastcert.pem",
-                                     public_key:pem_encode([{'Certificate',HostCert,not_encrypted}])),
-                Opts = [{mode,binary},{packet,0},{verify,verify_none},
-                        {alpn_preferred_protocols,[<<"http/1.1">>]},
-                        {cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
-                %%inet:controlling_process(TcpSock, self()),
-                case ssl:handshake(TcpSock, Opts) of
-                    {error,_}=Err2 -> throw(Err2);
-                    {ok,TlsSock} ->
-                        ?DBG("tunnel", {handshake,ok}),
-                        %% XXX: active does not always work when provided to handshake/2
-                        ssl:setopts(TlsSock, [{active,true}]),
-                        Reader = pimsg:head_reader(),
-                        ok = loop({ssl,TlsSock}, InPid, head, Reader),
-                        throw(cleanup)
-                end
-        end
+        {ok,{HostCert,Key,_CaCert}} = case forger:forge(Host) of
+                                          {error,_}=Err1 -> throw(Err1);
+                                          T1 -> T1
+                                      end,
+
+        %%?DBG("tunnel", {cert,HostCert}),
+        %%DerCaCert = public_key:der_encode('Certificate',CaCert),
+        %%ok = file:write_file("lastcert.pem",
+        %%                     public_key:pem_encode([{'Certificate',HostCert,
+        %%                     not_encrypted}])),
+        DerKey = public_key:der_encode('ECPrivateKey', Key),
+        Opts = [{mode,binary},{packet,0},{verify,verify_none},
+                {alpn_preferred_protocols,[<<"http/1.1">>]},
+                {cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
+        %%inet:controlling_process(TcpSock, self()),
+        {ok,TlsSock} = case ssl:handshake(TcpSock, Opts) of
+                           {error,_}=Err2 -> throw(Err2);
+                           T2 -> T2
+                       end,
+        ?DBG("tunnel", {handshake,ok}),
+        %% XXX: active does not always work when provided to handshake/2
+        ssl:setopts(TlsSock, [{active,true}]),
+        Reader = pimsg:head_reader(),
+        ok = loop({ssl,TlsSock}, InPid, head, Reader),
+        throw(cleanup)
     catch
         cleanup ->
             %%?DBG("tunnel", cleanup),
