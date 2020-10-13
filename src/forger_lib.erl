@@ -5,9 +5,7 @@
 
 -module(forger_lib).
 -include_lib("public_key/include/public_key.hrl").
--import(public_key, [generate_key/1, pem_entry_encode/3, pem_encode/1,
-                     pem_entry_decode/1, pem_entry_decode/2, pem_decode/1,
-                     pkix_sign/2]).
+-import(public_key, [generate_key/1, pem_entry_encode/3, pem_encode/1, pkix_sign/2]).
 -import(lists, [map/2]).
 -define(PIROXY_ORG, "Pirate Proxy Dev Team").
 -define(PIROXYCA_CN, "Pirate Proxy Root CA").
@@ -30,13 +28,13 @@
 %%
 %% This module is hard-coded to use the secp521r1 curve.
 
--export([generate_ca_pair/1, decode_ca_pair/2, forge/2]).
+-export([generate_ca_pair/1, forge/2]).
 
 %%%
 %%% EXPORTS
 %%%
 
-%% Returns a PEM-encoded binary with a Certificate entry and ECPrivateKey entry.
+%% Returns two PEM-encoded binaries: a Certificate entry and ECPrivateKey entry.
 %% The ECPrivateKey entry is encrypted with the provided Passwd.
 generate_ca_pair(Passwd) ->
     PriKey = generate_key({namedCurve,secp521r1}),
@@ -46,13 +44,9 @@ generate_ca_pair(Passwd) ->
     CipherInfo = {"DES-CBC", crypto:strong_rand_bytes(8)},
     PriKeyEnt = pem_entry_encode('ECPrivateKey', PriKey, {CipherInfo, Passwd}),
     %%PriKeyPem = pem_encode([PriKeyEnt]),
-    pem_encode([{'Certificate',CertDer,not_encrypted}, PriKeyEnt]).
-
-%% Decode the certificate PEM which contains a ECPrivateKey entry
-%% Decrypt this entry, which requires the password given to generate_ca_pair.
-decode_ca_pair(PriPem, Passwd) ->
-    [Cert, PriEntry] = pem_decode(PriPem),
-    {pem_entry_decode(Cert), pem_entry_decode(PriEntry, Passwd)}.
+    CertPem = pem_encode([{'Certificate',CertDer,not_encrypted}]),
+    KeyPem = pem_encode([PriKeyEnt]),
+    {CertPem, KeyPem}.
 
 %% Create a new cert/private key for the given host name/ip number.
 %% FQDNs = [binary()]
