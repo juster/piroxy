@@ -111,7 +111,7 @@ recv(Socket, InPid, head, Reader0, Data) ->
 recv(Socket, InPid, body, Reader0, Data) ->
     case pimsg:body_reader(Reader0, Data) of
         {error,_} = Err -> Err;
-        {continue,Reader,Bin} ->
+        {continue,Bin,Reader} ->
             inbound_stream:stream_request(InPid, Bin),
             recv(Socket, InPid, body, Reader, Bin);
         {done,?EMPTY,Rest} ->
