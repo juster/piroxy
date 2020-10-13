@@ -134,7 +134,6 @@ chunk(end_crlf, ?EMPTY, L) ->
     {continue, reverse(L), end_crlf};
 chunk(end_crlf, _, _L) ->
     {error,expected_crlf}.
-    
 
 chunk_size(Bin1, Bin2) ->
     case next_line(Bin1, Bin2, ?CHUNKSZ_MAX) of
@@ -218,6 +217,7 @@ response_length(Method, Line, Headers) ->
 
 request_length(connect, _) -> {ok,0};
 request_length(get, _) -> {ok,0};
+request_length(options, _) -> {ok,0};
 request_length(_, Headers) -> body_length(Headers).
 
 %%%
