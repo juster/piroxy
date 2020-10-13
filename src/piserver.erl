@@ -3,10 +3,14 @@
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2]).
 
--export([start/2, superserver/1, server/0, listen/2]).
+-export([start/2, stop/0, superserver/1, server/0, listen/2]).
 
 start(Addr, Port) ->
     register(piserver, spawn(?MODULE, listen, [Addr,Port])).
+
+stop() ->
+    exit(whereis(piserver), stop),
+    ok.
 
 listen(Addr, Port) ->
     case gen_tcp:listen(Port, [inet,{active,false},binary]) of
