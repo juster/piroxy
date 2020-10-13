@@ -1,5 +1,6 @@
 -module(piserver).
 
+-include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2]).
 
@@ -29,9 +30,9 @@ superserver(Listen) ->
                 ok ->
                     Pid ! {start,Socket},
                     superserver(Listen);
-                {error,_}=Err ->
+                {error,Reason} ->
                     exit(Pid, kill),
-                    Err
+                    exit(Reason)
             end,
             ok;
         {error,Reason} ->
@@ -79,6 +80,7 @@ loop(Socket, InPid, HttpState, Reader) ->
             loop(Socket, InPid, HttpState, Reader);
         {respond,{error,Reason}} ->
             send(Socket, [error_statusln(Reason),<<?CRLF,?CRLF>>]),
+            ?LOG_WARNING("Proxy server proc received error: ~p", [Reason]),
             exit(Reason);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);

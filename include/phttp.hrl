@@ -19,5 +19,6 @@
 -define(REQUEST_TIMEOUT, 5000).
 -define(CONNECT_TIMEOUT, 15000).
 
--define(DBG(Fname, T), io:format("*DBG* ~p {~s} [~s] ~p~n", [self(),?MODULE,Fname,T])).
+%%-define(DBG(Fname, T), io:format("*DBG* ~p {~s} [~s] ~p~n", [self(),?MODULE,Fname,T])).
+-define(DBG(Fname, T), ok).
 -record(head, {line, method, version, headers=[], bodylen}).

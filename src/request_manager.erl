@@ -292,10 +292,14 @@ perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
     end,
     ets:delete(Tab, TargetR#target.key);
 
-perform_fail_task({failone,Reason}, _TargetR, ReqR, Tab) ->
+perform_fail_task({failone,Reason}, TargetR, ReqR, Tab) ->
     #request{key={request,Ref}, inPid=Pid} = ReqR,
     inbound:fail(Pid, Ref, Reason),
-    ets:delete(Tab, ReqR#request.key);
+    ets:delete(Tab, ReqR#request.key),
+    ?LOG_WARNING("Outbound request failed: ~p",
+                 [{request,element(2,ReqR#request.key),
+                   target,element(2, TargetR#target.key),
+                   reason,Reason}]);
 
 perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
     Refs = reverse(TargetR#target.reqs),
@@ -312,7 +316,9 @@ perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
                     inbound:fail(Pid, Ref, Reason),
                     ets:delete(Tab, {request,Ref})
             end, L),
-    ets:delete(Tab, TargetR#target.key);
+    ets:delete(Tab, TargetR#target.key),
+    ?LOG_WARNING("Target requests failed: ~p",
+                 [{target,element(2, TargetR#target.key),reason,Reason}]);
 
 perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
     ok = reconnect_target(Tab, Target);
