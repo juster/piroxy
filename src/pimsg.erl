@@ -186,13 +186,13 @@ body_length(Headers) ->
                                         Headers, ?EMPTY),
     case {ContentLength, TransferEncoding} of
         {?EMPTY, ?EMPTY} ->
-            {error, missing_length};
+            {error,{missing_length,Headers}};
         {?EMPTY, Bin} ->
             %% XXX: not precise, potentially buggy/insecure. needs a rewrite.
             %%io:format("*DBG* transfer-encoding: ~s~n", [Bin]),
             case binary:match(Bin, <<"chunked">>) of
                 nomatch ->
-                    {error, missing_length};
+                    {error,{missing_length,Headers}};
                 _ ->
                     {ok, chunked}
             end;

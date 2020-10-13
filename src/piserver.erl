@@ -16,7 +16,7 @@ stop() ->
 listen(Addr, Port) ->
     case gen_tcp:listen(Port, [inet,{active,false},binary]) of
         {ok,Listen} ->
-            superserver(Listen);
+            ?MODULE:superserver(Listen);
         {error,Reason} ->
             io:format("~p~n",{error,Reason}),
             exit(Reason)
@@ -78,9 +78,9 @@ loop(Socket, InPid, HttpState, Reader) ->
         {respond,{body,Body}} ->
             send(Socket, Body),
             loop(Socket, InPid, HttpState, Reader);
-        {respond,{error,Reason}} ->
+        {respond,{fail,Ref,Reason}} ->
             send(Socket, [error_statusln(Reason),<<?CRLF,?CRLF>>]),
-            ?LOG_WARNING("Proxy server proc received error: ~p", [Reason]),
+            ?LOG_ERROR("Request ~p failed: ~p", [Ref,Reason]),
             exit(Reason);
         {respond,close} ->
             loop(Socket, InPid, HttpState, Reader);
@@ -91,7 +91,7 @@ loop(Socket, InPid, HttpState, Reader) ->
             %% We pass Socket around simple for this reason!
             case Socket of
                 {tcp,Sock} -> gen_tcp:shutdown(Sock, write);
-                {tls,Sock} -> ssl:shutdown(Sock, write)
+                {ssl,Sock} -> ssl:shutdown(Sock, write)
             end,
             loop(Socket, InPid, HttpState, Reader);
         Msg ->
@@ -107,7 +107,9 @@ recv(Socket, InPid, ignore, FakeReader, _) ->
 
 recv(Socket, InPid, head, Reader0, Data) ->
     case pimsg:head_reader(Reader0, Data) of
-        {error,_} = Err -> Err;
+        {error,Reason} ->
+            reflect_error(InPid, Reason),
+            recv_abort(Socket, InPid);
         {continue,Reader} ->
             loop(Socket, InPid, head, Reader);
         {done,Line,Headers,Rest} ->
@@ -116,7 +118,9 @@ recv(Socket, InPid, head, Reader0, Data) ->
 
 recv(Socket, InPid, body, Reader0, Data) ->
     case pimsg:body_reader(Reader0, Data) of
-        {error,_} = Err -> Err;
+        {error,Reason} ->
+            reflect_error(InPid, Reason),
+            recv_abort(Socket, InPid);
         {continue,Bin,Reader} ->
             inbound_stream:stream_request(InPid, Bin),
             recv(Socket, InPid, body, Reader, Bin);
@@ -182,10 +186,7 @@ body_begin(Socket, InPid, Head0, Rest) ->
 
 relativize(Uri, Head0) ->
     case http_uri:parse(Uri) of
-        {error,{malformed_uri,_,_}} ->
-            {error,http_bad_request};
-        {error,_} = Err ->
-            Err;
+        {error,_} = Err -> Err;
         {ok,{_Scheme,_UserInfo,Host,_Port,Path0,Query}} ->
             case check_host(Host, Head0#head.headers) of
                 {error,_} = Err -> Err;
@@ -206,14 +207,13 @@ request_head(Line, Headers) ->
     case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
         {unknown,_} ->
             ?DBG("request_head", {unknown_method,MethodBin}),
-            {error,http_bad_request};
+            {error,{unknown_method,MethodBin}};
         {_,unknown} ->
             ?DBG("request_head", {unknown_version,VerBin}),
-            {error,http_bad_request};
+            {error,{unknown_version,VerBin}};
         {Method,Ver} ->
             case pimsg:request_length(Method, Headers) of
-                {error,missing_length} ->
-                    {error,http_bad_request};
+                {error,_} = Err -> Err;
                 {ok,BodyLen} ->
                     {ok,#head{line=Line, method=Method, version=Ver,
                               headers=Headers, bodylen=BodyLen}}
@@ -257,7 +257,7 @@ request_target(Head) ->
 check_host(Host, Headers) ->
     case fieldlist:get_value(<<"host">>, Headers) of
         not_found ->
-            {error,missing_host};
+            {error,host_missing};
         Host ->
             ok;
         Host2 ->
@@ -277,9 +277,16 @@ send_head(Socket, Head) ->
     send(Socket, <<?CRLF>>),
     ok.
 
-%% error created by relativize
-error_statusln(missing_host) ->
-    error_statusln(http_bad_request);
+%% handle all errors created when attempting to parse the request
+error_statusln(host_mismatch) -> error_statusln(http_bad_request);
+error_statusln(host_missing) -> error_statusln(http_bad_request);
+error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
+
+%% pimsg:body_length/1
+error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
 
 error_statusln(Reason) ->
     case phttp:status_bin(Reason) of

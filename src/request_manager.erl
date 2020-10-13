@@ -70,6 +70,7 @@ killout(K, Tab) ->
 
 handle_call({new_request,Target,Head}, {InPid,_Tag}, Tab) ->
     %% convert data types first so we can fail before opening a socket
+    ?LOG_DEBUG("new_request for target: ~p~n~s", [Target, Head#head.line]),
     OutPid = connect_target(Tab, Target),
     Ref = insert_request(Tab, #request{target=Target,head=Head,inPid=InPid}),
     %% notify outbound there is a request waiting for them
@@ -236,22 +237,21 @@ fail_task(_Reason,closed,[]) ->
 
 %% This is not supposed to happen. Did we spawn an outbound with no requests?
 fail_task(closed,null,[]) ->
-    ?DBG("handle_info", "outbound closed with null request"),
-    cleanup;
-
-%% Pending requests but server gracefully closed socket.
-fail_task(closed,closed,_Pending) ->
-    retry;
+    {trace, null_request_closed, cleanup};
 
 %% Closed before any request could be queued, not good.
 fail_task(closed,null,_Pending) ->
     {target_error,reset};
 
+%% Pending requests but remote end gracefully closed socket.
+fail_task(closed,closed,_Pending) ->
+    retry;
+
 %% Error before any request could be queued, not good.
 fail_task(Reason,null,_Pending) ->
     {target_error,Reason};
 
-%% Pending requests but some error occurred.
+%% Socket was closed on remote end yet we have more requests to make.
 fail_task(Reason,closed,_Pending) ->
     {target_error,Reason};
 
@@ -282,6 +282,15 @@ target_error(Tab, #target{key=Key, n=Nfail}, Reason) ->
             retry
     end.
 
+perform_fail_task({trace,T,Next}, TargetR, ReqR, Tab) ->
+    ?LOG_DEBUG("target/req failure: ~s~n~p ~p",
+               [T,TargetR#target.key,
+                case ReqR of
+                    null -> {request,null};
+                    _ -> [ReqR#request.key]
+                end]),
+    perform_fail_task(Next, TargetR, ReqR, Tab);
+
 perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
     %% sanity check
     if
@@ -296,10 +305,10 @@ perform_fail_task({failone,Reason}, TargetR, ReqR, Tab) ->
     #request{key={request,Ref}, inPid=Pid} = ReqR,
     inbound:fail(Pid, Ref, Reason),
     ets:delete(Tab, ReqR#request.key),
-    ?LOG_WARNING("Outbound request failed: ~p",
-                 [{request,element(2,ReqR#request.key),
-                   target,element(2, TargetR#target.key),
-                   reason,Reason}]);
+    ?LOG_ERROR("Outbound request failed: ~p",
+               [{request,element(2,ReqR#request.key),
+                 target,element(2, TargetR#target.key),
+                 reason,Reason}]);
 
 perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
     Refs = reverse(TargetR#target.reqs),
@@ -317,8 +326,8 @@ perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
                     ets:delete(Tab, {request,Ref})
             end, L),
     ets:delete(Tab, TargetR#target.key),
-    ?LOG_WARNING("Target requests failed: ~p",
-                 [{target,element(2, TargetR#target.key),reason,Reason}]);
+    ?LOG_ERROR("Target requests failed: ~p",
+               [{target,element(2, TargetR#target.key),reason,Reason}]);
 
 perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
     ok = reconnect_target(Tab, Target);

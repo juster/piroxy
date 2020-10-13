@@ -208,7 +208,7 @@ handle_cast({fail,Ref,Reason}, S) ->
             ?DBG("fail", "cannot append error to closed stream"),
             {noreply, S};
         {found, L0, Q1, Q2} ->
-            L = [done,{error,Reason}|L0],
+            L = [done,{fail,Ref,Reason}|L0],
             {noreply,S#state{respQ=reverse(Q1,[{Ref,L}|Q2])},
              {continue,stream_responses}}
     end;
