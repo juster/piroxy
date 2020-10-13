@@ -151,6 +151,9 @@ handle_info({'EXIT',OldPid,Reason1}, Tab) ->
                          error({corrupt_pid_record,{OldPid,Target,Ref}})
              end,
     ets:delete(Tab, {pid,OldPid}), % process is gone
+    %% target_error and request_error provide another level of indirection.
+    %% These functions may override the task to be 'redo' and in the process
+    %% control the number of redo attempts that should be made.
     Task = case fail_task(Reason1, Req, TargetR#target.reqs) of
                {target_error,Reason2} ->
                    target_error(Tab, TargetR, Reason2);
@@ -289,25 +292,26 @@ perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
     end,
     ets:delete(Tab, TargetR#target.key);
 
-perform_fail_task({failone,Reason}, _TargetR, #request{}=ReqR, Tab) ->
+perform_fail_task({failone,Reason}, _TargetR, ReqR, Tab) ->
     #request{key={request,Ref}, inPid=Pid} = ReqR,
     inbound:fail(Pid, Ref, Reason),
     ets:delete(Tab, ReqR#request.key);
 
 perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
+    Refs = reverse(TargetR#target.reqs),
+    Pids = [lookup_request(Tab, Ref) || Ref <- Refs],
     %% The request of the failed proc is not in the queue for the task...
-    First = case ReqR of
-                #request{key={request,Ref}} ->
-                    [Ref];
-                null ->
-                    []
-            end,
-    Refs = First ++ reverse(TargetR#target.reqs),
-    Pids = [(lookup_request(Tab, Ref))#request.inPid || Ref <- Refs],
-    foreach(fun ({Ref, Pid}) ->
+    %% But there may actually be no active request, either.
+    L = case ReqR of
+            #request{key={request,Ref}} ->
+                [{Ref,ReqR}|lists:zip(Refs, Pids)];
+            null ->
+                lists:zip(Refs, Pids)
+        end,
+    foreach(fun ({Ref, #request{inPid=Pid}}) ->
                     inbound:fail(Pid, Ref, Reason),
                     ets:delete(Tab, {request,Ref})
-            end, lists:zip(Refs, Pids)),
+            end, L),
     ets:delete(Tab, TargetR#target.key);
 
 perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
