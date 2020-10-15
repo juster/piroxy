@@ -22,7 +22,7 @@ new(M, A) ->
 
 %% XXX: decided to use the empty atom instead of ?EMPTY
 read(S, empty) ->
-    S;
+    {ok,S};
 
 read({head,R0,M,S}, Bin) ->
     case pimsg:head_reader(R0, Bin) of
@@ -31,15 +31,14 @@ read({head,R0,M,S}, Bin) ->
         {continue,R} ->
             {ok, {head,R,M,S}};
         {done,StatusLn,Headers,Rest} ->
-            try M:head(S, StatusLn, Headers) of
+            case M:head(S, StatusLn, Headers) of
                 {ok,H} ->
                     R = pimsg:body_reader(H#head.bodylen),
                     read({body,R,M,S}, Rest);
                 {error,Rsn} ->
                     {error, M:fail(S, Rsn)};
-                Any1 -> Any1
-            catch
-                throw:Any2 -> Any2
+                Any ->
+                    Any
             end
     end;
 

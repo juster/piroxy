@@ -21,7 +21,8 @@ head(Pid, StatusLn, Headers) ->
             case {H1#head.method, request_target(H1)} of
                 {_,{error,_}} = Err2 -> Err2;
                 {options,{null,<<"*">>}} ->
-                    inbound_stream:reflect(Pid, {status,http_ok});
+                    inbound_stream:reflect(Pid, {status,http_ok}),
+                    {ok,H1};
                 {_,{null,_RelUri}} ->
                     %% HostInfo is null if a relative URL is provided by the
                     %% client. Hopefully this is inside of a CONNECT tunnel!

@@ -16,7 +16,7 @@ stop() ->
 listen(_Addr, Port) ->
     case gen_tcp:listen(Port, [inet,{active,false},binary]) of
         {ok,Listen} ->
-            ?MODULE:superserver(Listen);
+            superserver(Listen);
         {error,Reason} ->
             io:format("~p~n",{error,Reason}),
             exit(Reason)
@@ -73,7 +73,10 @@ loop(Sock, Stream, State) ->
             error(internal);
             %%loop(Sock, Stream, State);
         {respond,Resp} ->
-            send(Sock, Stream:encode(Resp)),
+            case Stream:encode(Resp) of
+                empty -> ok;
+                IoList -> send(Sock, IoList)
+            end,
             loop(Sock, Stream, State);
         Any ->
             ?DBG("loop", {unknown_msg,Any}),
@@ -183,6 +186,6 @@ tunnel({tcp,TcpSock}=Sock, {Proto0,State0}, {Proto,Args}, {https,Host,443}) ->
         end
     catch
         {error,Rsn2} ->
-            Proto0:fail(Rsn2, State0),
+            Proto0:fail(State0, Rsn2),
             ignore(Sock,Proto0,State0)
     end.

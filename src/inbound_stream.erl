@@ -223,13 +223,13 @@ handle_cast({respond,Ref,T}, S) ->
     end;
 
 %% reflect response back (called by client, in-order)
-handle_cast({reflect,L1},S) ->
+handle_cast({reflect,Term},S) ->
     case reverse(S#state.respQ) of
         [] ->
-            replay(L1, S),
+            relay(Term, S),
             {noreply, S};
-        [{Ref,L2}|Q0] ->
-            L = reverse(L1, L2),
+        [{Ref,L0}|Q0] ->
+            L = [Term|L0],
             Q = reverse([{Ref,L}|Q0]),
             {noreply,S#state{respQ=Q},{continue,stream_responses}}
     end;
