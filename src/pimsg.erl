@@ -63,7 +63,7 @@ head_reader({endline,N,StatusLine,Headers,Bin1}, Bin2) ->
         {ok,Line,_} -> {error,{expected_empty_line,Line}}
     end.
 
-fixed({I,N}, Bin) when I >= N -> {done, Bin, ?EMPTY};
+fixed({I,N}, Bin) when I >= N -> {done, ?EMPTY, Bin};
 fixed(S, ?EMPTY) -> {continue, ?EMPTY, S};
 fixed({I0,N}, Bin) ->
     I = I0 + byte_size(Bin),

@@ -13,7 +13,7 @@ stop() ->
     exit(whereis(piserver), stop),
     ok.
 
-listen(Addr, Port) ->
+listen(_Addr, Port) ->
     case gen_tcp:listen(Port, [inet,{active,false},binary]) of
         {ok,Listen} ->
             ?MODULE:superserver(Listen);
@@ -25,11 +25,11 @@ listen(Addr, Port) ->
 superserver(Listen) ->
     case gen_tcp:accept(Listen) of
         {ok,Socket} ->
-            Pid = spawn(fun ?MODULE:server/0),
+            Pid = spawn(fun piserver:server/0),
             case gen_tcp:controlling_process(Socket, Pid) of
                 ok ->
                     Pid ! {start,Socket},
-                    superserver(Listen);
+                    piserver:superserver(Listen);
                 {error,Reason} ->
                     exit(Pid, kill),
                     exit(Reason)
@@ -41,228 +41,92 @@ superserver(Listen) ->
 
 server() ->
     receive
-        {start,Socket} ->
-            inet:setopts(Socket, [{active,true}]),
-            Reader = pimsg:head_reader(),
+        {start,TcpSock} ->
+            inet:setopts(TcpSock, [{active,true}]),
             {ok,InPid} = inbound_stream:start_link(),
-            ok = loop({tcp,Socket}, InPid, head, Reader),
+            {ok,State} = http11_stream:new(http11_req, [InPid]),
+            loop({tcp,TcpSock}, http11_stream, State),
             inbound:stop(InPid)
     end.
 
-loop(Socket, InPid, HttpState, Reader) ->
+loop(Sock, Stream, State) ->
     receive
         %% receive requests from the client and parse them out
         {tcp,_,Data} ->
-            %%?DBG("loop", tcp),
-            recv(Socket, InPid, HttpState, Reader, Data);
-        {tcp_closed,_Sock} ->
+            stream(Sock, Stream, State, Data);
+        {tcp_closed,_} ->
             %% TODO: flush buffers etc
-            %%?DBG("loop", tcp_closed),
             ok;
-        {tcp_error,_Sock,Reason} ->
+        {tcp_error,_,Reason} ->
             exit(Reason);
         {ssl,_,Data} ->
-            %%?DBG("loop", ssl),
-            recv(Socket, InPid, HttpState, Reader, Data);
-        {ssl_closed,_TlsSock} ->
-            %% TODO: flush buffers etc
-            %%?DBG("loop", ssl_closed),
+            stream(Sock, Stream, State, Data);
+        {ssl_closed,_} ->
             ok;
-        {ssl_error,_Sock,Reason} ->
+        {ssl_error,_,Reason} ->
             exit(Reason);
-        {respond,#head{}=Head} ->
-            send_head(Socket, Head),
-            loop(Socket, InPid, HttpState, Reader);
-        {respond,{body,?EMPTY}} ->
-            loop(Socket, InPid, HttpState, Reader);
-        {respond,{body,Body}} ->
-            send(Socket, Body),
-            loop(Socket, InPid, HttpState, Reader);
-        {respond,{fail,Ref,Reason}} ->
-            send(Socket, [error_statusln(Reason),<<?CRLF,?CRLF>>]),
-            ?LOG_ERROR("Request ~p failed: ~p", [Ref,Reason]),
-            exit(Reason);
+        {disconnect} ->
+            shutdown(Sock),
+            ignore(Sock, Stream, State);
         {respond,close} ->
-            loop(Socket, InPid, HttpState, Reader);
-        {respond,disconnect} ->
-            %% XXX: not sure why this is not received, maybe the socket is
-            %% closed remotely first?
-            ?DBG("loop", disconnect),
-            %% We pass Socket around simple for this reason!
-            case Socket of
-                {tcp,Sock} -> gen_tcp:shutdown(Sock, write);
-                {ssl,Sock} -> ssl:shutdown(Sock, write)
-            end,
-            loop(Socket, InPid, HttpState, Reader);
-        Msg ->
-            ?DBG("loop", {unknown_msg,Msg}),
-            loop(Socket, InPid, HttpState, Reader)
+            %% XXX: close messages should never get to this process
+            error(internal);
+            %%loop(Sock, Stream, State);
+        {respond,Resp} ->
+            send(Sock, Stream:encode(Resp)),
+            loop(Sock, Stream, State);
+        Any ->
+            ?DBG("loop", {unknown_msg,Any}),
+            loop(Sock, Stream, State)
     end.
 
-recv(Socket, InPid, HttpState, Reader, ?EMPTY) ->
-    loop(Socket, InPid, HttpState, Reader);
+stream(Sock, Stream, State, <<>>) ->
+    loop(Sock, Stream, State);
 
-recv(Socket, InPid, ignore, FakeReader, _) ->
-    loop(Socket, InPid, ignore, FakeReader);
-
-recv(Socket, InPid, head, Reader0, Data) ->
-    case pimsg:head_reader(Reader0, Data) of
-        {error,Reason} ->
-            reflect_error(InPid, Reason),
-            recv_abort(Socket, InPid);
-        {continue,Reader} ->
-            loop(Socket, InPid, head, Reader);
-        {done,Line,Headers,Rest} ->
-            head_end(Socket, InPid, Line, Headers, Rest)
-    end;
-
-recv(Socket, InPid, body, Reader0, Data) ->
-    case pimsg:body_reader(Reader0, Data) of
-        {error,Reason} ->
-            reflect_error(InPid, Reason),
-            recv_abort(Socket, InPid);
-        {continue,Bin,Reader} ->
-            inbound_stream:stream_request(InPid, Bin),
-            recv(Socket, InPid, body, Reader, Bin);
-        {done,?EMPTY,Rest} ->
-            %% skip sending stream_request message
-            inbound_stream:finish_request(InPid),
-            Reader = pimsg:head_reader(),
-            recv(Socket, InPid, head, Reader, Rest);
-        {done,Bin,Rest} ->
-            inbound_stream:stream_request(InPid, Bin),
-            inbound_stream:finish_request(InPid),
-            Reader = pimsg:head_reader(),
-            recv(Socket, InPid, head, Reader, Rest)
+stream(Sock, Stream0, State0, Data) ->
+    case Stream0:read(State0, Data) of
+        {ok,State} ->
+            loop(Sock, Stream0, State);
+        {error,_} ->
+            %% ignore any new requests
+            ignore(Sock, Stream0, State0);
+        {tunnel,MA,HostInfo} ->
+            %% XXX: tunnel may possibly switch stream protocols
+            %% I am not sure if this is necessary...
+            tunnel(Sock, {Stream0,State0}, MA, HostInfo);
+        {upgrade,Stream,State} ->
+            loop(Sock, Stream, State)
     end.
 
-recv_abort(Socket, InPid) ->
-    inbound_stream:disconnect(InPid),
-    loop(Socket, InPid, ignore, null).
-
-head_end(Socket, InPid, Line, Headers, Rest) ->
-    case request_head(Line, Headers) of
-        {error,Reason} ->
-            reflect_error(InPid, Reason),
-            ?DBG("head_end", {error,Reason}),
-            recv_abort(Socket, InPid);
-        {ok,Head} ->
-            body_begin(Socket, InPid, Head, Rest)
-    end.
-
-body_begin(Socket, InPid, Head0, Rest) ->
-    ?DBG("body_begin", Head0),
-    case request_target(Head0) of
-        {error,Reason} ->
-            reflect_error(InPid, Reason),
-            ?DBG("body_begin", {error,Reason}),
-            recv_abort(Socket, InPid);
-        {ok,options_star} ->
-            %% TODO: figure out what OPTIONS to send back
-            reflect_status(InPid, http_ok);
-        {ok,{null,_RelUri}} ->
-            {ok,_Ref} = inbound:new(InPid, null, Head0),
-            Reader = pimsg:body_reader(Head0#head.bodylen),
-            recv(Socket, InPid, body, Reader, Rest);
-        {ok,{HostInfo,Uri}} ->
-            case Head0#head.method of
-                connect ->
-                    ?DBG("body_begin", connect),
-                    inbound_stream:force_host(InPid, HostInfo),
-                    tunnel(Socket, InPid, Rest, HostInfo);
-                _ ->
-                    case relativize(Uri, Head0) of
-                        {error,Reason} ->
-                            reflect_error(InPid, Reason),
-                            ?DBG("body_begin", {error,Reason}),
-                            recv_abort(Socket, InPid);
-                        {ok,Head} ->
-                            {ok,_Ref} = inbound:new(InPid, HostInfo, Head), % ignore Ref
-                            Reader = pimsg:body_reader(Head#head.bodylen),
-                            recv(Socket, InPid, body, Reader, Rest)
-                    end
-            end
-    end.
-
-relativize(Uri, Head0) ->
-    case http_uri:parse(Uri) of
-        {error,_} = Err -> Err;
-        {ok,{_Scheme,_UserInfo,Host,_Port,Path0,Query}} ->
-            case check_host(Host, Head0#head.headers) of
-                {error,_} = Err -> Err;
-                ok ->
-                    MethodBin = phttp:method_bin(Head0#head.method),
-                    Path = iolist_to_binary([Path0|Query]),
-                    Line = <<MethodBin/binary, " ", Path/binary, " ", ?HTTP11>>,
-                    {ok,Head0#head{line=Line}}
-            end
-    end.
-
-% Returns:
-%  {ok,#head{}} on success
-%  {error,Reason} on error
-%
-request_head(Line, Headers) ->
-    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, Line, <<" ">>),
-    case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
-        {unknown,_} ->
-            ?DBG("request_head", {unknown_method,MethodBin}),
-            {error,{unknown_method,MethodBin}};
-        {_,unknown} ->
-            ?DBG("request_head", {unknown_version,VerBin}),
-            {error,{unknown_version,VerBin}};
-        {Method,Ver} ->
-            case pimsg:request_length(Method, Headers) of
-                {error,_} = Err -> Err;
-                {ok,BodyLen} ->
-                    {ok,#head{line=Line, method=Method, version=Ver,
-                              headers=Headers, bodylen=BodyLen}}
-            end
-    end.
-
-%% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
-%% If the Head contains a request to a relative URI, Host=null.
-request_target(Head) ->
-    %% XXX: splits the request line twice (in request_head as well)
-    {ok,[_,UriBin,_]} = phttp:nsplit(3, Head#head.line, <<" ">>),
-    case {Head#head.method, UriBin} of
-        {connect,_} ->
-            {ok,[Host,Port]} = phttp:nsplit(2, UriBin, <<":">>),
-            %% TODO: check what the schema is and IMPLEMENT TLS MITM FML!!!
-            case Port of
-                <<"443">> -> {ok,{{https,Host,binary_to_integer(Port)},UriBin}};
-                <<"80">> -> {ok,{{http,Host,binary_to_integer(Port)},UriBin}};
-                _ -> {error,http_bad_request}
-            end;
-        {options,<<"*">>} ->
-            {ok,options_star};
-        {_,<<"/",_/binary>>} ->
-            %% relative URI, hopefully we are already CONNECT-ed to a
-            %% single host
-            {ok,{null,UriBin}};
-        _ ->
-            case http_uri:parse(UriBin) of
-                {error,{malformed_uri,_,_}} ->
-                    {error, http_bad_request};
-                {ok,{Scheme,_UserInfo,Host,Port,_Path0,_Query}} ->
-                    %% XXX: never Fragment?
-                    %% XXX: how to use UserInfo?
-                    %% URI should be absolute when received from proxy client!
-                    %% Convert to relative before sending to host.
-                    HostInfo = {Scheme,Host,Port},
-                    {ok,{HostInfo,UriBin}}
-            end
-    end.
-
-check_host(Host, Headers) ->
-    case fieldlist:get_value(<<"host">>, Headers) of
-        not_found ->
-            {error,host_missing};
-        Host ->
+ignore(Sock, Stream, State) ->
+    receive
+        %% receive requests from the client and parse them out
+        {tcp,_,_Data} ->
+            ignore(Sock, Stream, State);
+        {tcp_closed,_} ->
+            %% TODO: flush buffers etc
             ok;
-        Host2 ->
-            ?DBG("check_host", {host_mismatch,Host,Host2}),
-            {error,{host_mismatch,Host2}}
+        {tcp_error,_,Reason} ->
+            exit(Reason);
+        {ssl,_,_Data} ->
+            ignore(Sock, Stream, State);
+        {ssl_closed,_} ->
+            ok;
+        {ssl_error,_,Reason} ->
+            exit(Reason);
+        {disconnect} ->
+            shutdown(Sock),
+            ignore(Sock, Stream, State);
+        {respond,close} ->
+            %% XXX: close messages should never get to this process
+            error(internal);
+            %%ignore(Sock, Stream, State);
+        {respond,Resp} ->
+            send(Sock, Stream:encode(Resp)),
+            ignore(Sock, Stream, State);
+        Any ->
+            ?DBG("ignore", {unknown_msg,Any}),
+            ignore(Sock, Stream, State)
     end.
 
 send({tcp,Sock}, Data) ->
@@ -271,96 +135,54 @@ send({tcp,Sock}, Data) ->
 send({ssl,Sock}, Data) ->
     ssl:send(Sock, Data).
 
-send_head(Socket, Head) ->
-    send(Socket, [Head#head.line|<<?CRLF>>]),
-    send(Socket, fieldlist:to_binary(Head#head.headers)),
-    send(Socket, <<?CRLF>>),
-    ok.
+shutdown({tcp,Sock}) ->
+    gen_tcp:shutdown(Sock, write);
 
-%% handle all errors created when attempting to parse the request
-error_statusln(host_mismatch) -> error_statusln(http_bad_request);
-error_statusln(host_missing) -> error_statusln(http_bad_request);
-error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
+shutdown({ssl,Sock}) ->
+    ssl:shutdown(Sock, write).
 
-%% pimsg:body_length/1
-error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
+mitm(TcpSock, Host) ->
+    case inet:setopts(TcpSock, [{active,false}]) of
+        %% socket may have suddenly closed!
+        {error,_}=Err1 -> throw(Err1);
+        ok -> ok
+    end,
+    {HostCert,Key,_CaCert} = case forger:forge(Host) of
+                                 {error,_}=Err2 -> throw(Err2);
+                                 {ok,T} -> T
+                             end,
+    DerKey = public_key:der_encode('ECPrivateKey', Key),
+    Opts = [{mode,binary}, {packet,0}, {verify,verify_none},
+            {alpn_preferred_protocols,[<<"http/1.1">>]},
+            {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
+    %%inet:controlling_process(TcpSock, self()),
+    TlsSock = case ssl:handshake(TcpSock, Opts) of
+                  {error,_}=Err3 -> throw(Err3);
+                  {ok,X} -> X
+              end,
+    ?DBG("tunnel", {handshake,ok}),
+    %% XXX: active does not always work when provided to handshake/2
+    ssl:setopts(TlsSock, [{active,true}]),
+    TlsSock.
 
-error_statusln(Reason) ->
-    case phttp:status_bin(Reason) of
-        {ok,Bin} ->
-            Bin;
-        not_found ->
-            {ok,Bin} = phttp:status_bin(http_server_error),
-            Bin
-    end.
-
-reflect_status(InPid, HttpStatus) ->
-    case phttp:status_bin(HttpStatus) of
-        {ok,Bin} ->
-            reflect_statusln(InPid, Bin);
-        not_found ->
-            exit(badarg)
-    end.
-
-reflect_error(InPid, Reason) ->
-    inbound_stream:reflect(InPid, [{error,Reason}]).
-
-reflect_statusln(InPid, StatusBin) ->
-    StatusLn = <<?HTTP11," ",StatusBin/binary>>,
-    Head = #head{line=StatusLn, bodylen=0},
-    inbound_stream:reflect(InPid, [Head]).
-
-%% XXX: client can keep CONNECT-ing to new hosts indefinitely...
-%% TODO: should I discard Rest?
-%% TODO: handle ssl sockets as well?
-tunnel({tcp,TcpSock}, InPid, Rest, {https,Host,443}) ->
-    ?DBG("tunnel",{rest,Rest,host,Host,sock,TcpSock}),
+%% TODO: handle ssl sockets as well? (allows nested CONNECTs)
+%% TODO: allow ports other than 443?
+tunnel({tcp,TcpSock}=Sock, {Proto0,State0}, {Proto,Args}, {https,Host,443}) ->
+    Bin = Proto0:encode({status,http_ok}),
+    ?DBG("tunnel", {statusln, Bin}),
+    gen_tcp:send(TcpSock, Bin),
     try
-        case inet:setopts(TcpSock, [{active,false}]) of
-            {error,_}=Err -> % socket may have suddenly closed!
-                throw(Err);
-            ok ->
-                ok
-        end,
-        {ok,StatusBin} = phttp:status_bin(http_ok),
-        Resp = <<?HTTP11," ",StatusBin/binary,?CRLF,?CRLF>>,
-        gen_tcp:send(TcpSock, Resp),
-        {ok,{HostCert,Key,_CaCert}} = case forger:forge(Host) of
-                                          {error,_}=Err1 -> throw(Err1);
-                                          T1 -> T1
-                                      end,
-
-        %%?DBG("tunnel", {cert,HostCert}),
-        %%DerCaCert = public_key:der_encode('Certificate',CaCert),
-        %%ok = file:write_file("lastcert.pem",
-        %%                     public_key:pem_encode([{'Certificate',HostCert,
-        %%                     not_encrypted}])),
-        DerKey = public_key:der_encode('ECPrivateKey', Key),
-        Opts = [{mode,binary},{packet,0},{verify,verify_none},
-                {alpn_preferred_protocols,[<<"http/1.1">>]},
-                {cert,HostCert},{key,{'ECPrivateKey',DerKey}}],
-        %%inet:controlling_process(TcpSock, self()),
-        {ok,TlsSock} = case ssl:handshake(TcpSock, Opts) of
-                           {error,_}=Err2 -> throw(Err2);
-                           T2 -> T2
-                       end,
-        ?DBG("tunnel", {handshake,ok}),
-        %% XXX: active does not always work when provided to handshake/2
-        ssl:setopts(TlsSock, [{active,true}]),
-        Reader = pimsg:head_reader(),
-        ok = loop({ssl,TlsSock}, InPid, head, Reader),
-        throw(cleanup)
+        TlsSock = mitm(TcpSock, Host),
+        %% We may switch stream protocol or just reset the last stream.
+        case apply(Proto, new, Args) of
+            {ok,State} ->
+                ?DBG("tunnel", {proto,Proto,state,State}),
+                loop({ssl,TlsSock}, Proto, State);
+            {error,Rsn1} ->
+                exit(Rsn1) % XXX: how to be more graceful?
+        end
     catch
-        cleanup ->
-            %%?DBG("tunnel", cleanup),
-            gen_tcp:close(TcpSock), % not sure how else to cleanup
-            ok;
-        {error,Reason} ->
-            ?DBG("tunnel", {error,Reason}),
-            reflect_error(InPid, Reason),
-            recv_abort({tcp,TcpSock}, InPid)
+        {error,Rsn2} ->
+            Proto0:fail(Rsn2, State0),
+            ignore(Sock,Proto0,State0)
     end.
-

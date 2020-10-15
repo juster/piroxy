@@ -269,12 +269,10 @@ handle_continue(stream_responses, S) ->
             ?DBG("stream_responses", both_done),
             %% Both request and response queues have been tagged done
             replay(reverse(L), S),
-            relay(close, S),
             %% Pop the top request/response entries in both queues
             {noreply,
              S#state{reqQ=tl(S#state.reqQ), respQ=tl(S#state.respQ)},
              {continue,stream_responses}};
-
         {{Ref,[done]}, {Ref,L}} ->
             %% Responses are not finished yet, relay what we have and reset
             %% the queue.
