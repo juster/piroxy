@@ -79,6 +79,8 @@ recv_data(Data, State) ->
         body ->
             body_data(Data, clock_recv(State));
         idle ->
+            %% TODO: parse HTTP error statuses
+            ?LOG_DEBUG("~p received data while idle: ~p", [self(), Data]),
             error(internal)
     end.
 
@@ -86,7 +88,7 @@ clock_recv(State) ->
     State#state{lastrecv=system_time()}.
 
 next_request(#state{status=idle} = State0) ->
-    case request_manager:next_request() of
+    case request_sender:next_ready() of
         null -> loop(State0);
         {DataPid,Ref,Head} = Req ->
             ?DBG("next_request", {req,Ref}),
@@ -111,7 +113,7 @@ close_request(State0) ->
             %% should not happen
             error(internal);
         {_,Ref,_} ->
-            request_manager:close_request(Ref),
+            request_manager:close(Ref),
             case {State0#state.close, State0#state.ssl} of
                 {true,false} ->
                     %% The last response requested that we close the connection.

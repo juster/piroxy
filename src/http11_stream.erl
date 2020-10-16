@@ -68,7 +68,7 @@ encode(#head{line=Line, headers=Headers}) ->
 encode({body,Body}) ->
     Body;
 
-encode({fail,Reason}) ->
+encode({error,Reason}) ->
     [error_statusln(Reason)|<<?CRLF>>];
 
 encode({status,HttpStatus}) ->
