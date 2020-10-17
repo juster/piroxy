@@ -4,10 +4,17 @@
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2]).
 
--export([start/2, stop/0, superserver/1, server/0, listen/2]).
+-export([start/2, start_link/2, stop/0, superserver/1, server/0, listen/2]).
 
 start(Addr, Port) ->
-    register(piserver, spawn(?MODULE, listen, [Addr,Port])).
+    Pid = spawn(?MODULE, listen, [Addr,Port]),
+    register(piserver, Pid),
+    {ok,Pid}.
+
+start_link(Addr, Port) ->
+    Pid = spawn_link(?MODULE, listen, [Addr,Port]),
+    register(piserver, Pid),
+    {ok,Pid}.
 
 stop() ->
     exit(whereis(piserver), stop),
@@ -40,13 +47,12 @@ superserver(Listen) ->
     end.
 
 server() ->
+    response_handler:add_sup_handler(),
+    {ok,State} = http11_stream:new([http11_req, []]),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
-            {ok,InPid} = inbound_stream:start_link(),
-            {ok,State} = http11_stream:new(http11_req, [InPid]),
-            loop({tcp,TcpSock}, http11_stream, State),
-            inbound:stop(InPid)
+            loop({tcp,TcpSock}, http11_stream, State)
     end.
 
 loop(Sock, Stream, State) ->
@@ -66,70 +72,46 @@ loop(Sock, Stream, State) ->
         {ssl_error,_,Reason} ->
             exit(Reason);
         {disconnect} ->
+            %% XXX: I forget why I needed this...
+            ?LOG_WARNING("~p received disconnect", [self()]),
             shutdown(Sock),
-            ignore(Sock, Stream, State);
+            M = write_stream,
+            loop(Sock, M, M:new([Stream]));
+        {make_tunnel,HostInfo} ->
+            tunnel(Sock, Stream, State, HostInfo);
         {respond,close} ->
-            %% XXX: close messages should never get to this process
-            error(internal);
-            %%loop(Sock, Stream, State);
+            ?LOG_WARNING("~p received {respond,close}", [self()]),
+            loop(Sock, Stream, State);
         {respond,Resp} ->
-            case Stream:encode(Resp) of
+            %%?DBG("loop", {respond,Resp}),
+            case Stream:encode(State, Resp) of
                 empty -> ok;
                 IoList -> send(Sock, IoList)
             end,
             loop(Sock, Stream, State);
         Any ->
-            ?DBG("loop", {unknown_msg,Any}),
+            ?LOG_DEBUG("~p received unknown message: ~p", [self(),Any]),
             loop(Sock, Stream, State)
     end.
 
 stream(Sock, Stream, State, <<>>) ->
+    ?LOG_DEBUG("~p received an empty data binary over socket", [self()]),
     loop(Sock, Stream, State);
 
-stream(Sock, Stream0, State0, Data) ->
-    case Stream0:read(State0, Data) of
-        {ok,State} ->
-            loop(Sock, Stream0, State);
-        {error,_} ->
+stream(Sock, M, S0, Data) ->
+    case M:read(S0, Data) of
+        {ok,S} ->
+            loop(Sock, M, S);
+        {error,_}=Err ->
             %% ignore any new requests
-            ignore(Sock, Stream0, State0);
-        {tunnel,MA,HostInfo} ->
-            %% XXX: tunnel may possibly switch stream protocols
-            %% I am not sure if this is necessary...
-            tunnel(Sock, {Stream0,State0}, MA, HostInfo);
-        {upgrade,Stream,State} ->
-            loop(Sock, Stream, State)
-    end.
-
-ignore(Sock, Stream, State) ->
-    receive
-        %% receive requests from the client and parse them out
-        {tcp,_,_Data} ->
-            ignore(Sock, Stream, State);
-        {tcp_closed,_} ->
-            %% TODO: flush buffers etc
-            ok;
-        {tcp_error,_,Reason} ->
-            exit(Reason);
-        {ssl,_,_Data} ->
-            ignore(Sock, Stream, State);
-        {ssl_closed,_} ->
-            ok;
-        {ssl_error,_,Reason} ->
-            exit(Reason);
-        {disconnect} ->
+            fail(Sock, M, S0, Err),
+            M2 = write_stream,
+            loop(Sock, M2, M2:new([M]));
+        shutdown ->
+            %% this should not happen but is a valid return value
             shutdown(Sock),
-            ignore(Sock, Stream, State);
-        {respond,close} ->
-            %% XXX: close messages should never get to this process
-            error(internal);
-            %%ignore(Sock, Stream, State);
-        {respond,Resp} ->
-            send(Sock, Stream:encode(Resp)),
-            ignore(Sock, Stream, State);
-        Any ->
-            ?DBG("ignore", {unknown_msg,Any}),
-            ignore(Sock, Stream, State)
+            M2 = write_stream,
+            loop(Sock, M2, M2:new([M]))
     end.
 
 send({tcp,Sock}, Data) ->
@@ -143,6 +125,9 @@ shutdown({tcp,Sock}) ->
 
 shutdown({ssl,Sock}) ->
     ssl:shutdown(Sock, write).
+
+fail(Sock, M, State, Error) ->
+    send(Sock, M:encode(State, Error)).
 
 mitm(TcpSock, Host) ->
     case inet:setopts(TcpSock, [{active,false}]) of
@@ -170,22 +155,14 @@ mitm(TcpSock, Host) ->
 
 %% TODO: handle ssl sockets as well? (allows nested CONNECTs)
 %% TODO: allow ports other than 443?
-tunnel({tcp,TcpSock}=Sock, {Proto0,State0}, {Proto,Args}, {https,Host,443}) ->
-    Bin = Proto0:encode({status,http_ok}),
-    ?DBG("tunnel", {statusln, Bin}),
+tunnel({tcp,TcpSock}, M, State, {https,Host,443}) ->
+    Bin = M:encode(State, {status,http_ok}),
     gen_tcp:send(TcpSock, Bin),
     try
         TlsSock = mitm(TcpSock, Host),
-        %% We may switch stream protocol or just reset the last stream.
-        case apply(Proto, new, Args) of
-            {ok,State} ->
-                ?DBG("tunnel", {proto,Proto,state,State}),
-                loop({ssl,TlsSock}, Proto, State);
-            {error,Rsn1} ->
-                exit(Rsn1) % XXX: how to be more graceful?
-        end
+        loop({ssl,TlsSock}, M, State)
     catch
-        {error,Rsn2} ->
-            Proto0:fail(State0, Rsn2),
-            ignore(Sock,Proto0,State0)
+        {error,Rsn} ->
+            ?LOG_ERROR("~p failed to create MITM tunnel: ~p", [self(), Rsn]),
+            exit(Rsn)
     end.

@@ -1,0 +1,18 @@
+{application, piroxy,
+ [{description, "Pirate Proxy"},
+  {vsn, "0.01"},
+  {modules, [body_snatcher, fieldlist, forger, forger_lib,
+             http11_req, http11_res, http11_stream,
+             morgue, outbound, phttp, piclient, pievents,
+             pimsg, piqueue, piserver, piroxy_app, piroxy_sup,
+             request_handler, request_handler_mon,
+             response_forwarder,
+             write_stream]},
+  {registered, [piserver, pievents, forger, morgue]},
+  {applications, [kernel,stdlib,ssl]},
+  {env, [{keyfile, "/d/piroxy/priv/pem/key.pem"},
+         {cafile, "/d/piroxy/priv/pem/ca.pem"},
+         {passwd, "secret"}]},
+  {mod, {piroxy_app,[]}},
+  {start_phases, []}
+ ]}.

@@ -7,7 +7,7 @@
 -module(pimsg).
 
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
--export([body_length/1, request_length/2, response_code/1, response_length/3]).
+-export([body_length/1]).
 
 -import(lists, [reverse/1]).
 -include("../include/phttp.hrl").
@@ -141,7 +141,7 @@ chunk_size(Bin1, Bin2) ->
         {error,_} = T -> T;
         {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
         {ok,Line,Rest} ->
-            ?DBG("chunk_size", {line,Line}),
+            %%?DBG("chunk_size", {line,Line}),
             Hex = case binary:match(Line, <<";">>) of
                       nomatch -> Line;
                       {Pos,_Len} -> binary_part(Line, 0, Pos)
@@ -199,26 +199,6 @@ body_length(Headers) ->
         {Bin, _} ->
             {ok, binary_to_integer(Bin)}
     end.
-
-response_code(StatusLn) ->
-    {ok,[_,Status,_]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    Status.
-
-response_length_(head, <<"200">>, _) -> {ok, 0};
-response_length_(_, <<"200">>, Headers) -> body_length(Headers);
-response_length_(_, <<"1",_,_>>, _) -> {ok, 0};
-response_length_(_, <<"204">>, _) -> {ok, 0};
-response_length_(_, <<"304">>, _) -> {ok, 0};
-response_length_(head, _, _) -> {ok, 0};
-response_length_(_, _, ResHeaders) -> body_length(ResHeaders).
-
-response_length(Method, Line, Headers) ->
-    response_length_(Method, response_code(Line), Headers).
-
-request_length(connect, _) -> {ok,0};
-request_length(get, _) -> {ok,0};
-request_length(options, _) -> {ok,0};
-request_length(_, Headers) -> body_length(Headers).
 
 %%%
 %%% internal functions

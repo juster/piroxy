@@ -5,7 +5,7 @@
 -include("../include/phttp.hrl").
 -import(lists, [any/2]).
 
--export([start/1, stop/0, forge/1]).
+-export([start/1, start_link/1, stop/0, forge/1]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%%
@@ -14,6 +14,9 @@
 
 start(Opts) ->
     gen_server:start({local,?MODULE}, ?MODULE, [Opts], []).
+
+start_link(Opts) ->
+    gen_server:start_link({local,?MODULE}, ?MODULE, [Opts], []).
 
 stop() ->
     gen_server:stop(?MODULE).

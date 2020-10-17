@@ -1,40 +1,27 @@
--module(request_sender).
+-module(request_handler).
 -behavior(gen_event).
 
 -import(lists, [flatmap/2, reverse/1, foreach/2]).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
--export([add_handler/0, add_sup_handler/0]).
--export([next_ready/0]). % custom request_sender calls
+-export([next_request/0]). % calls
 -export([init/1, terminate/2, handle_event/2, handle_call/2, handle_info/2]).
 
+%%% ETS records
 -record(request, {key,target,head,inPid,n=0}).
 -record(target, {key,outPid=null,reqs=[],n=0}).
 -record(pid, {key,target,req=null}).
 
-add_handler() ->
-    gen_event:add_handler(pievents, ?MODULE, []).
-
-add_sup_handler() ->
-    gen_event:add_sup_handler(pievents, ?MODULE, []).
-
 %%% called by the outbound process
-next_ready() ->
+next_request() ->
     gen_event:call(pievents, ?MODULE, {next_request,self()}).
 
-%%% gen_server callbacks
+%%% gen_event callbacks
 %%%
 
 init([]) ->
-    case application:ensure_all_started(ssl) of
-        {ok,_} ->
-            process_flag(trap_exit, true),
-            Tab = ets:new(?MODULE, [set,private,{keypos,2}]),
-            {ok,Tab};
-        {error,Reason} ->
-            {stop,Reason}
-    end.
+    {ok, ets:new(?MODULE, [set,private,{keypos,2}])}.
 
 terminate(_Reason, Tab) ->
     killout(ets:first(Tab), Tab).
@@ -69,23 +56,13 @@ handle_event({make_request,Req,Target,Head}, Tab) ->
     outbound:new_request(OutPid),
     {ok,Tab};
 
-%% request is gracefully closed (i.e. finished)
-handle_event({close_response,Req}, Tab) ->
-    case lookup_request(Tab, Req) of
-        not_found ->
-            %% XXX: request was cancelled by inbound proc while still in process!!
-            ?LOG_WARNING("request (~p) not found when attempting to close request", [Req]);
-        #request{inPid=InPid, target=Target} ->
-            case lookup_target(Tab, Target) of
-                not_found ->
-                    ?LOG_WARNING("target (~p) not found when attempting to close request.", [Req]);
-                #target{outPid=OutPid} ->
-                    ?DBG("end_request", {pid,OutPid,req,Req}),
-                    true = ets:update_element(Tab, {pid,OutPid}, {#pid.req,closed}),
-                    true = ets:delete(Tab, {request,Req})
-            end
-    end,
-    {ok,Tab};
+handle_event({stream_request,Req,Body}, S) ->
+    morgue:append(Req, Body),
+    {ok, S};
+
+handle_event({end_request,Req}, S) ->
+    morgue:append(Req, done),
+    {ok, S};
 
 %% cancel a request, remove it from the todo list.
 handle_event({cancel_request,Req}, Tab) ->
@@ -132,6 +109,24 @@ handle_event({cancel_request,Req}, Tab) ->
             {ok,Tab}
     end;
 
+%% request is gracefully closed (i.e. finished)
+handle_event({close_response,Req}, Tab) ->
+    case lookup_request(Tab, Req) of
+        not_found ->
+            %% XXX: request was cancelled by inbound proc while still in process!!
+            ?LOG_WARNING("request (~p) not found when attempting to close request", [Req]);
+        #request{inPid=InPid, target=Target} ->
+            case lookup_target(Tab, Target) of
+                not_found ->
+                    ?LOG_WARNING("target (~p) not found when attempting to close request.", [Req]);
+                #target{outPid=OutPid} ->
+                    ?DBG("end_request", {pid,OutPid,req,Req}),
+                    true = ets:update_element(Tab, {pid,OutPid}, {#pid.req,closed}),
+                    true = ets:delete(Tab, {request,Req})
+            end
+    end,
+    {ok,Tab};
+
 handle_event(_, State) ->
     {ok, State}.
 
@@ -140,11 +135,11 @@ handle_call({next_request,OutPid}, Tab) ->
 
 %% track outbound processes so that we can recreate them if they exit
 handle_info({'EXIT',Pid,Reason}, Tab) ->
-    ?DBG("handle_info", {'EXIT',Pid,Reason}),
+    %%?DBG("handle_info", {'EXIT',Pid,Reason}),
     try
         case lookup_pid(Tab, Pid) of
             not_found ->
-                ?DBG("handle_info", not_found),
+                %%?DBG("handle_info", not_found),
                 ok;
             #pid{target=Target, req=Req} ->
                 cleanup_proc(Req, Pid, Target, Reason, Tab)
@@ -257,7 +252,7 @@ fail_task(_Reason,closed,[]) ->
     cleanup;
 
 %% Happens when a request is cancelled before it gets a chance to be fetched by
-%% outbound using request_sender:next_ready().
+%% outbound using request_handler:next_request().
 fail_task(closed,null,[]) ->
     {trace, null_request_closed, cleanup};
 
@@ -325,7 +320,7 @@ perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
 
 perform_fail_task({failone,Reason}, TargetR, ReqR, Tab) ->
     #request{key={request,Req}, inPid=Pid} = ReqR,
-    inbound:fail(Pid, Req, Reason),
+    pievents:fail_request(Req, Reason),
     ets:delete(Tab, ReqR#request.key),
     ?LOG_ERROR("Outbound request failed: ~p",
                [{request,element(2,ReqR#request.key),
@@ -333,19 +328,19 @@ perform_fail_task({failone,Reason}, TargetR, ReqR, Tab) ->
                  reason,Reason}]);
 
 perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
-    Refs = reverse(TargetR#target.reqs),
-    Pids = [lookup_request(Tab, Ref) || Ref <- Refs],
+    Reqs = reverse(TargetR#target.reqs),
+    Pids = [lookup_request(Tab, Ref) || Ref <- Reqs],
     %% The request of the failed proc is not in the queue for the task...
     %% But there may actually be no active request, either.
     L = case ReqR of
             #request{key={request,Ref}} ->
-                [{Ref,ReqR}|lists:zip(Refs, Pids)];
+                [{Ref,ReqR}|lists:zip(Reqs, Pids)];
             null ->
-                lists:zip(Refs, Pids)
+                lists:zip(Reqs, Pids)
         end,
-    foreach(fun ({Ref, #request{inPid=Pid}}) ->
-                    inbound:fail(Pid, Ref, Reason),
-                    ets:delete(Tab, {request,Ref})
+    foreach(fun ({Req, #request{inPid=Pid}}) ->
+                    pievents:fail_request(Req, Reason),
+                    ets:delete(Tab, {request,Req})
             end, L),
     ets:delete(Tab, TargetR#target.key),
     ?LOG_ERROR("Target requests failed: ~p",
