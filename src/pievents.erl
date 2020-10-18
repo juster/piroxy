@@ -12,8 +12,8 @@ start_link() ->
 
 %%% called by the inbound process
 
-make_request(Req, Head, HostInfo) ->
-    gen_event:notify(?MODULE, {make_request,Req,Head,HostInfo}).
+make_request(Req, HostInfo, Head) ->
+    gen_event:notify(?MODULE, {make_request,Req,HostInfo,Head}).
 
 stream_request(Req, Body) ->
     gen_event:notify(?MODULE, {stream_request,Req,Body}).

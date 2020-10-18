@@ -1,0 +1,1 @@
+-record(head, {line='_', method='_', version='_', headers='_', bodylen='_'}).

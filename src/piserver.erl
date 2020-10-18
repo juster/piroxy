@@ -78,7 +78,13 @@ loop(Sock, Stream, State) ->
             M = write_stream,
             loop(Sock, M, M:new([Stream]));
         {make_tunnel,HostInfo} ->
-            tunnel(Sock, Stream, State, HostInfo);
+            send(Sock, Stream:encode(State, {status,http_ok})),
+            case tunnel(Sock, HostInfo) of
+                {ok,TlsSock} ->
+                    loop({ssl,TlsSock}, Stream, State);
+                {error,Reason} ->
+                    exit(Reason)
+            end;
         {respond,close} ->
             ?LOG_WARNING("~p received {respond,close}", [self()]),
             loop(Sock, Stream, State);
@@ -144,7 +150,7 @@ mitm(TcpSock, Host) ->
             {alpn_preferred_protocols,[<<"http/1.1">>]},
             {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
     %%inet:controlling_process(TcpSock, self()),
-    TlsSock = case ssl:handshake(TcpSock, Opts) of
+    TlsSock = case ssl:handshake(TcpSock, Opts, ?CONNECT_TIMEOUT) of
                   {error,_}=Err3 -> throw(Err3);
                   {ok,X} -> X
               end,
@@ -155,14 +161,13 @@ mitm(TcpSock, Host) ->
 
 %% TODO: handle ssl sockets as well? (allows nested CONNECTs)
 %% TODO: allow ports other than 443?
-tunnel({tcp,TcpSock}, M, State, {https,Host,443}) ->
-    Bin = M:encode(State, {status,http_ok}),
-    gen_tcp:send(TcpSock, Bin),
+tunnel({tcp,TcpSock}, {https,Host,443}) ->
     try
         TlsSock = mitm(TcpSock, Host),
-        loop({ssl,TlsSock}, M, State)
+        ?LOG_INFO("~p SSL handshake successful", [self()]),
+        {ok,TlsSock}
     catch
-        {error,Rsn} ->
+        {error,Rsn} = Err ->
             ?LOG_ERROR("~p failed to create MITM tunnel: ~p", [self(), Rsn]),
-            exit(Rsn)
+            Err
     end.
