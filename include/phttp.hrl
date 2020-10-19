@@ -16,7 +16,7 @@
 -define(REQUEST_FAIL_MAX, 5).
 
 %% outbound default request timeout
--define(REQUEST_TIMEOUT, 5000).
+-define(REQUEST_TIMEOUT, 15000).
 -define(CONNECT_TIMEOUT, 15000).
 
 %%-define(DBG(Fname, T), io:format("*DBG* ~p {~s} [~s] ~p~n", [self(),?MODULE,Fname,T])).

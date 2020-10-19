@@ -39,6 +39,8 @@ head_reader({start,N,Bin1}, Bin2) ->
 head_reader({headers,N0,StatusLine,Headers0,Bin1}, Bin2) ->
     case next_line(Bin1, Bin2, ?HEADLN_MAX) of
         {error,_} = T -> T;
+        {skip,?EMPTY} ->
+            {continue, {headers,N0,StatusLine,Headers0,?EMPTY}};
         {skip,Bin3} ->
             N = track_header(N0, Bin3),
             {continue, {headers,N,StatusLine,Headers0,Bin3}};
@@ -237,22 +239,3 @@ next_line_(Bin1, Bin2) ->
             Rest = binary_part(Bin2, Pos+2, byte_size(Bin2)-Pos-2),
             {ok, Line, Rest}
     end.
-
-%% request_line(Bin1, Bin2) ->
-%%     case next_line(Bin1, Bin2, ?REQUEST_MAX) of
-%%         {skip,_} = T ->
-%%             T;
-%%         {error,_} = T ->
-%%             T;
-%%         {ok, ?EMPTY, _} ->
-%%             {error,request_line_empty};
-%%         {ok, Line, Rest} ->
-%%             case phttp:nsplit(3, Line, ?SP) of
-%%                 {error,not_enough_fields} ->
-%%                     {error, {bad_response_line, Line}};
-%%                 {error,Reason} ->
-%%                     {error, Reason};
-%%                 {ok, [Method, Target, HttpVer]} ->
-%%                     {ok, {{Method, Target, HttpVer}, Rest}}
-%%             end
-%%     end.

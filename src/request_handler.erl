@@ -131,7 +131,10 @@ handle_event(_, State) ->
     {ok, State}.
 
 handle_call({next_request,OutPid}, Tab) ->
-    {ok, pop_request(Tab, OutPid), Tab}.
+    {ok, pop_request(Tab, OutPid), Tab};
+
+handle_call(dump, Tab) ->
+    {ok, ets:tab2list(Tab), Tab}.
 
 %% track outbound processes so that we can recreate them if they exit
 handle_info({'EXIT',Pid,Reason}, Tab) ->
@@ -148,7 +151,10 @@ handle_info({'EXIT',Pid,Reason}, Tab) ->
         {error,Rsn} ->
             ?LOG_ERROR("error during cleanup of ~p: ~p", [{Pid,Reason}, Rsn])
     end,
-    {ok, Tab}.
+    {ok, Tab};
+
+handle_info(_, Tab) ->
+    {ok,Tab}.
 
 cleanup_proc(Req0, Pid, Target, Reason, Tab) ->
     TargetR = case lookup_target(Tab, Target) of
@@ -171,6 +177,13 @@ cleanup_proc(Req0, Pid, Target, Reason, Tab) ->
     %% target_error and request_error provide another level of indirection.
     %% These functions may override the task to be 'redo' and in the process
     %% control the number of redo attempts that should be made.
+    case Reason of
+        timeout ->
+            ?LOG_INFO("cleanup_pid: ~p", [[{reason,Reason},{pid,Pid},{req,Req}]]);
+        _ ->
+            ok
+    end,
+
     Task = case fail_task(Reason, Req, TargetR#target.reqs) of
                {target_error,Reason2} ->
                    target_error(Tab, TargetR, Reason2);
@@ -237,7 +250,7 @@ connect_target(Tab, Target) ->
         #target{outPid=Pid} ->
             Pid;
         not_found ->
-            Pid = apply(outbound, connect, tuple_to_list(Target)),
+            Pid = outbound:connect(Target),
             %% initialize empty request queue
             ets:insert(Tab, #target{key={target,Target}, outPid=Pid}),
             %% outbound request is null, starts off idle
@@ -283,6 +296,7 @@ request_error(Tab, #request{key=Key, n=Nfail}, Reason) ->
         N >= ?REQUEST_FAIL_MAX ->
             {failone,Reason};
         true ->
+            ?LOG_INFO("Request error: ~p", [[{reason,Reason},Key,{n,N}]]),
             ets:update_element(Tab, Key, {#request.n,N}),
             retry
     end.
@@ -295,6 +309,7 @@ target_error(Tab, #target{key=Key, n=Nfail}, Reason) ->
             %%ets:delete(Tab, {target,Target}),
             {failall,Reason};
         true ->
+            ?LOG_INFO("Target error: ~p", [[{reason,Reason},Key,{n,N}]]),
             ets:update_element(Tab, Key, [{#target.n,N}]),
             retry
     end.
@@ -339,6 +354,7 @@ perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
                 lists:zip(Reqs, Pids)
         end,
     foreach(fun ({Req, #request{inPid=Pid}}) ->
+                    io:format("*DBG* Req=~p~n", [Req]),
                     pievents:fail_request(Req, Reason),
                     ets:delete(Tab, {request,Req})
             end, L),
@@ -355,7 +371,7 @@ perform_fail_task(retry, TargetR, ReqRec, Tab) ->
     ok = reconnect_target(Tab, Target, Pending++[Ref]).
 
 reconnect_target(Tab, Target) ->
-    Pid = apply(outbound, connect, tuple_to_list(Target)),
+    Pid = outbound:connect(Target),
     %% do not modify the request queue of the target
     true = ets:update_element(Tab, {target,Target}, {#target.outPid,Pid}),
     ets:insert(Tab, #pid{key={pid,Pid}, target=Target}),

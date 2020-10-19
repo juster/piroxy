@@ -4,19 +4,19 @@
 -include_lib("kernel/include/logger.hrl").
 -import(erlang, [system_time/0, convert_time_unit/3]).
 
--export([connect/3, new_request/1, start/3]).
+-export([connect/1, new_request/1, start/3]).
 
 %%%
 %%% EXTERNAL FUNCTIONS
 %%%
 
-connect(http, Host, Port) ->
+connect({http, Host, Port}) ->
     ?DBG("connect", {http,Host,Port}),
-    spawn_link(fun () -> start(binary_to_list(Host), Port, false) end);
+    spawn_link(?MODULE, start, [binary_to_list(Host), Port, false]);
 
-connect(https, Host, Port) ->
+connect({https, Host, Port}) ->
     ?DBG("connect", {https,Host,Port}),
-    spawn_link(fun () -> start(binary_to_list(Host), Port, true) end).
+    spawn_link(?MODULE, start, [binary_to_list(Host), Port, true]).
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 new_request(Pid) ->
@@ -66,16 +66,16 @@ loop(Sock, Clock, M, S0) ->
                     S = M:swap(S0, fun ({Dc,L}) -> {Dc,L++[T]} end),
                     loop(Sock, note_time(Clock), M, S)
             end;
-        {body, Req, done} ->
-            morgue:forget(Req),
-            loop(Sock, Clock, M, S0);
-        {body, _Req, Body} ->
-            send(Sock, Body),
-            loop(Sock, note_time(Clock), M, S0);
         {tcp_closed, _} ->
             exit(closed); % do not exit normal
         {ssl_closed, _} ->
             exit(closed);
+        {body, Req, done} ->
+            morgue:forget(Req),
+            loop(Sock, note_time(Clock), M, S0);
+        {body, _Req, Body} ->
+            send(Sock, Body),
+            loop(Sock, note_time(Clock), M, S0);
         {tcp_error, Reason} ->
             exit(Reason);
         {ssl_error, Reason} ->

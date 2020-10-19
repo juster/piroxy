@@ -32,7 +32,7 @@ listen(_Addr, Port) ->
 superserver(Listen) ->
     case gen_tcp:accept(Listen) of
         {ok,Socket} ->
-            Pid = spawn(fun piserver:server/0),
+            Pid = spawn(?MODULE, server, []),
             case gen_tcp:controlling_process(Socket, Pid) of
                 ok ->
                     Pid ! {start,Socket},
@@ -89,6 +89,12 @@ loop(Sock, Stream, State) ->
             ?LOG_WARNING("~p received {respond,close}", [self()]),
             loop(Sock, Stream, State);
         {respond,Resp} ->
+            case Resp of
+                {error,Reason} ->
+                    ?LOG_INFO("~p received {respond,{error,~p}}", [self(),Reason]);
+                _ ->
+                    ok
+            end,
             %%?DBG("loop", {respond,Resp}),
             case Stream:encode(State, Resp) of
                 empty -> ok;
@@ -164,7 +170,7 @@ mitm(TcpSock, Host) ->
 tunnel({tcp,TcpSock}, {https,Host,443}) ->
     try
         TlsSock = mitm(TcpSock, Host),
-        ?LOG_INFO("~p SSL handshake successful", [self()]),
+        %%?LOG_INFO("~p SSL handshake successful", [self()]),
         {ok,TlsSock}
     catch
         {error,Rsn} = Err ->
