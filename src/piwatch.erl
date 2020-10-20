@@ -111,7 +111,7 @@ handle_call(_, State) ->
 handle_info({check,Req}, {_,_,D} = State) ->
     case dict:find(Req,D) of
         {ok,Head} ->
-            ?LOG_INFO("PIWATCH: Long-running request~n~p", [Head]);
+            ?LOG_INFO("PIWATCH: Long-running request ~p~n~p", [Req,Head]);
         error ->
             ok
     end,

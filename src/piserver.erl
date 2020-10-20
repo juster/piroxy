@@ -91,11 +91,10 @@ loop(Sock, Stream, State) ->
         {respond,Resp} ->
             case Resp of
                 {error,Reason} ->
-                    ?LOG_INFO("~p received {respond,{error,~p}}", [self(),Reason]);
+                    ?DBG("loop", [{msg,{respond,Resp}}]);
                 _ ->
                     ok
             end,
-            %%?DBG("loop", {respond,Resp}),
             case Stream:encode(State, Resp) of
                 empty -> ok;
                 IoList -> send(Sock, IoList)
@@ -160,7 +159,6 @@ mitm(TcpSock, Host) ->
                   {error,_}=Err3 -> throw(Err3);
                   {ok,X} -> X
               end,
-    ?DBG("tunnel", {handshake,ok}),
     %% XXX: active does not always work when provided to handshake/2
     ssl:setopts(TlsSock, [{active,true}]),
     TlsSock.

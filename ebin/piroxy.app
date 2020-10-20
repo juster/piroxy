@@ -10,8 +10,8 @@
              write_stream]},
   {registered, [piserver, pievents, forger, morgue]},
   {applications, [kernel,stdlib,ssl]},
-  {env, [{keyfile, "../priv/pem/key.pem"},
-         {cafile, "../priv/pem/ca.pem"},
+  {env, [{keyfile, "priv/pem/key.pem"},
+         {cafile, "priv/pem/ca.pem"},
          {passwd, "secret"}]},
   {mod, {piroxy_app,[]}},
   {start_phases, []}

@@ -67,7 +67,6 @@ handle_event({end_request,Req}, S) ->
 %% cancel a request, remove it from the todo list.
 handle_event({cancel_request,Req}, Tab) ->
     %% XXX: does not handle the case of a currently active Pid/request very well
-    ?DBG("cancel_request", {request,Req}),
     case lookup_request(Tab,Req) of
         not_found ->
             ?LOG_WARNING("request (~p) not found when attempting to cancel", [Req]),
@@ -77,7 +76,8 @@ handle_event({cancel_request,Req}, Tab) ->
             Target = R#request.target,
             case lookup_target(Tab,Target) of
                 not_found ->
-                    ?DBG("cancel_request", {missing_target,Req,Target});
+                    ?LOG_WARNING("target (~p) not found when cancelling " ++
+                                 "request (~p)", [Target,Req]);
                 #target{outPid=Pid,reqs=Reqs0} ->
                     Reqs = lists:delete(Req, Reqs0),
                     true = ets:update_element(Tab, {target,Target}, {#target.reqs,Reqs}),
@@ -89,19 +89,16 @@ handle_event({cancel_request,Req}, Tab) ->
                             %% The reference we are cancelling is currently active!!
                             %% The 'EXIT' handler will cleanup and handle reconnect
                             %% if necessary.
-                            ?DBG("cancel_request", {closed,Pid}),
                             exit(Pid, closed);
                         {[],#pid{req=null}} ->
                             %% Request was cancelled before next_read() could be
                             %% called.
                             exit(Pid, closed);
                         {_,#pid{req=null}} ->
-                            ?DBG("cancel_request", pid_null_request),
                             ?LOG_DEBUG("request is null for pid when cancelling ~p",
                                          [Req]),
                             ok;
                         {_,#pid{req=Req2}} ->
-                            ?DBG("cancel_request", {pid_other_req,Req2}),
                             ?LOG_DEBUG("active request for pid (~p) is ~p and not ~p",
                                        [Pid, Req2, Req])
                     end
@@ -113,14 +110,12 @@ handle_event({cancel_request,Req}, Tab) ->
 handle_event({close_response,Req}, Tab) ->
     case lookup_request(Tab, Req) of
         not_found ->
-            %% XXX: request was cancelled by inbound proc while still in process!!
             ?LOG_WARNING("request (~p) not found when attempting to close request", [Req]);
         #request{inPid=InPid, target=Target} ->
             case lookup_target(Tab, Target) of
                 not_found ->
                     ?LOG_WARNING("target (~p) not found when attempting to close request.", [Req]);
                 #target{outPid=OutPid} ->
-                    ?DBG("end_request", {pid,OutPid,req,Req}),
                     true = ets:update_element(Tab, {pid,OutPid}, {#pid.req,closed}),
                     true = ets:delete(Tab, {request,Req})
             end
@@ -138,11 +133,9 @@ handle_call(dump, Tab) ->
 
 %% track outbound processes so that we can recreate them if they exit
 handle_info({'EXIT',Pid,Reason}, Tab) ->
-    %%?DBG("handle_info", {'EXIT',Pid,Reason}),
     try
         case lookup_pid(Tab, Pid) of
             not_found ->
-                %%?DBG("handle_info", not_found),
                 ok;
             #pid{target=Target, req=Req} ->
                 cleanup_proc(Req, Pid, Target, Reason, Tab)
@@ -177,12 +170,6 @@ cleanup_proc(Req0, Pid, Target, Reason, Tab) ->
     %% target_error and request_error provide another level of indirection.
     %% These functions may override the task to be 'redo' and in the process
     %% control the number of redo attempts that should be made.
-    case Reason of
-        timeout ->
-            ?LOG_INFO("cleanup_pid: ~p", [[{reason,Reason},{pid,Pid},{req,Req}]]);
-        _ ->
-            ok
-    end,
 
     Task = case fail_task(Reason, Req, TargetR#target.reqs) of
                {target_error,Reason2} ->
@@ -191,7 +178,6 @@ cleanup_proc(Req0, Pid, Target, Reason, Tab) ->
                    request_error(Tab, ReqR, Reason2);
                T2 -> T2
            end,
-    %%?DBG("handle_info", {{'EXIT',Pid,Reason1},{task,Task}}),
     perform_fail_task(Task, TargetR, ReqR, Tab),
     ok.
 
@@ -227,6 +213,12 @@ insert_request(Req, Tab, Request) ->
     ets:insert(Tab, Request#request{key={request,Req}}),
     Target = Request#request.target,
     #target{reqs=Reqs} = lookup_target(Tab, Target),
+%%     case Target of
+%%         {https,<<"v.redd.it">>,_} ->
+%%             io:format("*DBG* v.redd.it requests: ~p~n", [[Req|Reqs]]);
+%%         _ ->
+%%             ok
+%%     end,
     true = ets:update_element(Tab, {target,Target}, {#target.reqs,[Req|Reqs]}).
 
 %% Pop a new request from the request queue and associate it with an
@@ -240,7 +232,6 @@ pop_request(Tab, Pid) ->
             true = ets:update_element(Tab, {target,Target},
                                       {#target.reqs,reverse(Reqs)}),
             true = ets:update_element(Tab, {pid,Pid}, {#pid.req,Req}),
-            ?DBG("pop_request", {pid,Pid,target,Target,req,Req}),
             #request{head=Head} = lookup_request(Tab, Req),
             {ok, {Req,Head}}
     end.
@@ -291,7 +282,6 @@ fail_task(Reason,_Req,_Pending) ->
 
 request_error(Tab, #request{key=Key, n=Nfail}, Reason) ->
     N = Nfail+1,
-    ?DBG("request_error", {n,N}),
     if
         N >= ?REQUEST_FAIL_MAX ->
             {failone,Reason};
@@ -303,7 +293,6 @@ request_error(Tab, #request{key=Key, n=Nfail}, Reason) ->
 
 target_error(Tab, #target{key=Key, n=Nfail}, Reason) ->
     N = Nfail+1,
-    ?DBG("target_error", {Key,{n,N}}),
     if
         N >= ?TARGET_FAIL_MAX ->
             %%ets:delete(Tab, {target,Target}),
@@ -327,7 +316,7 @@ perform_fail_task(cleanup, TargetR, ReqR, Tab) ->
     %% sanity check
     if
         is_tuple(ReqR) ->
-            ?DBG("handle_info", "cleanup should have no active request!");
+            ?LOG_DEBUG("cleanup should have no active request!");
         true ->
             ok
     end,
@@ -344,17 +333,16 @@ perform_fail_task({failone,Reason}, TargetR, ReqR, Tab) ->
 
 perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
     Reqs = reverse(TargetR#target.reqs),
-    Pids = [lookup_request(Tab, Ref) || Ref <- Reqs],
+    ReqRs = [lookup_request(Tab, Ref) || Ref <- Reqs],
     %% The request of the failed proc is not in the queue for the task...
     %% But there may actually be no active request, either.
     L = case ReqR of
             #request{key={request,Ref}} ->
-                [{Ref,ReqR}|lists:zip(Reqs, Pids)];
+                [{Ref,ReqR}|lists:zip(Reqs, ReqRs)];
             null ->
-                lists:zip(Reqs, Pids)
+                lists:zip(Reqs, ReqRs)
         end,
     foreach(fun ({Req, #request{inPid=Pid}}) ->
-                    io:format("*DBG* Req=~p~n", [Req]),
                     pievents:fail_request(Req, Reason),
                     ets:delete(Tab, {request,Req})
             end, L),
@@ -362,13 +350,18 @@ perform_fail_task({failall,Reason}, TargetR, ReqR, Tab) ->
     ?LOG_ERROR("Target requests failed: ~p",
                [{target,element(2, TargetR#target.key),reason,Reason}]);
 
-perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
-    ok = reconnect_target(Tab, Target);
+%% perform_fail_task(retry, #target{key={target,Target}}, _ReqRec, Tab) ->
+%%     ok = reconnect_target(Tab, Target);
 
+%% Retry here means to reconnect and continue working thru the Target's request queue.
+perform_fail_task(retry, #target{key={target,Target}}, null, Tab) ->
+    reconnect_target(Tab, Target);
+
+%% Retry here means to retry a specific request.
 perform_fail_task(retry, TargetR, ReqRec, Tab) ->
     #target{key={target,Target}, reqs=Pending} = TargetR,
     #request{key={request,Ref}} = ReqRec,
-    ok = reconnect_target(Tab, Target, Pending++[Ref]).
+    reconnect_target(Tab, Target, Pending++[Ref]).
 
 reconnect_target(Tab, Target) ->
     Pid = outbound:connect(Target),

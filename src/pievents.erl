@@ -1,4 +1,5 @@
 -module(pievents).
+-include("../include/phttp.hrl").
 
 -export([start/0, start_link/0]).
 -export([make_request/3, stream_request/2, fail_request/2, end_request/1,
