@@ -5,7 +5,7 @@
 -behavior(gen_server).
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2]).
--export([start/0, start_link/0, append/2, listen/1, forget/1]).
+-export([start/0, start_link/0, append/2, listen/1, forget_request/1]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%%
@@ -27,8 +27,8 @@ append(Key, Body) ->
 listen(Key) ->
     gen_server:cast(?MODULE, {listen,Key,self()}).
 
-forget(Key) ->
-    gen_server:cast(?MODULE, {forget,Key}).
+forget_request(Key) ->
+    gen_server:cast(?MODULE, {forget_request,Key}).
 
 %%%
 %%% BEHAVIOR CALLBACKS
@@ -58,7 +58,7 @@ handle_cast({listen,Key,Pid}, {Tab,D0}) ->
             end, take(Key, Tab)),
     {noreply, {Tab,D}};
 
-handle_cast({forget,Key}, {Tab,D}) ->
+handle_cast({forget_request,Key}, {Tab,D}) ->
     %% XXX: does no sanity checks
     {noreply, {Tab, dict:erase(Key, D)}}.
 
