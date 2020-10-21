@@ -3,6 +3,7 @@
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 -import(erlang, [system_time/0, convert_time_unit/3]).
+-import(lists, [foreach/2]).
 
 -export([start_link/1, start/4, next_request/3]).
 
@@ -46,9 +47,9 @@ start2(Pid, Sock) ->
     M = http11_stream,
     {ok,S} = M:new([http11_res, []]),
     request_target:need_request(Pid),
-    loop(Pid, Sock, [], null, {M,S}).
+    loop(Pid, Sock, pipipe:new(), null, {M,S}).
 
-loop(Pid, Sock, Q0, Clock, Stream) ->
+loop(Pid, Sock, P0, Clock, Stream) ->
     receive
         {next_request,Req,Head} ->
             %% sent from request_target
@@ -57,58 +58,51 @@ loop(Pid, Sock, Q0, Clock, Stream) ->
             %% append the req id/head to the queue (kind of sucky)
             S = M:swap(S0, fun ({Dc,L}) -> {Dc,L ++ [{Req,Head}]} end),
             request_target:need_request(Pid), % get ready to stream the next one
-            Q = Q0 ++ [Req],
-            loop(Pid, Sock, Q, clock_restart(Clock), {M,S});
+            P = pipipe:push(Req, P0),
+            loop(Pid, Sock, P, clock_restart(Clock), {M,S});
         {tcp_closed,_} ->
             ok;
         {ssl_closed,_} ->
             ok;
         {body,Req,done} ->
-            case Q0 of
-                [] ->
-                    error(underrun);
-                [Req|Q] ->
-                    request_target:close_request(Pid, Req),
-                    Clock1 = case Q of
-                                 [] -> clock_stop(Clock);
-                                 _ -> clock_restart(Clock)
-                             end,
-                    loop(Pid, Sock, Q, Clock1, Stream);
-                _ ->
-                    error(overrun)
-            end;
-        {body,_Req,Body} ->
-            send(Sock, Body),
-            loop(Pid, Sock, Q0, clock_restart(Clock), Stream);
+            P = flush(Pid, Sock, pipipe:close(Req, P0)),
+            Clock1 = case pipipe:is_empty(P) of
+                         true -> clock_stop(Clock);
+                         false -> clock_restart(Clock)
+                     end,
+            loop(Pid, Sock, P, Clock1, Stream);
+        {body,Req,Body} ->
+            P = pipipe:append(Req, Body, P0),
+            loop(Pid, Sock, P, clock_restart(Clock), Stream);
         {tcp_error,Reason} ->
             exit(Reason);
         {ssl_error,Reason} ->
             exit(Reason);
         {tcp, _, <<>>} ->
-            loop(Pid, Sock, Q0, clock_restart(Clock), Stream);
+            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
         {tcp, _Sock, Data} ->
-            stream(Pid, Sock, Q0, Clock, Stream, Data);
+            stream(Pid, Sock, P0, Clock, Stream, Data);
         {ssl, _, <<>>} ->
-            loop(Pid, Sock, Q0, clock_restart(Clock), Stream);
+            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
         {ssl, _Sock, Data} ->
-            stream(Pid, Sock, Q0, Clock, Stream, Data);
+            stream(Pid, Sock, P0, Clock, Stream, Data);
         heartbeat ->
             clock_check(Clock), % does exit(timeout) if a timeout occurs
-            loop(Pid, Sock, Q0, clock_restart(Clock), Stream);
+            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
         Any ->
             exit({unknown_msg,Any})
     end.
 
-stream(Pid, Sock, Q, Clock, {M,S0}, Data) ->
+stream(Pid, Sock, P, Clock, {M,S0}, Data) ->
     case M:read(S0, Data) of
         shutdown ->
             %% Don't worry, request_target will resend requests which did
             %% not receive a response, yet.
             shutdown(Sock, write),
             WS = write_stream,
-            loop(Pid, Sock, Q, clock_restart(Clock), {WS,WS:new(M)});
+            loop(Pid, Sock, P, clock_restart(Clock), {WS,WS:new(M)});
         {ok,S} ->
-            loop(Pid, Sock, Q, clock_restart(Clock), {M,S})
+            loop(Pid, Sock, P, clock_restart(Clock), {M,S})
     end.
 
 %%% Keep a timer to check if we have timed-out on sending/receiving requests.
@@ -160,4 +154,14 @@ send({ssl,Sock}, Data) ->
     case ssl:send(Sock, Data) of
         {error,Reason} -> exit(Reason);
         ok -> ok
+    end.
+
+flush(Pid, Sock, P0) ->
+    case pipipe:pop(P0) of
+        not_done ->
+            P0;
+        {Req,Chunks,P} ->
+            foreach(fun (Chunk) -> send(Sock, Chunk) end, Chunks),
+            request_target:close_request(Pid, Req),
+            flush(Pid, Sock, P)
     end.
