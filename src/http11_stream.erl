@@ -102,6 +102,6 @@ error_statusln(Reason) ->
     case phttp:status_bin(Reason) of
         {ok,Bin} -> Bin;
         not_found ->
-            {ok,Bin} = phttp:status_bin(http_server_error),
+            {ok,Bin} = phttp:status_bin(http_bad_gateway),
             [<<?HTTP11>>," ",Bin|<<?CRLF>>]
     end.

@@ -98,9 +98,9 @@ stream(Pid, Sock, P, Clock, {M,S0}, Data) ->
         shutdown ->
             %% Don't worry, request_target will resend requests which did
             %% not receive a response, yet.
-            shutdown(Sock, write),
-            WS = write_stream,
-            loop(Pid, Sock, P, clock_restart(Clock), {WS,WS:new(M)});
+            %%loop(Pid, Sock, P, clock_restart(Clock), {WS,WS:new(M)});
+            ?DBG("stream", [{pid,Pid},{pipe,element(1,P)}]),
+            exit(closed);
         {ok,S} ->
             loop(Pid, Sock, P, clock_restart(Clock), {M,S})
     end.
@@ -139,10 +139,24 @@ clock_check({LastRecv,_}) ->
 %%%
 
 shutdown({tcp,Sock}, Dir) ->
-    ok = gen_tcp:shutdown(Sock, Dir);
+    case gen_tcp:shutdown(Sock, Dir) of
+        ok ->
+            ok;
+        {error,closed} ->
+            ok;
+        {error,Reason} ->
+            exit(Reason)
+    end;
 
 shutdown({ssl,Sock}, Dir) ->
-    ok = ssl:shutdown(Sock, Dir).
+    case ssl:shutdown(Sock, Dir) of
+        ok ->
+            ok;
+        {error,closed} ->
+            ok;
+        {error,Reason} ->
+            exit(Reason)
+    end.
 
 send({tcp,Sock}, Data) ->
     case gen_tcp:send(Sock, Data) of

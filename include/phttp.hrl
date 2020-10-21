@@ -16,6 +16,8 @@
 -define(REQUEST_FAIL_MAX, 5).
 
 -define(TARGET_PROC_MAX, 1).
+-define(TARGET_RESTART_PERIOD, 1).
+-define(TARGET_RESTART_INTENSITY, 5).
 
 %% outbound default request timeout
 -define(REQUEST_TIMEOUT, 15000).

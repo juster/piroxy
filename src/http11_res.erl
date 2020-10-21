@@ -44,17 +44,19 @@ body({_,Q}, Chunk) ->
 
 %%% reset/1 is called by http11_stream
 
-reset({true,Q0}) ->
+reset({true,Q}) ->
     %% The last response requested that we close the connection.
-    [{Req,_}|Q] = Q0,
+    [{Req,_}|_] = Q,
+    ?DBG("reset", [close_response, {disconnect,true},{req,Req}]),
     pievents:close_response(Req),
-    lists:foreach(fun ({Req1,_}) ->
-                          pievents:fail_request(Req1, connreset)
-                  end, Q),
+    %%lists:foreach(fun ({Req_,_}) ->
+    %%                      pievents:reset_request(Req_)
+    %%              end, Q),
     shutdown;
 
 reset({false,Q0}) ->
     [{Req,_}|Q] = Q0,
+    ?DBG("reset", [close_response, {disconnect,false},{req,Req}]),
     pievents:close_response(Req),
     {ok,{false,Q}}.
 
@@ -80,7 +82,7 @@ response_code(StatusLn) ->
 %%% TODO: improve this and verify that it works properly
 disconnect(Headers) ->
     case fieldlist:get_value(<<"connection">>, Headers) of
-        <<"disconnect">> ->
+        <<"close">> ->
             true;
         _ ->
             false
