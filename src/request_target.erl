@@ -1,7 +1,5 @@
 -module(request_target).
 -behavior(gen_server).
--define(TARGET_ERR_MAX, 2).
--define(TARGET_PROC_MAX, 1).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2, unzip/1, unzip3/1,
@@ -97,6 +95,7 @@ handle_cast({need_request,Pid}, State0) ->
             State1 = setelement(1,State0,Ltodo),
             State2 = setelement(2,State1,Lsent),
             outbound:next_request(Pid, Req, Head),
+            morgue:forward(Req, Pid),
             {noreply, State2}
     end;
 
@@ -105,6 +104,7 @@ handle_cast({close_request,Req}, State0) ->
     Lsent0 = element(2,State0),
     Lsent = keydelete(Req, 1, Lsent0),
     State1 = setelement(2,State0,Lsent),
+    morgue:forget(Req),
     %% Increase the number of max possible workers until we reach hard limit.
     {Nproc,Nmax,Nfail} = element(4,State1),
     if
@@ -147,17 +147,17 @@ handle_info({'EXIT',Pid,Reason}, State0) ->
                     Nfail0+1
             end,
     if
-        Nfail > ?TARGET_ERR_MAX ->
+        Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
             {stop,Reason,State2};
         Nproc =< Nmax, element(1,State2) =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone over limit
             %% AND we actually have more pending requests
             outbound:start_link(element(5,State2)),
-            {noreply,State2};
+            State3 = setelement(4,State2,{Nproc,Nmax,Nfail}),
+            {noreply,State3};
         true ->
-            T = {Nproc-1,Nmax,Nfail},
-            State3 = setelement(4,State2,T),
+            State3 = setelement(4,State2,{Nproc-1,Nmax,Nfail}),
             {noreply,State3}
     end;
 
@@ -168,7 +168,6 @@ keywipe(K, I, L0) ->
     keywipe(K, I, L0, []).
 
 keywipe(K, I, L0, Ts) ->
-    %% probably inefficient...
     case keytake(K, I, L0) of
         false ->
             {Ts, L0};
@@ -178,6 +177,7 @@ keywipe(K, I, L0, Ts) ->
 
 redo(Pid, State0) ->
     {L,Lsent} = keywipe(Pid, 3, element(2,State0)),
+    foreach(fun ({Req,_,_}) -> morgue:mute(Req) end, L),
     Ltodo = [{Req,Head} || {Req,Head,_} <- L] ++ element(1,State0),
     State1 = setelement(1, State0, Ltodo),
     setelement(2, State1, Lsent).

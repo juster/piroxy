@@ -40,7 +40,7 @@ handle_event({end_request,Req}, State) ->
     morgue:append(Req, done),
     {ok,State};
 
-%% cancel a request, remove it from the todo list.
+%%% request was cancelled from the client-side
 handle_event({cancel_request,Req}, State) ->
     request_manager:cancel_request(Req),
     {ok,State};

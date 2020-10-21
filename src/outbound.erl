@@ -52,7 +52,6 @@ loop(Pid, Sock, Q0, Clock, Stream) ->
     receive
         {next_request,Req,Head} ->
             %% sent from request_target
-            morgue:listen(Req),
             {M,S0} = Stream,
             send(Sock, M:encode(S0, Head)),
             %% append the req id/head to the queue (kind of sucky)
@@ -65,8 +64,6 @@ loop(Pid, Sock, Q0, Clock, Stream) ->
         {ssl_closed,_} ->
             ok;
         {body,Req,done} ->
-            %% body sent from morgue
-            morgue:forget_request(Req),
             case Q0 of
                 [] ->
                     error(underrun);
@@ -81,7 +78,6 @@ loop(Pid, Sock, Q0, Clock, Stream) ->
                     error(overrun)
             end;
         {body,_Req,Body} ->
-            %% body sent from morgue
             send(Sock, Body),
             loop(Pid, Sock, Q0, clock_restart(Clock), Stream);
         {tcp_error,Reason} ->

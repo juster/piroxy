@@ -1,7 +1,7 @@
 -module(request_manager).
 -behavior(gen_server).
 
--import(lists, [foreach/2, keyfind/3, keydelete/3]).
+-import(lists, [foreach/2, keyfind/3, keytake/3]).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
@@ -20,6 +20,7 @@ make_request(Req, Target, Head) ->
 %%%
 
 init([]) ->
+    process_flag(trap_exit, true),
     ok = gen_event:add_sup_handler(pievents, request_handler, []),
     {ok, []}.
 
@@ -51,8 +52,13 @@ handle_cast(_, State) ->
 handle_call(_, _, State) ->
     {reply,ok,State}.
 
-handle_info({'EXIT',Pid,_Reason}, L) ->
-    {noreply,keydelete(Pid, 2, L)};
+handle_info({'EXIT',Pid,Reason}, L0) ->
+    case keytake(Pid, 2, L0) of
+        error ->
+            {stop,Reason,L0};
+        {value,_,L} ->
+            {noreply,L}
+    end;
 
 handle_info({gen_event_EXIT,_,Reason}, L) ->
     case Reason of
