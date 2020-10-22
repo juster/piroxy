@@ -34,13 +34,14 @@ init([HostInfo]) ->
     {ok,_Pid} = outbound:start_link(HostInfo),
     %% State: {[{Req,Head}], [{Req,Head,Pid}], [WaitingPids],
     %%         {Nprocs,MaxProcs,Nfails,Nrestarts}, HostInfo}
-    {ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000, nrestarts_reset),
+    {ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000,
+                                 nrestarts_reset),
     {ok, {[],[],[],{1,1,0,0},HostInfo}}.
 
 terminate(Reason, {Ltodo,Lsent,_,_,_}) ->
     %% XXX: Child procs should be exited automatically after teminate.
-    Reqs = element(1,unzip(Ltodo)) ++ element(1,unzip3(Lsent)),
-    foreach(fun (Req) -> pievents:fail_request(Req, Reason) end, Reqs),
+    foreach(fun ({Req,_}) -> pievents:fail_request(Req, Reason) end, Ltodo),
+    foreach(fun ({Req,_,_}) -> pievents:fail_request(Req, Reason) end, Lsent),
     ok.
 
 handle_call(_, _, State) ->
@@ -155,8 +156,8 @@ handle_info({'EXIT',Pid,Reason}, State0) ->
             end,
     ?DBG("handle_info", [{pid,Pid},{reason,Reason},{nproc,Nproc},{nmax,Nmax},{nfail,Nfail},{nrestarts,Nrestarts}]),
     if
-        Nrestarts > 1 -> %?TARGET_RESTART_INTENSITY ->
-            {stop,shutdown,State0};
+        Nrestarts > ?TARGET_RESTART_INTENSITY ->
+            {stop,Reason,State0};
         Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
             {stop,Reason,State0};
@@ -166,6 +167,10 @@ handle_info({'EXIT',Pid,Reason}, State0) ->
             {ok,_} = outbound:start_link(element(5,State2)),
             State3 = setelement(4,State2,{Nproc,Nmax,Nfail,Nrestarts+1}),
             {noreply,State3};
+        element(1,State2) == [], element(2,State2) == [] ->
+            %% cleanup if there are no more requests needed
+            ?DBG("handle_info", exiting),
+            {stop,shutdown,State0};
         true ->
             State3 = setelement(4,State2,{Nproc-1,Nmax,Nfail,Nrestarts}),
             {noreply,State3}
