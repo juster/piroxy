@@ -2,7 +2,7 @@
 -include("../include/phttp.hrl").
 
 -export([new/0, read/2, encode/1]).
--export([body_length/3, head/2, body/2, reset/1]). % callbacks
+-export([head/3, body/2, reset/1]). % callbacks
 
 %%%
 %%% EXTERNAL INTERFACE
@@ -22,37 +22,16 @@ encode(Bin) ->
 %%% CALLBACKS
 %%% (called by http11_statem proc)
 
-body_length(StatusLn, Headers, State) ->
-    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    case phttp:version_atom(VerBin) of
-        http11 ->
-            ok;
-        Ver ->
-            exit({unknown_version,Ver})
-    end,
-    case phttp:method_atom(MethodBin) of
-        unknown ->
-            exit({unknown_method,MethodBin});
-        Method ->
-            case request_length(Method, Headers) of
-                {error,Rsn} -> exit(Rsn);
-                {ok,BodyLen} -> {BodyLen,State}
-            end
-    end.
-
-request_length(connect, _) -> {ok,0};
-request_length(get, _) -> {ok,0};
-request_length(options, _) -> {ok,0};
-request_length(_, Headers) -> pimsg:body_length(Headers).
-
-head(H, State0) ->
+head(StatusLn, Headers, State0) ->
+    Len = body_length(StatusLn, Headers),
+    H = head_record(StatusLn, Headers, Len),
     {Req,State} = nextreq(State0),
     case target(H) of
         {tunnel,HI} ->
             %% Connect uses the "authority" form of URIs and so
             %% cannot be used with relativize/2.
             pievents:make_request(Req, HI, H),
-            setelement(2,State,HI);
+            {H,setelement(2,State,HI)};
         relative ->
             %% HTTP header is for a relative URL. Hopefully this is inside of a
             %% CONNECT tunnel!
@@ -61,11 +40,12 @@ head(H, State0) ->
                     exit(host_missing);
                 HI ->
                     pievents:make_request(Req, HI, H),
-                    State
+                    {H,State}
             end;
         {absolute,HI} ->
-            pievents:make_request(Req, HI, relativize(H)),
-            State
+            Hrel = relativize(H),
+            pievents:make_request(Req, HI, Hrel),
+            {Hrel,State}
     end.
 
 body(Bin, State) ->
@@ -87,6 +67,43 @@ nextreq({I,HI,Pid}) ->
     J = I+1,
     Req = {Pid,J},
     {Req, {J,HI,Pid}}.
+
+head_record(StatusLn, Headers, BodyLen) ->
+    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
+    case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
+        {unknown,_} ->
+            ?DBG("head", {unknown_method,MethodBin}),
+            exit({unknown_method,MethodBin});
+        {_,unknown} ->
+            ?DBG("head", {unknown_version,VerBin}),
+            exit({unknown_version,VerBin});
+        {Method,Ver} ->
+            #head{line=StatusLn, method=Method, version=Ver,
+                  headers=Headers, bodylen=BodyLen}
+    end.
+
+body_length(StatusLn, Headers) ->
+    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
+    case phttp:version_atom(VerBin) of
+        http11 ->
+            ok;
+        _ ->
+            exit({unknown_version,VerBin})
+    end,
+    case phttp:method_atom(MethodBin) of
+        unknown ->
+            exit({unknown_method,MethodBin});
+        Method ->
+            case request_length(Method, Headers) of
+                {error,Rsn} -> exit(Rsn);
+                {ok,BodyLen} -> BodyLen
+            end
+    end.
+
+request_length(connect, _) -> {ok,0};
+request_length(get, _) -> {ok,0};
+request_length(options, _) -> {ok,0};
+request_length(_, Headers) -> pimsg:body_length(Headers).
 
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
 %% If the Head contains a request to a relative URI, Host=null.

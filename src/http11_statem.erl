@@ -2,9 +2,8 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/2, read/2, encode/1]).
+-export([start_link/2, read/2, encode/1, cb_state/1, cb_state/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
--export([head/3, body/3]).
 
 %%%
 %%% EXTERNAL INTERFACE
@@ -15,6 +14,12 @@ start_link(M, A) ->
 
 read(Pid, Bin) ->
     gen_statem:cast(Pid, Bin).
+
+cb_state(Pid) ->
+    gen_statem:call(Pid, get_cb_state).
+
+cb_state(Pid, Term) ->
+    gen_statem:cast(Pid, {set_cb_state,Term}).
 
 encode(#head{line=Line, headers=Headers}) ->
     [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
@@ -37,33 +42,34 @@ encode({status,HttpStatus}) ->
 %%% BEHAVIOR CALLBACKS
 %%%
 
-callback_mode() -> [state_functions].
+callback_mode() -> [handle_event_function].
 
 init([M,A]) ->
     {ok, head, {pimsg:head_reader(),M,A}}.
 
-head(cast, empty, State) ->
-    {keep_state,State};
+handle_event(cast, empty, _, _) ->
+    keep_state_and_data;
 
-head(cast, Bin, {Reader0,M,A0}) ->
+handle_event({call,From}, get_cb_state, _, {_,_,A}) ->
+    {keep_state_and_data,{reply,From,A}};
+
+handle_event(cast, {set_cb_state,A}, _, {R,M,_}) ->
+    {keep_state,{R,M,A}};
+
+handle_event(cast, Bin, head, {Reader0,M,A0}) ->
     case pimsg:head_reader(Reader0, Bin) of
         {error,Reason} ->
             exit(Reason);
         {continue,Reader} ->
             {keep_state,{Reader,M,A0}};
         {done,StatusLine,Headers,Rest} ->
-            {Len,A1} = M:body_length(StatusLine, Headers, A0),
-            Head = head_record(StatusLine, Headers, Len),
-            A2 = M:head(Head, A1),
-            Reader = pimsg:body_reader(Len),
-            {next_state,body,{Reader,M,A2},
+            {H,A1} = M:head(StatusLine, Headers, A0),
+            Reader = pimsg:body_reader(H#head.bodylen),
+            {next_state,body,{Reader,M,A1},
              {next_event,cast,Rest}}
-    end.
+    end;
 
-body(cast, empty, State) ->
-    {keep_state,State};
-
-body(cast, Bin1, {Reader0,M,A0}) ->
+handle_event(cast, Bin1, body, {Reader0,M,A0}) ->
     case pimsg:body_reader(Reader0, Bin1) of
         {error,Reason} ->
             exit(Reason);
@@ -77,27 +83,17 @@ body(cast, Bin1, {Reader0,M,A0}) ->
                      empty -> A0;
                      _ -> M:body(Bin2,A0)
                  end,
-            A2 = M:reset(A1),
-            {next_state,head,{pimsg:head_reader(),M,A2},
-             {next_event,cast,Rest}}
-    end.
+            case M:reset(A1) of
+                shutdown ->
+                    {stop, shutdown};
+                A2 ->
+                    {next_state,head,{pimsg:head_reader(),M,A2},
+                     {next_event,cast,Rest}}
+            end
+    end;
 
 handle_event(_,_,_,_) ->
-    keepstate_and_data.
-
-head_record(StatusLn, Headers, BodyLen) ->
-    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
-        {unknown,_} ->
-            ?DBG("head", {unknown_method,MethodBin}),
-            exit({unknown_method,MethodBin});
-        {_,unknown} ->
-            ?DBG("head", {unknown_version,VerBin}),
-            exit({unknown_version,VerBin});
-        {Method,Ver} ->
-            #head{line=StatusLn, method=Method, version=Ver,
-                  headers=Headers, bodylen=BodyLen}
-    end.
+    keep_state_and_data.
 
 %%%
 %%% INTERNAL FUNCTIONS

@@ -4,49 +4,51 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 
--export([init/1, head/3, body/2, reset/1]).
+-export([new/0, read/2, encode/1, push/3]).
+-export([head/3, body/2, reset/1]).
+
+new() ->
+    http11_statem:start_link(?MODULE, {false,[]}).
+
+read(Pid, Bin) ->
+    http11_statem:read(Pid, Bin).
+
+encode(Bin) ->
+    http11_statem:encode(Bin).
+
+push(Pid, Req, ReqHead) ->
+    {Dc,Q} = http11_statem:cb_state(Pid),
+    http11_statem:cb_state(Pid, {Dc,Q++[{Req,ReqHead}]}).
 
 %%%
 %%% CALLBACK FUNCTIONS
 %%%
 
-init([]) ->
-    {ok, {false,[]}}.
-
-head({_,[]}, _StatusLn, _Headers) ->
+%%head(_, {_,[]}) ->
     %% HTTP message received during no active request.
     %% TODO: parse HTTP error message and convert to an atom.
-    {error,unexpected_response};
+    %%exit(unexpected_response);
 
-head({Dc0,Q}, StatusLn, Headers) ->
-    [{Req,ReqHead}|_] = Q,
+head(StatusLn, Headers, {Dc0,Q}) ->
+    {Req,ReqHead} = hd(Q),
     Method = ReqHead#head.method,
-    try
-        Len = case response_length(Method, StatusLn, Headers) of
-                  {ok,0} -> 0;
-                  {ok,BodyLen} -> BodyLen;
-                  {error,missing_length} ->
-                      throw({error,{missing_length,StatusLn,Headers}})
-              end,
-        ResHead = #head{method=Method, line=StatusLn,
-                        headers=Headers, bodylen=Len},
-        pievents:respond(Req, ResHead),
-        Dc = Dc0 or disconnect(Headers),
-        {ok, ResHead, {Dc,Q}}
-    catch
-        Any -> Any
-    end.
+    Len = body_length(StatusLn, Headers, ReqHead),
+    ResHead = #head{method=Method, line=StatusLn,
+                    headers=Headers, bodylen=Len},
+    pievents:respond(Req, ResHead),
+    Dc = Dc0 or closed(Headers),
+    {ResHead, {Dc,Q}}.
 
-body({_,Q}, Chunk) ->
+body(Chunk, {_,Q} = State) ->
     {Req,_} = hd(Q),
     pievents:respond(Req, {body,Chunk}),
-    ok.
+    State.
 
 %%% reset/1 is called by http11_stream
 
 reset({true,Q}) ->
     %% The last response requested that we close the connection.
-    [{Req,_}|_] = Q,
+    {Req,_} = hd(Q),
     ?DBG("reset", [close_response, {disconnect,true},{req,Req}]),
     pievents:close_response(Req),
     %%lists:foreach(fun ({Req_,_}) ->
@@ -54,15 +56,25 @@ reset({true,Q}) ->
     %%              end, Q),
     shutdown;
 
-reset({false,Q0}) ->
-    [{Req,_}|Q] = Q0,
+reset({false,Q}) ->
+    {Req,_} = hd(Q),
     ?DBG("reset", [close_response, {disconnect,false},{req,Req}]),
     pievents:close_response(Req),
-    {ok,{false,Q}}.
+    {false,tl(Q)}.
 
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
+
+body_length(StatusLn, Headers, ReqH) ->
+    %% the response length depends on the request method
+    Method = ReqH#head.method,
+    case response_length(Method, StatusLn, Headers) of
+        {ok,0} -> 0;
+        {ok,BodyLen} -> BodyLen;
+        {error,missing_length} ->
+            exit({missing_length,StatusLn,Headers})
+    end.
 
 response_length_(head, <<"200">>, _) -> {ok, 0};
 response_length_(_, <<"200">>, Headers) -> pimsg:body_length(Headers);
@@ -80,7 +92,7 @@ response_code(StatusLn) ->
     Status.
 
 %%% TODO: improve this and verify that it works properly
-disconnect(Headers) ->
+closed(Headers) ->
     case fieldlist:get_value(<<"connection">>, Headers) of
         <<"close">> ->
             true;

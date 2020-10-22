@@ -44,22 +44,19 @@ start(Pid, Host, Port, true) ->
     end.
 
 start2(Pid, Sock) ->
-    M = http11_stream,
-    {ok,S} = M:new([http11_res, []]),
+    {ok,Stm} = http11_res:new(),
     request_target:need_request(Pid),
-    loop(Pid, Sock, pipipe:new(), null, {M,S}).
+    loop(Pid, Sock, pipipe:new(), null, Stm).
 
-loop(Pid, Sock, P0, Clock, Stream) ->
+loop(Pid, Sock, P0, Clock, Stm) ->
     receive
         {next_request,Req,Head} ->
             %% sent from request_target
-            {M,S0} = Stream,
-            send(Sock, M:encode(S0, Head)),
-            %% append the req id/head to the queue (kind of sucky)
-            S = M:swap(S0, fun ({Dc,L}) -> {Dc,L ++ [{Req,Head}]} end),
+            send(Sock, http11_res:encode(Head)),
+            http11_res:push(Stm, Req, Head),
             request_target:need_request(Pid), % get ready to stream the next one
             P = pipipe:push(Req, P0),
-            loop(Pid, Sock, P, clock_restart(Clock), {M,S});
+            loop_tick(Pid, Sock, P, Clock, Stm);
         {tcp_closed,_} ->
             ok;
         {ssl_closed,_} ->
@@ -70,40 +67,33 @@ loop(Pid, Sock, P0, Clock, Stream) ->
                          true -> clock_stop(Clock);
                          false -> clock_restart(Clock)
                      end,
-            loop(Pid, Sock, P, Clock1, Stream);
+            loop(Pid, Sock, P, Clock1, Stm);
         {body,Req,Body} ->
             P = pipipe:append(Req, Body, P0),
-            loop(Pid, Sock, P, clock_restart(Clock), Stream);
+            loop_tick(Pid, Sock, P, Clock, Stm);
         {tcp_error,Reason} ->
             exit(Reason);
         {ssl_error,Reason} ->
             exit(Reason);
         {tcp, _, <<>>} ->
-            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
+            loop_tick(Pid, Sock, P0, Clock, Stm);
         {tcp, _Sock, Data} ->
-            stream(Pid, Sock, P0, Clock, Stream, Data);
+            http11_res:read(Stm, Data),
+            loop_tick(Pid, Sock, P0, Clock, Stm);
         {ssl, _, <<>>} ->
-            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
+            loop_tick(Pid, Sock, P0, Clock, Stm);
         {ssl, _Sock, Data} ->
-            stream(Pid, Sock, P0, Clock, Stream, Data);
+            http11_res:read(Stm, Data),
+            loop_tick(Pid, Sock, P0, Clock, Stm);
         heartbeat ->
             clock_check(Clock), % does exit(timeout) if a timeout occurs
-            loop(Pid, Sock, P0, clock_restart(Clock), Stream);
+            loop(Pid, Sock, P0, Clock, Stm);
         Any ->
             exit({unknown_msg,Any})
     end.
 
-stream(Pid, Sock, P, Clock, {M,S0}, Data) ->
-    case M:read(S0, Data) of
-        shutdown ->
-            %% Don't worry, request_target will resend requests which did
-            %% not receive a response, yet.
-            %%loop(Pid, Sock, P, clock_restart(Clock), {WS,WS:new(M)});
-            ?DBG("stream", [{pid,Pid},{pipe,element(1,P)}]),
-            exit(closed);
-        {ok,S} ->
-            loop(Pid, Sock, P, clock_restart(Clock), {M,S})
-    end.
+loop_tick(Pid, Sock, P, Clock, Stm) ->
+    loop(Pid, Sock, P, clock_restart(Clock), Stm).
 
 %%% Keep a timer to check if we have timed-out on sending/receiving requests.
 
@@ -137,26 +127,6 @@ clock_check({LastRecv,_}) ->
 
 %%% sending data over sockets
 %%%
-
-shutdown({tcp,Sock}, Dir) ->
-    case gen_tcp:shutdown(Sock, Dir) of
-        ok ->
-            ok;
-        {error,closed} ->
-            ok;
-        {error,Reason} ->
-            exit(Reason)
-    end;
-
-shutdown({ssl,Sock}, Dir) ->
-    case ssl:shutdown(Sock, Dir) of
-        ok ->
-            ok;
-        {error,closed} ->
-            ok;
-        {error,Reason} ->
-            exit(Reason)
-    end.
 
 send({tcp,Sock}, Data) ->
     case gen_tcp:send(Sock, Data) of
