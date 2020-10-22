@@ -147,15 +147,15 @@ head_uri(H) ->
 relativize(H) ->
     UriBin = head_uri(H),
     case http_uri:parse(UriBin) of
-        {error,_} = Err -> Err;
+        {error,Rsn} -> Rsn;
         {ok,{_Scheme,_UserInfo,Host,_Port,Path0,Query}} ->
             case check_host(Host, H#head.headers) of
                 {error,_} = Err -> Err;
                 ok ->
                     MethodBin = phttp:method_bin(H#head.method),
                     Path = iolist_to_binary([Path0|Query]),
-                    Line = <<MethodBin/binary, " ", Path/binary, " ", ?HTTP11>>,
-                    {ok,H#head{line=Line}}
+                    Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
+                    H#head{line=Line}
             end
     end.
 
