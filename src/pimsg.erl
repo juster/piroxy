@@ -16,6 +16,9 @@
 %%% exports
 %%%
 
+track_header(N, 0) ->
+    N;
+
 track_header(N0, Bin) ->
     N = N0 + byte_size(Bin),
     if

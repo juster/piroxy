@@ -48,11 +48,11 @@ superserver(Listen) ->
 
 server() ->
     response_handler:add_sup_handler(),
-    {ok,State} = http11_stream:new([http11_req, []]),
+    {ok,State} = http11_req:new(),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
-            loop({tcp,TcpSock}, http11_stream, State)
+            loop({tcp,TcpSock}, http11_req, State)
     end.
 
 loop(Sock, Stream, State) ->
@@ -78,7 +78,8 @@ loop(Sock, Stream, State) ->
             M = write_stream,
             loop(Sock, M, M:new([Stream]));
         {make_tunnel,HostInfo} ->
-            send(Sock, Stream:encode(State, {status,http_ok})),
+            ?DBG("loop", [{msg,make_tunnel}]),
+            send(Sock, Stream:encode({status,http_ok})),
             case tunnel(Sock, HostInfo) of
                 {ok,TlsSock} ->
                     loop({ssl,TlsSock}, Stream, State);
@@ -90,12 +91,12 @@ loop(Sock, Stream, State) ->
             loop(Sock, Stream, State);
         {respond,Resp} ->
             case Resp of
-                {error,Reason} ->
+                {error,_} ->
                     ?DBG("loop", [{msg,{respond,Resp}}]);
                 _ ->
                     ok
             end,
-            case Stream:encode(State, Resp) of
+            case Stream:encode(Resp) of
                 empty -> ok;
                 IoList -> send(Sock, IoList)
             end,
@@ -109,21 +110,9 @@ stream(Sock, Stream, State, <<>>) ->
     ?LOG_DEBUG("~p received an empty data binary over socket", [self()]),
     loop(Sock, Stream, State);
 
-stream(Sock, M, S0, Data) ->
-    case M:read(S0, Data) of
-        {ok,S} ->
-            loop(Sock, M, S);
-        {error,_}=Err ->
-            %% ignore any new requests
-            fail(Sock, M, S0, Err),
-            M2 = write_stream,
-            loop(Sock, M2, M2:new([M]));
-        shutdown ->
-            %% this should not happen but is a valid return value
-            shutdown(Sock),
-            M2 = write_stream,
-            loop(Sock, M2, M2:new([M]))
-    end.
+stream(Sock, M, S, Data) ->
+    ok = M:read(S, Data),
+    loop(Sock, M, S).
 
 send({tcp,Sock}, Data) ->
     gen_tcp:send(Sock, Data);
@@ -137,8 +126,8 @@ shutdown({tcp,Sock}) ->
 shutdown({ssl,Sock}) ->
     ssl:shutdown(Sock, write).
 
-fail(Sock, M, State, Error) ->
-    send(Sock, M:encode(State, Error)).
+fail(Sock, M, _State, Error) ->
+    send(Sock, M:encode(Error)).
 
 mitm(TcpSock, Host) ->
     case inet:setopts(TcpSock, [{active,false}]) of

@@ -28,7 +28,8 @@ handle_event({make_request,Req,Target,#head{method=connect}}, State) ->
 handle_event({make_request,Req,Target,Head}, State) ->
     %% TODO: check for WebSocket/HTTP2 requests here and upgrade them!
     %% convert data types first so we can fail before opening a socket
-    ?LOG_DEBUG("make_request ~p:~n~p~n~s", [Req, Target, Head#head.line]),
+    ?DBG("make_request", [{req,Req},{target,Target},{method,Head#head.method},
+                          {line,Head#head.line}]),
     request_manager:make_request(Req, Target, Head),
     {ok,State};
 

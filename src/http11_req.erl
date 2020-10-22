@@ -1,84 +1,42 @@
 -module(http11_req).
 -include("../include/phttp.hrl").
 
--export([init/1, head/3, body/2, reset/1]).
+-export([new/0, read/2, encode/1]).
+-export([body_length/3, head/2, body/2, reset/1]). % callbacks
 
 %%%
-%%% INTERFACE CALLBACKS
-%%%
+%%% EXTERNAL INTERFACE
+%%% (called by piserver proc)
 
-init([]) ->
-    %% State is {HostName,Counter} where HostName is a previously specified
-    %% target hostname (via CONNECT) and Counter is an increasing integer which
-    %% is used to generate request identifiers.
-    {ok,{null,0}}.
+%%% Callback state: {RequestCounter,DefaultHostInfo,ServerPid}
+new() ->
+    http11_statem:start_link(?MODULE, {0,null,self()}).
 
-head(State0, StatusLn, Headers) ->
-    case request_head(StatusLn, Headers) of
-        {error,_} = Err1 ->
-            ?DBG("head", {err1,Err1}),
-            Err1;
-        {ok,H1} ->
-            case request_target(H1) of
-                {error,_} = Err2 ->
-                    ?DBG("head", {err2,Err2}),
-                    Err2;
-                {tunnel,HostInfo,_Uri} ->
-                    %% Connect uses the "authority" form of URIs and so
-                    %% cannot be used with relativize/2.
-                    {ReqId,State} = nextid(State0),
-                    pievents:make_request(ReqId, HostInfo, H1),
-                    {ok, H1, setelement(1,State,HostInfo)};
-                {direct,null,_RelUri} ->
-                    %% HostInfo is null if a relative URL is provided by the
-                    %% client. Hopefully this is inside of a CONNECT tunnel!
-                    {ReqId, State} = nextid(State0),
-                    pievents:make_request(ReqId, element(1,State), H1),
-                    {ok, H1, State};
-                {direct,HostInfo,Uri} ->
-                    case relativize(Uri, H1) of
-                        {error,_} = Err3 ->
-                            ?DBG("head", {err3,Err3}),
-                            Err3;
-                        {ok,H2} ->
-                            {ReqId,State} = nextid(State0),
-                            pievents:make_request(ReqId, HostInfo, H2),
-                            {ok,H2,State}
-                    end
-            end
-    end.
+read(Pid, Bin) ->
+    http11_statem:read(Pid, Bin).
 
-body({_,I}, Bin) ->
-    pievents:stream_request({self(),I}, Bin),
-    ok.
-
-reset({_,I} = State) ->
-    %%inbound_stream:finish_request(Pid),
-    pievents:end_request({self(),I}),
-    {ok,State}.
+encode(Bin) ->
+    http11_statem:encode(Bin).
 
 %%%
-%%% INTERNAL FUNCTIONS
-%%%
+%%% CALLBACKS
+%%% (called by http11_statem proc)
 
-nextid({H,I}) ->
-    {{self(),I+1}, {H,I+1}}.
-
-request_head(StatusLn, Headers) ->
+body_length(StatusLn, Headers, State) ->
     {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
-        {unknown,_} ->
-            ?DBG("head", {unknown_method,MethodBin}),
-            {error,{unknown_method,MethodBin}};
-        {_,unknown} ->
-            ?DBG("head", {unknown_version,VerBin}),
-            {error,{unknown_version,VerBin}};
-        {Method,Ver} ->
+    case phttp:version_atom(VerBin) of
+        http11 ->
+            ok;
+        Ver ->
+            exit({unknown_version,Ver})
+    end,
+    case phttp:method_atom(MethodBin) of
+        unknown ->
+            exit({unknown_method,MethodBin});
+        Method ->
             case request_length(Method, Headers) of
-                {error,_} = Err -> Err;
-                {ok,BodyLen} ->
-                    {ok,#head{line=StatusLn, method=Method, version=Ver,
-                              headers=Headers, bodylen=BodyLen}}
+                {error,Rsn} -> exit(Rsn);
+                {ok,BodyLen} -> {BodyLen,State}
             end
     end.
 
@@ -87,43 +45,91 @@ request_length(get, _) -> {ok,0};
 request_length(options, _) -> {ok,0};
 request_length(_, Headers) -> pimsg:body_length(Headers).
 
+head(H, State0) ->
+    {Req,State} = nextreq(State0),
+    case target(H) of
+        {tunnel,HI} ->
+            %% Connect uses the "authority" form of URIs and so
+            %% cannot be used with relativize/2.
+            pievents:make_request(Req, HI, H),
+            setelement(2,State,HI);
+        relative ->
+            %% HTTP header is for a relative URL. Hopefully this is inside of a
+            %% CONNECT tunnel!
+            case element(2,State0) of
+                null ->
+                    exit(host_missing);
+                HI ->
+                    pievents:make_request(Req, HI, H),
+                    State
+            end;
+        {absolute,HI} ->
+            pievents:make_request(Req, HI, relativize(H)),
+            State
+    end.
+
+body(Bin, State) ->
+    pievents:stream_request(lastreq(State), Bin),
+    State.
+
+reset(State) ->
+    pievents:end_request(lastreq(State)),
+    State.
+
+%%%
+%%% INTERNAL FUNCTIONS
+%%%
+
+lastreq({I,_,Pid}) ->
+    {Pid,I}.
+
+nextreq({I,HI,Pid}) ->
+    J = I+1,
+    Req = {Pid,J},
+    {Req, {J,HI,Pid}}.
+
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
 %% If the Head contains a request to a relative URI, Host=null.
-request_target(Head) ->
-    %% XXX: splits the request line twice (in request_head as well)
-    {ok,[_,UriBin,_]} = phttp:nsplit(3, Head#head.line, <<" ">>),
+target(Head) ->
+    UriBin = head_uri(Head),
     case {Head#head.method, UriBin} of
         {connect,_} ->
             {ok,[Host,Port]} = phttp:nsplit(2, UriBin, <<":">>),
             case Port of
                 <<"443">> ->
-                    {tunnel, {https,Host,binary_to_integer(Port)}, UriBin};
+                    {tunnel, {https,Host,binary_to_integer(Port)}};
                 <<"80">> ->
-                    {tunnel, {http,Host,binary_to_integer(Port)}, UriBin};
+                    %% NYI
+                    {tunnel, {http,Host,binary_to_integer(Port)}};
                 _ ->
-                    {error,http_bad_request}
+                    exit(http_bad_request)
             end;
-        {_,<<"*">>} ->
-            {direct,null,UriBin};
+        {options,<<"*">>} ->
+            proxy;
         {_,<<"/",_/binary>>} ->
             %% relative URI, hopefully we are already CONNECT-ed to a
             %% single host
-            {direct,null,UriBin};
+            relative;
         _ ->
             case http_uri:parse(UriBin) of
                 {error,{malformed_uri,_,_}} ->
-                    {error, http_bad_request};
+                    exit(http_bad_request);
                 {ok,{Scheme,_UserInfo,Host,Port,_Path0,_Query}} ->
                     %% XXX: never Fragment?
                     %% XXX: how to use UserInfo?
                     %% URI should be absolute when received from proxy client!
                     %% Convert to relative before sending to host.
-                    {direct,{Scheme,Host,Port},UriBin}
+                    {absolute, {Scheme,Host,Port}}
             end
     end.
 
-relativize(Uri, H) ->
-    case http_uri:parse(Uri) of
+head_uri(H) ->
+    {ok,[_,UriBin,_]} = phttp:nsplit(3, H#head.line, <<" ">>),
+    UriBin.
+
+relativize(H) ->
+    UriBin = head_uri(H),
+    case http_uri:parse(UriBin) of
         {error,_} = Err -> Err;
         {ok,{_Scheme,_UserInfo,Host,_Port,Path0,Query}} ->
             case check_host(Host, H#head.headers) of
