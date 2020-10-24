@@ -1,7 +1,7 @@
 -module(http11_req).
 -include("../include/phttp.hrl").
 
--export([new/0, read/2, encode/1]).
+-export([start_link/0, read/2, encode/1]).
 -export([head/3, body/2, reset/1]). % callbacks
 
 %%%
@@ -9,8 +9,8 @@
 %%% (called by piserver proc)
 
 %%% Callback state: {RequestCounter,DefaultHostInfo,ServerPid}
-new() ->
-    http11_statem:start_link(?MODULE, {0,null,self()}).
+start_link() ->
+    http11_statem:start_link(?MODULE, {0,null,self()}, []).
 
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).

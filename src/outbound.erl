@@ -27,73 +27,96 @@ next_request(Pid, Req, Head) ->
 %%%
 
 start(Pid, Host, Port, false) ->
-    case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0}],
+    case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0},
+                                      {exit_on_close,false}],
                          ?CONNECT_TIMEOUT) of
-        {error, Reason} -> exit(Reason);
+        {error, Reason} ->
+            exit(Reason);
         {ok, Sock} ->
             start2(Pid, {tcp,Sock})
     end;
 
 start(Pid, Host, Port, true) ->
-    case ssl:connect(Host, Port, [{active,true},binary,{packet,0}],
+    case ssl:connect(Host, Port, [{active,true},binary,{packet,0},
+                                  {exit_on_close,false}],
                      ?CONNECT_TIMEOUT) of
-        {error,Reason} -> exit(Reason);
+        {error,Reason} ->
+            exit(Reason);
         {ok,Sock} ->
             ssl:setopts(Sock, [{active,true}]),
             start2(Pid, {ssl,Sock})
     end.
 
 start2(Pid, Sock) ->
-    {ok,Stm} = http11_res:new(),
+    {ok,Stm} = http11_res:start_link(Pid),
     request_target:need_request(Pid),
     loop(Pid, Sock, pipipe:new(), null, Stm).
 
 loop(Pid, Sock, P0, Clock, Stm) ->
     receive
-        {next_request,Req,Head} ->
-            %% sent from request_target
-            send(Sock, http11_res:encode(Head)),
-            http11_res:push(Stm, Req, Head),
-            request_target:need_request(Pid), % get ready to stream the next one
-            P = pipipe:push(Req, P0),
-            loop_tick(Pid, Sock, P, Clock, Stm);
-        {tcp_closed,_} ->
-            ok;
-        {ssl_closed,_} ->
-            ok;
-        {body,Req,done} ->
-            P = flush(Pid, Sock, pipipe:close(Req, P0)),
-            Clock1 = case pipipe:is_empty(P) of
-                         true -> clock_stop(Clock);
-                         false -> clock_restart(Clock)
-                     end,
-            loop(Pid, Sock, P, Clock1, Stm);
-        {body,Req,Body} ->
-            P = pipipe:append(Req, Body, P0),
-            loop_tick(Pid, Sock, P, Clock, Stm);
-        {tcp_error,Reason} ->
-            exit(Reason);
-        {ssl_error,Reason} ->
-            exit(Reason);
-        {tcp, _, <<>>} ->
-            loop_tick(Pid, Sock, P0, Clock, Stm);
-        {tcp, _Sock, Data} ->
-            http11_res:read(Stm, Data),
-            loop_tick(Pid, Sock, P0, Clock, Stm);
-        {ssl, _, <<>>} ->
-            loop_tick(Pid, Sock, P0, Clock, Stm);
-        {ssl, _Sock, Data} ->
-            http11_res:read(Stm, Data),
-            loop_tick(Pid, Sock, P0, Clock, Stm);
-        heartbeat ->
-            clock_check(Clock), % does exit(timeout) if a timeout occurs
-            loop(Pid, Sock, P0, Clock, Stm);
         Any ->
-            exit({unknown_msg,Any})
+            case Any of
+                {next_request,Req,Head} ->
+                    %% sent from request_target
+                    case send(Sock, http11_res:encode(Head)) of
+                        ok ->
+                            request_target:need_request(Pid), % get ready to stream the next one
+                            http11_res:push(Stm, Req, Head),
+                            P = pipipe:push(Req, P0),
+                            loop_tick(Pid, Sock, P, Clock, Stm);
+                        closed ->
+                            stop(Pid, Sock, P0, Clock, Stm, closed)
+                    end;
+                {body,Req,done} ->
+                    P = flush(Pid, Sock, pipipe:close(Req, P0)),
+                    %%Clock1 = case pipipe:is_empty(P) of
+                    %%             true -> clock_stop(Clock);
+                    %%             false -> clock_restart(Clock)
+                    %%         end,
+                    loop(Pid, Sock, P, Clock, Stm);
+                {body,Req,Body} ->
+                    P = pipipe:append(Req, Body, P0),
+                    loop_tick(Pid, Sock, P, Clock, Stm);
+                {tcp, _, <<>>} ->
+                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                {tcp, _Sock, Data} ->
+                    %%?DBG("tcp/read", [{res_pid,Stm},{data,Data}]),
+                    http11_res:read(Stm, Data),
+                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                {ssl, _, <<>>} ->
+                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                {ssl, _Sock, Data} ->
+                    %%?DBG("ssl/read", [{res_pid,Stm},{data,Data}]),
+                    http11_res:read(Stm, Data),
+                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                {tcp_closed,_} -> % closed must be placed after {tcp,_,_}
+                    stop(Pid, Sock, P0, Clock, Stm, closed),
+                    loop(Pid, Sock, P0, Clock, Stm);
+                {ssl_closed,_} ->
+                    stop(Pid, Sock, P0, Clock, Stm, closed),
+                    loop(Pid, Sock, P0, Clock, Stm);
+                {tcp_error,Reason} ->
+                    ?DBG("loop", [{tcp_error,Reason}]),
+                    stop(Pid, Sock, P0, Clock, Stm, Reason);
+                {ssl_error,Reason} ->
+                    ?DBG("loop", [{ssl_error,Reason}]),
+                    stop(Pid, Sock, P0, Clock, Stm, Reason);
+                heartbeat ->
+                    clock_check(Clock), % does exit(timeout) if a timeout occurs
+                    loop(Pid, Sock, P0, Clock, Stm);
+                _ ->
+                    exit({unknown_msg,Any})
+            end
     end.
 
 loop_tick(Pid, Sock, P, Clock, Stm) ->
-    loop(Pid, Sock, P, clock_restart(Clock), Stm).
+    loop(Pid, Sock, P, Clock, Stm).
+    %%loop(Pid, Sock, P, clock_restart(Clock), Stm).
+
+stop(Pid, Sock, P, Clock, Stm, Reason) ->
+    ?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
+    http11_res:close(Pid, Reason),
+    loop(Pid, Sock, P, Clock, Stm).
 
 %%% Keep a timer to check if we have timed-out on sending/receiving requests.
 
@@ -130,13 +153,19 @@ clock_check({LastRecv,_}) ->
 
 send({tcp,Sock}, Data) ->
     case gen_tcp:send(Sock, Data) of
-        {error,Reason} -> exit(Reason);
+        {error,closed} ->
+            closed;
+        {error,Reason} ->
+            exit(Reason);
         ok -> ok
     end;
 
 send({ssl,Sock}, Data) ->
     case ssl:send(Sock, Data) of
-        {error,Reason} -> exit(Reason);
+        {error,closed} ->
+            closed;
+        {error,Reason} ->
+            exit(Reason);
         ok -> ok
     end.
 
@@ -145,7 +174,7 @@ flush(Pid, Sock, P0) ->
         not_done ->
             P0;
         {Req,Chunks,P} ->
+            %%?DBG("flush", [{req,Req}]),
             foreach(fun (Chunk) -> send(Sock, Chunk) end, Chunks),
-            request_target:close_request(Pid, Req),
             flush(Pid, Sock, P)
     end.

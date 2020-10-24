@@ -52,10 +52,10 @@ handle_cast(_, State) ->
 handle_call(_, _, State) ->
     {reply,ok,State}.
 
-handle_info({'EXIT',Pid,Reason}, L0) ->
+handle_info({'EXIT',Pid,_Reason}, L0) ->
     case keytake(Pid, 2, L0) of
         error ->
-            {stop,Reason,L0};
+            {stop,{unknown_pid,Pid},L0};
         {value,_,L} ->
             {noreply,L}
     end;

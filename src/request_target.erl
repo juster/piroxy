@@ -4,11 +4,12 @@
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2, unzip/1, unzip3/1, reverse/1,
                 keytake/3, keymember/3, keydelete/3]).
+-record(state, {todo=[], sent=[], waitlist=[], stats, hostinfo}).
 
 -export([start_link/1, make_request/3, cancel_request/2, need_request/1,
-         close_request/2]).
--export([init/1, terminate/2, handle_call/3, handle_cast/2,
-         handle_info/2]).
+         request_done/2]).
+-export([init/1, terminate/2,
+         handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
 
 %%% called by request_handler
 
@@ -21,8 +22,8 @@ make_request(Pid, Req, Head) ->
 cancel_request(Pid, Req) ->
     gen_server:cast(Pid, {cancel_request,Req}).
 
-close_request(Pid, Req) ->
-    gen_server:cast(Pid, {close_request,Req}).
+request_done(Pid, Req) ->
+    gen_server:cast(Pid, {request_done,Req}).
 
 %%% called by outbound
 
@@ -36,47 +37,42 @@ init([HostInfo]) ->
     %%         {Nprocs,MaxProcs,Nfails,Nrestarts}, HostInfo}
     {ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000,
                                  nrestarts_reset),
-    {ok, {[],[],[],{1,1,0,0},HostInfo}}.
+    {ok, #state{stats={1,1,0,0}, hostinfo=HostInfo}}.
 
-terminate(Reason, {Ltodo,Lsent,_,_,_}) ->
+terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
     %% XXX: Child procs should be exited automatically after teminate.
     foreach(fun ({Req,_}) -> pievents:fail_request(Req, Reason) end, Ltodo),
     foreach(fun ({Req,_,_}) -> pievents:fail_request(Req, Reason) end, Lsent),
     ok.
 
-handle_call(_, _, State) ->
-    {reply, ok, State}.
+handle_call(_, _, S) ->
+    {reply, ok, S}.
 
 %%%
 %%% from request_handler
 %%%
 
-handle_cast({make_request,Req,Head}, State0) ->
-    Lsent0 = element(2,State0),
-    case element(3,State0) of
+handle_cast({make_request,Req,Head}, S0) ->
+    case S0#state.waitlist of
         [Pid|Waitlist] ->
             %% we have a proc waiting for a request...
-            outbound:next_request(Pid, Req, Head),
-            Lsent = Lsent0 ++ [{Req,Head,Pid}],
-            State1 = setelement(2,State0,Lsent),
-            State2 = setelement(3,State1,Waitlist),
-            {noreply,State2};
+            S1 = send_request(Pid, Req, Head, S0),
+            S2 = S1#state{waitlist=Waitlist},
+            {noreply,S2};
         [] ->
-            %% either create a new proc or add to the todo list
-            {Nproc,Nmax,Nfail,Nrestarts} = element(4,State0),
-            Ltodo = element(1,State0) ++ [{Req,Head}],
-            State1 = setelement(1,State0,Ltodo),
+            %% store the request in the todo list and perhaps spawn a new proc
+            {Nproc,Nmax,Nfail,Nrestarts} = S0#state.stats,
+            Ltodo = S0#state.todo ++ [{Req,Head}],
+            S1 = S0#state{todo=Ltodo},
             if
                 Nproc >= Nmax ->
                     %% already at max allowed procs, add to todo list
-                    {noreply,State1};
+                    {noreply,S1};
                 true ->
                     %% spawn a new proc
-                    {ok,Pid} = outbound:start_link(element(5,State0)),
-                    Lsent = Lsent0 ++ [{Req,Head,Pid}],
-                    State2 = setelement(2,State1,Lsent),
-                    State3 = setelement(4,State2,{Nproc+1,Nmax,Nfail,Nrestarts}),
-                    {noreply,State3}
+                    {ok,_Pid} = outbound:start_link(S1#state.hostinfo),
+                    S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nrestarts}},
+                    {noreply,S2}
             end
     end;
 
@@ -84,100 +80,118 @@ handle_cast({make_request,Req,Head}, State0) ->
 %%% from outbound
 %%%
 
-handle_cast({need_request,Pid}, State0) ->
-    case element(1,State0) of
+handle_cast({need_request,Pid}, S0) ->
+    case S0#state.todo of
         [] ->
             %% If todo list is empty, then add Pid to waiting list.
-            Waitlist = element(3,State0) ++ [Pid],
-            State1 = setelement(3,State0,Waitlist),
-            {noreply, State1};
+            Waitlist = S0#state.waitlist ++ [Pid],
+            S1 = S0#state{waitlist=Waitlist},
+            {noreply, S1};
         [{Req,Head}|Ltodo] ->
             %% O/W pop off the todo list and push to sent list.
-            Lsent = element(2,State0) ++ [{Req,Head,Pid}],
-            State1 = setelement(1,State0,Ltodo),
-            State2 = setelement(2,State1,Lsent),
-            outbound:next_request(Pid, Req, Head),
-            morgue:forward(Req, Pid),
-            {noreply, State2}
+            S1 = S0#state{todo=Ltodo},
+            S2 = send_request(Pid, Req, Head, S1),
+            {noreply, S2}
     end;
 
 %%% Called when the request is finished (i.e. the response is completed).
-handle_cast({close_request,Req}, State0) ->
-    ?DBG("close_request", [{req,Req}]),
-    Lsent0 = element(2,State0),
+handle_cast({request_done,Req}, S0) ->
+    %%?DBG("request_done", [{req,Req}]),
+    Lsent0 = S0#state.sent,
     Lsent = keydelete(Req, 1, Lsent0),
-    State1 = setelement(2,State0,Lsent),
+    S1 = S0#state{sent=Lsent},
     morgue:forget(Req),
     %% Increase the number of max possible workers until we reach hard limit.
-    {Nproc,Nmax,Nfail,Nrestarts} = element(4,State1),
+    {Nproc,Nmax,Nfail,Nrestarts} = S1#state.stats,
     if
         Nproc >= Nmax ->
             %% We already hit the ceiling.
-            {noreply,State1};
+            {noreply,S1};
         true ->
-            {ok,_} = outbound:start_link(element(5,State1)),
-            State2 = setelement(4,State1,{Nproc+1,Nmax,Nfail,Nrestarts}),
-            {noreply,State2}
+            {ok,_} = outbound:start_link(S1#state.hostinfo),
+            S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nrestarts}},
+            {noreply,S2}
     end;
 
 %%% Called when outbound cannot make a request work.
-handle_cast({fail_request,Req,Reason}, State0) ->
-    Lsent0 = element(2,State0),
+handle_cast({fail_request,Req,Reason}, S0) ->
+    Lsent0 = S0#state.sent,
     case keytake(Req, 1, Lsent0) of
         false ->
             ?LOG_ERROR("fail_request: unknown request (~p)", [Req]),
-            {noreply,State0};
+            {noreply,S0};
         {value,{Req,_,_},Lsent1} ->
             pievents:fail_request(Req, Reason),
-            State1 = setelement(2,State0,Lsent1),
-            {noreply,State1}
+            S1 = S0#state{sent=Lsent1},
+            {noreply,S1}
     end;
 
-handle_cast(_, State) ->
-    {noreply,State}.
+handle_cast(_, S) ->
+    {noreply,S}.
 
-handle_info(nrestarts_reset, State) ->
-    Stats0 = element(4,State),
+handle_continue(check_waitlist, S0) ->
+    case {S0#state.sent, S0#state.waitlist} of
+        {[],_} ->
+            {noreply,S0};
+        {_,[]} ->
+            {noreply,S0};
+        {[{Req,Head}|Ltodo], [Pid|Waitlist]} ->
+            S1 = send_request(Pid, Req, Head, S0),
+            S2 = S1#state{todo=Ltodo},
+            S3 = S2#state{waitlist=Waitlist},
+            {noreply,S3}
+    end.
+
+handle_info(nrestarts_reset, S) ->
+    Stats0 = S#state.stats,
     Stats = setelement(4,Stats0,0),
-    {noreply, setelement(4,State,Stats)};
+    {noreply, S#state{stats=Stats}};
 
 %% Unexpected errors in outbound process causes a target error.
-handle_info({'EXIT',Pid,Reason}, State0) ->
-    Lwait = lists:delete(Pid, element(3,State0)),
-    {Nproc,Nmax,Nfail0,Nrestarts} = element(4,State0),
-    State1 = redo(Pid, State0),
-    State2 = setelement(3,State1,Lwait),
+handle_info({'EXIT',Pid,Reason}, S0) ->
+    Lwait = lists:delete(Pid, S0#state.waitlist),
+    {Nproc,Nmax,Nfail0,Nrestarts} = S0#state.stats,
+    S1 = S0#state{waitlist=Lwait},
+    S2 = redo(Pid, S1),
     Nfail = if
                 %% Normal errors do not cause a target error.
-                Reason =:= normal; Reason =:= timeout; Reason =:= closed ->
+                Reason =:= normal;
+                Reason =:= {shutdown,closed} ->
                     Nfail0;
                 true ->
                     Nfail0+1
             end,
-    ?DBG("handle_info", [{pid,Pid},{reason,Reason},{nproc,Nproc},{nmax,Nmax},{nfail,Nfail},{nrestarts,Nrestarts}]),
+    %%case element(5,S0) of
+    %%    {_,<<"v.redd.it">>,_} ->
+            ?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
+                                 {reason,Reason},{nproc,Nproc},{nmax,Nmax},
+                                 {nfail,Nfail},{nrestarts,Nrestarts}]),
+    %%        _ ->
+    %%        ok
+    %%end,
     if
+        Reason =/= {shutdown,connection_closed},
         Nrestarts > ?TARGET_RESTART_INTENSITY ->
-            {stop,Reason,State0};
+            {stop,Reason,S0};
         Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
-            {stop,Reason,State0};
-        Nproc =< Nmax, element(1,State2) =/= [] ->
+            {stop,Reason,S0};
+        Nproc =< Nmax, S2#state.todo =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone over limit
             %% AND we actually have more pending requests
-            {ok,_} = outbound:start_link(element(5,State2)),
-            State3 = setelement(4,State2,{Nproc,Nmax,Nfail,Nrestarts+1}),
-            {noreply,State3};
-        element(1,State2) == [], element(2,State2) == [] ->
+            {ok,_} = outbound:start_link(S2#state.hostinfo),
+            S3 = S2#state{stats={Nproc,Nmax,Nfail,Nrestarts+1}},
+            {noreply,S3,{continue,check_waitlist}};
+        S2#state.todo == [], S2#state.sent == [] ->
             %% cleanup if there are no more requests needed
-            ?DBG("handle_info", exiting),
-            {stop,shutdown,State0};
+            {stop,shutdown,S0};
         true ->
-            State3 = setelement(4,State2,{Nproc-1,Nmax,Nfail,Nrestarts}),
-            {noreply,State3}
+            S3 = S2#state{stats={Nproc-1,Nmax,Nfail,Nrestarts}},
+            {noreply,S3,{continue,check_waitlist}}
     end;
 
-handle_info(_, State) ->
-    {noreply,State}.
+handle_info(_, S) ->
+    {noreply,S}.
 
 keywipe(K, I, L0) ->
     keywipe(K, I, L0, []).
@@ -191,11 +205,15 @@ keywipe(K, I, L0, Ts) ->
     end.
 
 %%% move messages that were sent to Pid back into todo list
-redo(Pid, State0) ->
-    {L0,Lsent} = keywipe(Pid, 3, element(2,State0)),
+redo(Pid, S) ->
+    {L0,Lsent} = keywipe(Pid, 3, S#state.sent),
     L = [{Req,Head} || {Req,Head,_} <- L0],
-    ?DBG("redo", [{Req,H#head.line} || {Req,H} <- L]),
     foreach(fun ({Req,_}) -> morgue:mute(Req) end, L),
-    Ltodo = L ++ element(1,State0), % move to front of todo list
-    State1 = setelement(1, State0, Ltodo),
-    setelement(2, State1, Lsent).
+    Ltodo = L ++ S#state.todo, % move to front of todo list
+    S#state{todo=Ltodo, sent=Lsent}.
+
+send_request(Pid, Req, Head, S) ->
+    outbound:next_request(Pid, Req, Head),
+    morgue:forward(Req, Pid),
+    Lsent0 = S#state.sent,
+    S#state{sent=Lsent0 ++ [{Req,Head,Pid}]}.

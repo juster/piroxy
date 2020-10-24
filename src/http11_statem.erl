@@ -2,24 +2,31 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/2, read/2, encode/1, cb_state/1, cb_state/2]).
+-export([start_link/3, stop/2, read/2, close/1, close/2, encode/1,
+         replace_cb_state/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
 %%% EXTERNAL INTERFACE
 %%%
 
-start_link(M, A) ->
-    gen_statem:start_link(?MODULE, [M, A], []).
+start_link(M, A, Opts) ->
+    gen_statem:start_link(?MODULE, [M,A], Opts).
+
+stop(Pid, Reason) ->
+    gen_statem:stop(Pid, Reason, infinity).
 
 read(Pid, Bin) ->
-    gen_statem:cast(Pid, Bin).
+    gen_statem:cast(Pid, {data,Bin}).
 
-cb_state(Pid) ->
-    gen_statem:call(Pid, get_cb_state).
+replace_cb_state(Pid, Fun) ->
+    gen_statem:cast(Pid, {replace_cb_state,Fun}).
 
-cb_state(Pid, Term) ->
-    gen_statem:cast(Pid, {set_cb_state,Term}).
+close(Pid) ->
+    close(Pid, normal).
+
+close(Pid, Reason) ->
+    gen_statem:cast(Pid, {close,Reason}).
 
 encode(#head{line=Line, headers=Headers}) ->
     [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
@@ -45,34 +52,50 @@ encode({status,HttpStatus}) ->
 callback_mode() -> [handle_event_function].
 
 init([M,A]) ->
-    {ok, head, {pimsg:head_reader(),M,A}}.
+    {ok, eof, {null,M,A}}.
 
 handle_event(cast, empty, _, _) ->
     keep_state_and_data;
 
-handle_event({call,From}, get_cb_state, _, {_,_,A}) ->
-    {keep_state_and_data,{reply,From,A}};
+handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A}) ->
+    {keep_state,{R,M,Fun(A)}};
 
-handle_event(cast, {set_cb_state,A}, _, {R,M,_}) ->
-    {keep_state,{R,M,A}};
+%% used to stop the process, without bypassing the messages in the queue
+handle_event(cast, {close,Reason}, _, {_,M,A}) ->
+    case erlang:function_exported(M, terminate, 2) of
+        true ->
+            M:terminate(Reason, A);
+        false ->
+            ok
+    end,
+    {stop, {shutdown,Reason}};
 
-handle_event(cast, Bin, head, {Reader0,M,A0}) ->
+handle_event(cast, {data,<<>>}, eof, _) ->
+    keep_state_and_data;
+
+handle_event(cast, {data,empty}, _, _) ->
+    keep_state_and_data;
+
+handle_event(cast, {data,_}, eof, {_,M,A}) ->
+    {next_state, head, {pimsg:head_reader(),M,A}, postpone};
+
+handle_event(cast, {data,Bin}, head, {Reader0,M,A0}) ->
     case pimsg:head_reader(Reader0, Bin) of
         {error,Reason} ->
-            exit(Reason);
+            {stop,Reason};
         {continue,Reader} ->
             {keep_state,{Reader,M,A0}};
         {done,StatusLine,Headers,Rest} ->
-            {H,A1} = M:head(StatusLine, Headers, A0),
+            {H,A} = M:head(StatusLine, Headers, A0),
             Reader = pimsg:body_reader(H#head.bodylen),
-            {next_state,body,{Reader,M,A1},
-             {next_event,cast,Rest}}
+            {next_state,body,{Reader,M,A},
+             {next_event,cast,{data,Rest}}}
     end;
 
-handle_event(cast, Bin1, body, {Reader0,M,A0}) ->
+handle_event(cast, {data,Bin1}, body, {Reader0,M,A0}) ->
     case pimsg:body_reader(Reader0, Bin1) of
         {error,Reason} ->
-            exit(Reason);
+            {stop, Reason};
         {continue,empty,Reader} ->
             {keep_state,{Reader,M,A0}};
         {continue,Bin2,Reader} ->
@@ -84,16 +107,13 @@ handle_event(cast, Bin1, body, {Reader0,M,A0}) ->
                      _ -> M:body(Bin2,A0)
                  end,
             case M:reset(A1) of
-                shutdown ->
-                    {stop, shutdown};
+                connection_close ->
+                    {stop, {shutdown,connection_close}};
                 A2 ->
-                    {next_state,head,{pimsg:head_reader(),M,A2},
-                     {next_event,cast,Rest}}
+                    {next_state,eof,{null,M,A2},
+                     {next_event,cast,{data,Rest}}}
             end
-    end;
-
-handle_event(_,_,_,_) ->
-    keep_state_and_data.
+    end.
 
 %%%
 %%% INTERNAL FUNCTIONS

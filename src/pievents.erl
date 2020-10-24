@@ -29,7 +29,6 @@ respond(Req, Any) ->
     gen_event:notify(?MODULE, {respond,Req,Any}).
 
 close_response(Req) ->
-    ?DBG("close_response", [{req,Req}]),
     gen_event:notify(?MODULE, {close_response,Req}).
 
 upgrade_stream(Req, Stream, Args) ->

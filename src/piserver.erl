@@ -48,7 +48,7 @@ superserver(Listen) ->
 
 server() ->
     response_handler:add_sup_handler(),
-    {ok,State} = http11_req:new(),
+    {ok,State} = http11_req:start_link(),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
@@ -78,7 +78,7 @@ loop(Sock, Stream, State) ->
             M = write_stream,
             loop(Sock, M, M:new([Stream]));
         {make_tunnel,HostInfo} ->
-            ?DBG("loop", [{msg,make_tunnel}]),
+            %%?DBG("loop", [{msg,make_tunnel},{hostinfo,HostInfo}]),
             send(Sock, Stream:encode({status,http_ok})),
             case tunnel(Sock, HostInfo) of
                 {ok,TlsSock} ->
@@ -161,6 +161,6 @@ tunnel({tcp,TcpSock}, {https,Host,443}) ->
         {ok,TlsSock}
     catch
         {error,Rsn} = Err ->
-            ?LOG_ERROR("~p failed to create MITM tunnel: ~p", [self(), Rsn]),
+            ?LOG_ERROR("~p failed to create MITM tunnel to ~s: ~p", [self(), Host, Rsn]),
             Err
     end.
