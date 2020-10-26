@@ -1,7 +1,7 @@
 -module(http11_req).
 -include("../include/phttp.hrl").
 
--export([start_link/0, read/2, encode/1]).
+-export([start_link/0, stop/1, read/2, encode/1]).
 -export([head/3, body/2, reset/1]). % callbacks
 
 %%%
@@ -11,6 +11,9 @@
 %%% Callback state: {RequestCounter,DefaultHostInfo,ServerPid}
 start_link() ->
     http11_statem:start_link(?MODULE, {0,null,self()}, []).
+
+stop(Pid) ->
+    http11_statem:stop(Pid).
 
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).

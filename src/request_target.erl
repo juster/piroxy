@@ -7,7 +7,7 @@
 -record(state, {todo=[], sent=[], waitlist=[], stats, hostinfo}).
 
 -export([start_link/1, make_request/3, cancel_request/2, need_request/1,
-         request_done/2]).
+         request_done/2, pending_requests/1]).
 -export([init/1, terminate/2,
          handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
 
@@ -30,6 +30,11 @@ request_done(Pid, Req) ->
 need_request(Pid) ->
     gen_server:cast(Pid, {need_request,self()}).
 
+%%% called by whomever
+
+pending_requests(Pid) ->
+    gen_server:call(Pid, pending_requests).
+
 init([HostInfo]) ->
     process_flag(trap_exit, true),
     {ok,_Pid} = outbound:start_link(HostInfo),
@@ -45,11 +50,14 @@ terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
     foreach(fun ({Req,_,_}) -> pievents:fail_request(Req, Reason) end, Lsent),
     ok.
 
+handle_call(pending_requests, _From, S) ->
+    {reply, [Req || {Req,_,_} <- S#state.sent], S};
+
 handle_call(_, _, S) ->
     {reply, ok, S}.
 
 %%%
-%%% from request_handler
+%%% from request_manager
 %%%
 
 handle_cast({make_request,Req,Head}, S0) ->
@@ -74,6 +82,20 @@ handle_cast({make_request,Req,Head}, S0) ->
                     S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nrestarts}},
                     {noreply,S2}
             end
+    end;
+
+handle_cast({cancel_request,Req}, S) ->
+    %% this will also execute if no such Req exists in either list
+    Ltodo = lists:delete(Req, S#state.todo),
+    case lists:keyfind(Req, 1, S#state.sent) of
+        false ->
+            {noreply, S#state{todo=Ltodo}};
+        {Req,_,Pid} ->
+            %% we were unlucky and the request is in progress
+            %% cancel it to force a restart
+            exit(Pid, cancelled),
+            Lsent = lists:keydelete(Req, 1, S#state.sent),
+            {noreply, S#state{todo=Ltodo, sent=Lsent}}
     end;
 
 %%%
@@ -153,27 +175,21 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
     {Nproc,Nmax,Nfail0,Nrestarts} = S0#state.stats,
     S1 = S0#state{waitlist=Lwait},
     S2 = redo(Pid, S1),
+    Failure = is_failure(Reason),
+    %% Normal errors do not cause a target error.
     Nfail = if
-                %% Normal errors do not cause a target error.
-                Reason =:= normal;
-                Reason =:= {shutdown,closed} ->
-                    Nfail0;
+                Failure ->
+                    Nfail0+1;
                 true ->
-                    Nfail0+1
+                    Nfail0
             end,
-    %%case element(5,S0) of
-    %%    {_,<<"v.redd.it">>,_} ->
-            ?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
-                                 {reason,Reason},{nproc,Nproc},{nmax,Nmax},
-                                 {nfail,Nfail},{nrestarts,Nrestarts}]),
-    %%        _ ->
-    %%        ok
-    %%end,
+    ?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
+                         {reason,Reason},{nproc,Nproc},{nmax,Nmax},
+                         {nfail,Nfail},{nrestarts,Nrestarts}]),
     if
-        Reason =/= {shutdown,connection_closed},
-        Nrestarts > ?TARGET_RESTART_INTENSITY ->
+        Failure, Nrestarts > ?TARGET_RESTART_INTENSITY ->
             {stop,Reason,S0};
-        Nfail >= ?TARGET_FAIL_MAX ->
+        Failure, Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
             {stop,Reason,S0};
         Nproc =< Nmax, S2#state.todo =/= [] ->
@@ -193,6 +209,10 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
 handle_info(_, S) ->
     {noreply,S}.
 
+is_failure({shutdown,closed}) -> false;
+is_failure(cancelled) -> false;
+is_failure(_) -> true.
+
 keywipe(K, I, L0) ->
     keywipe(K, I, L0, []).
 
@@ -204,7 +224,9 @@ keywipe(K, I, L0, Ts) ->
             keywipe(K, I, L, [T|Ts])
     end.
 
-%%% move messages that were sent to Pid back into todo list
+%%% Move requests that were sent to Pid back into todo list
+%%% NOTE: there MAY be 0 entries to move back to the todo list!
+%%% (this happens when a request is cancelled while it is in progress)
 redo(Pid, S) ->
     {L0,Lsent} = keywipe(Pid, 3, S#state.sent),
     L = [{Req,Head} || {Req,Head,_} <- L0],

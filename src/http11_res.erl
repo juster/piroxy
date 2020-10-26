@@ -4,11 +4,14 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 
--export([start_link/1, stop/2, read/2, encode/1, push/3, close/2]).
+-export([start_link/1, stop/1, stop/2, read/2, encode/1, push/3, close/2]).
 -export([head/3, body/2, reset/1]).
 
 start_link(RequestTargetPid) ->
     http11_statem:start_link(?MODULE, {false,[],RequestTargetPid}, []).
+
+stop(Pid) ->
+    http11_statem:stop(Pid).
 
 stop(Pid, Reason) ->
     http11_statem:stop(Pid, Reason).

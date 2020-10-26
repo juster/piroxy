@@ -3,13 +3,18 @@
 -import(lists, [foreach/2]).
 
 -export([add_sup_handler/0]).
--export([init/1, handle_event/2, handle_call/2, handle_info/2]).
+-export([init/1, terminate/2, handle_event/2, handle_call/2, handle_info/2]).
 
 add_sup_handler() ->
     gen_event:add_sup_handler(pievents, {?MODULE,make_ref()}, [self()]).
 
 init([Pid]) ->
     {ok, {Pid, pipipe:new()}}.
+
+terminate(_Reason, {Pid,P}) ->
+    lists:foreach(fun (I) ->
+                          request_manager:cancel_request({Pid,I})
+                  end, pipipe:values(P)).
 
 handle_event({make_request,{Pid,I},_,_}, {Pid,P}) ->
     {ok, {Pid, pipipe:push(I, P)}};

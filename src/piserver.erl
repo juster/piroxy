@@ -48,11 +48,12 @@ superserver(Listen) ->
 
 server() ->
     response_handler:add_sup_handler(),
-    {ok,State} = http11_req:start_link(),
+    {ok,Pid} = http11_req:start_link(),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
-            loop({tcp,TcpSock}, http11_req, State)
+            loop({tcp,TcpSock}, http11_req, Pid),
+            http11_req:stop(Pid)
     end.
 
 loop(Sock, Stream, State) ->
@@ -71,12 +72,6 @@ loop(Sock, Stream, State) ->
             ok;
         {ssl_error,_,Reason} ->
             exit(Reason);
-        {disconnect} ->
-            %% XXX: I forget why I needed this...
-            ?LOG_WARNING("~p received disconnect", [self()]),
-            shutdown(Sock),
-            M = write_stream,
-            loop(Sock, M, M:new([Stream]));
         {make_tunnel,HostInfo} ->
             %%?DBG("loop", [{msg,make_tunnel},{hostinfo,HostInfo}]),
             send(Sock, Stream:encode({status,http_ok})),
@@ -126,8 +121,9 @@ shutdown({tcp,Sock}) ->
 shutdown({ssl,Sock}) ->
     ssl:shutdown(Sock, write).
 
-fail(Sock, M, _State, Error) ->
-    send(Sock, M:encode(Error)).
+fail(Sock, M, _State, Reason) ->
+    send(Sock, M:encode({error,Reason})),
+    exit(Reason).
 
 mitm(TcpSock, Host) ->
     case inet:setopts(TcpSock, [{active,false}]) of
@@ -161,6 +157,7 @@ tunnel({tcp,TcpSock}, {https,Host,443}) ->
         {ok,TlsSock}
     catch
         {error,Rsn} = Err ->
-            ?LOG_ERROR("~p failed to create MITM tunnel to ~s: ~p", [self(), Host, Rsn]),
+            ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(),
+                                                                      Host, Rsn]),
             Err
     end.

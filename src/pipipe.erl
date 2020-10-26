@@ -1,6 +1,6 @@
 -module(pipipe).
 
--export([new/0, is_empty/1, push/2, pop/1, append/3, close/2, reset/1]).
+-export([new/0, is_empty/1, values/1, push/2, pop/1, append/3, close/2, reset/1]).
 
 new() ->
     {[], dict:new()}.
@@ -10,6 +10,9 @@ is_empty({[],_}) ->
 
 is_empty(_) ->
     false.
+
+values({L,_}) ->
+    [X || {X,_} <- L].
 
 push(X, {L,D}) ->
     {L ++ [{X,wait}], dict:store(X, [], D)}.

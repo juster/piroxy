@@ -53,12 +53,12 @@ handle_event({make_request,Req,HostInfo,Head}, {Spec,L,D0} = State) ->
 
 handle_event({cancel_request,Req}, {Spec,L,D0}) ->
     {Head,D} = dict:take(Req,D0),
-    log(cancel, Req, Head),
+    log(cancel, Req, format_head(Head)),
     {ok, {Spec,L,D}};
 
 handle_event({fail_request,Req}, {Spec,L,D0}) ->
     {Head,D} = dict:take(Req,D0),
-    log(fail, Req, Head),
+    log(fail, Req, format_head(Head)),
     {ok, {Spec,L,D}};
 
 handle_event({make_tunnel,Req,_}, {Spec,L,D0}) ->
@@ -111,7 +111,8 @@ handle_call(_, State) ->
 handle_info({check,Req}, {_,_,D} = State) ->
     case dict:find(Req,D) of
         {ok,Head} ->
-            ?LOG_INFO("PIWATCH: Long-running request ~p~n~p", [Req,Head]);
+            ?LOG_INFO("PIWATCH: Long-running request ~p~n~p",
+                      [Req,format_head(Head)]);
         error ->
             ok
     end,
@@ -122,3 +123,6 @@ handle_info(_, State) ->
 
 log(Flag, Req, Term) ->
     ?LOG_INFO("PIWATCH [~p] ~p~n~p", [Flag,Req,Term]).
+
+format_head(H) ->
+    {H#head.line, fieldlist:to_proplist(H#head.headers)}.

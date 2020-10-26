@@ -2,7 +2,7 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/3, stop/2, read/2, close/1, close/2, encode/1,
+-export([start_link/3, stop/1, stop/2, read/2, close/1, close/2, encode/1,
          replace_cb_state/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
@@ -12,6 +12,9 @@
 
 start_link(M, A, Opts) ->
     gen_statem:start_link(?MODULE, [M,A], Opts).
+
+stop(Pid) ->
+    gen_statem:stop(Pid).
 
 stop(Pid, Reason) ->
     gen_statem:stop(Pid, Reason, infinity).
@@ -70,7 +73,7 @@ handle_event(cast, {close,Reason}, _, {_,M,A}) ->
     end,
     {stop, {shutdown,Reason}};
 
-handle_event(cast, {data,<<>>}, eof, _) ->
+handle_event(cast, {data,<<>>}, _, _) ->
     keep_state_and_data;
 
 handle_event(cast, {data,empty}, _, _) ->
@@ -86,10 +89,15 @@ handle_event(cast, {data,Bin}, head, {Reader0,M,A0}) ->
         {continue,Reader} ->
             {keep_state,{Reader,M,A0}};
         {done,StatusLine,Headers,Rest} ->
-            {H,A} = M:head(StatusLine, Headers, A0),
-            Reader = pimsg:body_reader(H#head.bodylen),
-            {next_state,body,{Reader,M,A},
-             {next_event,cast,{data,Rest}}}
+            {H,A1} = M:head(StatusLine, Headers, A0),
+            case H#head.bodylen of
+                0 ->
+                    A2 = M:reset(A1),
+                    {next_state,eof, {null,M,A2}, {next_event,cast,{data,Rest}}};
+                _ ->
+                    Reader = pimsg:body_reader(H#head.bodylen),
+                    {next_state,body, {Reader,M,A1}, {next_event,cast,{data,Rest}}}
+            end
     end;
 
 handle_event(cast, {data,Bin1}, body, {Reader0,M,A0}) ->

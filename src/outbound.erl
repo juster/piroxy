@@ -47,10 +47,11 @@ start(Pid, Host, Port, true) ->
             start2(Pid, {ssl,Sock})
     end.
 
-start2(Pid, Sock) ->
-    {ok,Stm} = http11_res:start_link(Pid),
-    request_target:need_request(Pid),
-    loop(Pid, Sock, pipipe:new(), null, Stm).
+start2(TargetPid, Sock) ->
+    {ok,StatePid} = http11_res:start_link(TargetPid),
+    request_target:need_request(TargetPid),
+    loop(TargetPid, Sock, pipipe:new(), null, StatePid),
+    http11_res:stop(StatePid).
 
 loop(Pid, Sock, P0, Clock, Stm) ->
     receive
@@ -60,7 +61,8 @@ loop(Pid, Sock, P0, Clock, Stm) ->
                     %% sent from request_target
                     case send(Sock, http11_res:encode(Head)) of
                         ok ->
-                            request_target:need_request(Pid), % get ready to stream the next one
+                            %% get ready to stream the next one
+                            request_target:need_request(Pid),
                             http11_res:push(Stm, Req, Head),
                             P = pipipe:push(Req, P0),
                             loop_tick(Pid, Sock, P, Clock, Stm);
@@ -114,7 +116,7 @@ loop_tick(Pid, Sock, P, Clock, Stm) ->
     %%loop(Pid, Sock, P, clock_restart(Clock), Stm).
 
 stop(Pid, Sock, P, Clock, Stm, Reason) ->
-    ?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
+    %%?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
     http11_res:close(Pid, Reason),
     loop(Pid, Sock, P, Clock, Stm).
 
