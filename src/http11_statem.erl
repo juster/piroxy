@@ -60,14 +60,25 @@ encode({status,HttpStatus}) ->
 %%% BEHAVIOR CALLBACKS
 %%%
 
-callback_mode() -> [handle_event_function].
+callback_mode() -> [handle_event_function, state_enter].
 
 init([M,A,Ts]) ->
     {ok, eof, {null,M,A,Ts}}.
 
-handle_event(cast, empty, _, _) ->
-    keep_state_and_data;
+%% use enter events to choose between the idle timeout and active timeout
+handle_event(enter, _, eof, {_,_,_,{_,T2}}) ->
+    {keep_state_and_data,
+     {{timeout,http11},T2,[]}};
 
+handle_event(enter, _, _, {_,_,_,{T1,_}}) ->
+    {keep_state_and_data,
+     {{timeout,http11},T1,[]}};
+
+%% switch to the active timeout when http11_res sends data and expects a result
+handle_event(cast, start_active_timer, _, {_,_,_,{T1,_}}) ->
+    {keep_state_and_data, {{timeout,http11},T1,[]}};
+
+%% used by callback modules to replace their own state
 handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A,Ts}) ->
     {keep_state,{R,M,Fun(A),Ts}};
 
@@ -81,9 +92,6 @@ handle_event(cast, {close,Reason}, _, {_,M,A,_}) ->
     end,
     {stop, {shutdown,Reason}};
 
-handle_event(cast, countdown, _, {_,_,_,{T1,_}}) ->
-    {keep_state_and_data, {{timeout,http11},T1,[]}};
-
 handle_event({timeout,http11}, _, _, _) ->
     {stop, {shutdown,timeout}};
 
@@ -93,19 +101,17 @@ handle_event(cast, {data,<<>>}, _, _) ->
 handle_event(cast, {data,empty}, _, _) ->
     keep_state_and_data;
 
-handle_event(cast, {data,_}, eof, {_,M,A,{T1,_}=Ts}) ->
+handle_event(cast, {data,_}, eof, {_,M,A,Ts}) ->
     {next_state, head,
      {pimsg:head_reader(),M,A,Ts},
-     [postpone,
-      {{timeout,http11},T1,[]}]};
+     postpone};
 
-handle_event(cast, {data,Bin}, head, {Reader0,M,A0,{T1,T2}=Ts}) ->
+handle_event(cast, {data,Bin}, head, {Reader0,M,A0,Ts}) ->
     case pimsg:head_reader(Reader0, Bin) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,{Reader,M,A0,Ts},
-             {{timeout,http11},T1,[]}};
+            {keep_state,{Reader,M,A0,Ts}};
         {done,StatusLine,Headers,Rest} ->
             {H,A1} = M:head(StatusLine, Headers, A0),
             case H#head.bodylen of
@@ -113,28 +119,24 @@ handle_event(cast, {data,Bin}, head, {Reader0,M,A0,{T1,T2}=Ts}) ->
                     A2 = M:reset(A1),
                     {next_state,eof,
                      {null,M,A2,Ts},
-                     [{next_event,cast,{data,Rest}},
-                      {{timeout,http11},T2,[]}]};
+                     {next_event,cast,{data,Rest}}};
                 _ ->
                     Reader = pimsg:body_reader(H#head.bodylen),
                     {next_state,body,
                      {Reader,M,A1,Ts},
-                     [{next_event,cast,{data,Rest}},
-                      {{timeout,http11},T1,[]}]}
+                     {next_event,cast,{data,Rest}}}
             end
     end;
 
-handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,{T1,T2}=Ts}) ->
+handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,Ts}) ->
     case pimsg:body_reader(Reader0, Bin1) of
         {error,Reason} ->
             {stop, Reason};
         {continue,empty,Reader} ->
-            {keep_state,{Reader,M,A0,Ts},
-             {{timeout,http11},T1,[]}};
+            {keep_state,{Reader,M,A0,Ts}};
         {continue,Bin2,Reader} ->
             A = M:body(Bin2, A0),
-            {keep_state,{Reader,M,A,Ts},
-             {{timeout,http11},T1,[]}};
+            {keep_state,{Reader,M,A,Ts}};
         {done,Bin2,Rest} ->
             A1 = case Bin2 of
                      empty -> A0;
@@ -144,9 +146,9 @@ handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,{T1,T2}=Ts}) ->
                 connection_close ->
                     {stop, {shutdown,connection_close}};
                 A2 ->
-                    {next_state,eof,{null,M,A2,Ts},
-                     [{next_event,cast,{data,Rest}},
-                      {{timeout,http11},T2,[]}]}
+                    {next_state,eof,
+                     {null,M,A2,Ts},
+                     {next_event,cast,{data,Rest}}}
             end
     end.
 

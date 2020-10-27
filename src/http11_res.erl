@@ -4,7 +4,8 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 
--export([start_link/1, stop/1, stop/2, read/2, encode/1, push/3, close/2]).
+-export([start_link/1, stop/1, stop/2, read/2, encode/1, push/3, close/2,
+         activate/1]).
 -export([head/3, body/2, reset/1]).
 
 start_link(RequestTargetPid) ->
@@ -31,6 +32,9 @@ push(Pid, Req, ReqHead) ->
 
 close(Pid, Reason) ->
     http11_statem:close(Pid, Reason).
+
+activate(Pid) ->
+    gen_statem:cast(Pid, start_active_timer).
 
 %%%
 %%% CALLBACK FUNCTIONS

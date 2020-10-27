@@ -62,6 +62,7 @@ loop(Pid, Sock, P0, Stm) ->
                     case send(Sock, http11_res:encode(Head)) of
                         ok ->
                             %% get ready to stream the next one
+                            http11_res:activate(Stm),
                             request_target:need_request(Pid),
                             http11_res:push(Stm, Req, Head),
                             P = pipipe:push(Req, P0),
