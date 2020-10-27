@@ -161,8 +161,9 @@ error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
 
-%% from pimsg:body_length/1
+%% from pimsg:body_length/1 and http11_res:body_length/3
 error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
+error_statusln({missing_length,_,_}) -> error_statusln(http_bad_request);
 
 error_statusln(Reason) ->
     case phttp:status_bin(Reason) of

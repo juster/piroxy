@@ -87,7 +87,7 @@ body_length(StatusLn, Headers, ReqH) ->
     case response_length(Method, StatusLn, Headers) of
         {ok,0} -> 0;
         {ok,BodyLen} -> BodyLen;
-        {error,missing_length} ->
+        {error,{missing_length,_}} ->
             exit({missing_length,StatusLn,Headers})
     end.
 
@@ -103,8 +103,12 @@ response_length(Method, Line, Headers) ->
     response_length_(Method, response_code(Line), Headers).
 
 response_code(StatusLn) ->
-    {ok,[_,Status,_]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    Status.
+    case phttp:nsplit(3, StatusLn, <<" ">>) of
+        {ok,[_,Status,_]} ->
+            Status;
+        {error,Reason} ->
+            error(Reason)
+    end.
 
 %%% TODO: improve this and verify that it works properly
 closed(Headers) ->
