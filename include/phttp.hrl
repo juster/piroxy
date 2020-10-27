@@ -1,4 +1,6 @@
 -define(EMPTY, empty).
+-define(CR, 8#15).
+-define(LF, 8#12).
 -define(CRLF, 8#15, 8#12).
 -define(SP, " ").
 -define(HTAB, "\t").

@@ -98,6 +98,8 @@ chunk(State, Bin) -> chunk(State, Bin, []).
 %%  {inside,I,N}
 %%    We are inside a chunk and have not read the entire thing.
 %%
+chunk({between,_}=S, ?EMPTY, L) ->
+    {continue, reverse(L), S};
 chunk({between,Bin1}, Bin2, L) ->
     case chunk_size(Bin1, Bin2) of
         {error,_} = Err ->
@@ -107,7 +109,7 @@ chunk({between,Bin1}, Bin2, L) ->
         {ok,0,Line,Rest} ->
             %% The last chunk should have size zero (0) and have an empty
             %% line immediately after the size line.
-            chunk(end_crlf, Rest, [Line|L]);
+            chunk({end_crlf,?EMPTY}, Rest, [Line|L]);
         {ok,Size,Line,Rest} ->
             chunk({inside,0,Size}, Rest, [Line|L])
     end;
@@ -119,25 +121,43 @@ chunk({inside,I1,N}, Bin1, L) ->
         {continue,Bin2,{I2,N}} ->
             {continue, reverse([Bin2|L]), {inside,I2,N}};
         {done,Bin2,Bin3} ->
-            chunk(trailing_crlf, Bin3, [Bin2|L])
+            chunk({trailing_crlf,?EMPTY}, Bin3, [Bin2|L])
     end;
 
-chunk(trailing_crlf, <<?CRLF>>, L) ->
-    {continue, reverse([<<?CRLF>>|L]), {between,?EMPTY}};
-chunk(trailing_crlf, <<?CRLF,Bin1/binary>>, L) ->
-    chunk({between,?EMPTY}, Bin1, [<<?CRLF>>|L]);
-chunk(trailing_crlf, ?EMPTY, L) ->
-    {continue, reverse(L), trailing_crlf};
-chunk(trailing_crlf, Bin, _L) ->
-    {error,{expected_crlf,Bin}};
+chunk({trailing_crlf,Bin1}, Bin2, L) ->
+    case newline(Bin1, Bin2) of
+        {continue,Bin3} ->
+            {continue, reverse(L), {trailing_crlf,Bin3}};
+        {done,Newline,Bin3} ->
+            chunk({between,?EMPTY}, Bin3, [Newline|L]);
+        {error,_} = Err ->
+            Err
+    end;
 
-chunk(end_crlf, <<?CRLF>>, L) ->
-    {done,reverse([<<?CRLF>>|L]),?EMPTY};
-chunk(end_crlf, <<?CRLF,Rest/binary>>, L) ->
-    {done,reverse([<<?CRLF>>|L]),Rest};
-chunk(end_crlf, ?EMPTY, L) ->
-    {continue, reverse(L), end_crlf};
-chunk(end_crlf, _, _L) ->
+chunk({end_crlf,Bin1}, Bin2, L) ->
+    case newline(Bin1, Bin2) of
+        {continue,Bin3} ->
+            {continue, reverse(L), {end_crlf,Bin3}};
+        {done,Newline,Bin3} ->
+            {done, reverse([Newline|L]), Bin3};
+        {error,_} = Err ->
+            Err
+    end.
+
+newline(?EMPTY, ?EMPTY) ->
+    {continue,?EMPTY};
+newline(?EMPTY, <<?CRLF>>) ->
+    {done,<<?CRLF>>,?EMPTY};
+newline(?EMPTY, <<?CRLF,Bin2/binary>>) ->
+    {done,<<?CRLF>>,Bin2};
+newline(?EMPTY, (<<?CR>>)=Bin2) ->
+    {continue,Bin2};
+newline(<<?CR>>, <<?LF>>) ->
+    {done,<<?CRLF>>,?EMPTY};
+newline(<<?CR>>, <<?LF,Bin2/binary>>) ->
+    {done,<<?CRLF>>,Bin2};
+newline(Bin1, Bin2) ->
+    io:format("*DBG* ~p~n", [[{bin1,Bin1},{bin2,Bin2}]]),
     {error,expected_crlf}.
 
 chunk_size(Bin1, Bin2) ->
@@ -165,7 +185,6 @@ chunk_size(Bin1, Bin2) ->
 %% Returns the initial state of the reader.
 body_reader(chunked) ->
     {chunked,{between,?EMPTY}};
-    %%{chunked,trailing_crlf};
 
 body_reader(ContentLength) when is_integer(ContentLength) ->
     {fixed,{0,ContentLength}}.
@@ -173,7 +192,9 @@ body_reader(ContentLength) when is_integer(ContentLength) ->
 body_reader({chunked,State0}, Bin) ->
     case chunk(State0, Bin) of
         {continue,B,State} -> {continue,B,{chunked,State}};
-        T -> T
+        T ->
+            %%io:format("*DBG* [chunked] ~p~n", [T]),
+            T
     end;
 
 body_reader({fixed,State0}, Bin) ->
