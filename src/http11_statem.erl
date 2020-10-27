@@ -104,7 +104,7 @@ handle_event(cast, {data,Bin}, head, {Reader0,M,A0,{T1,T2}=Ts}) ->
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,{Reader,M,A0},
+            {keep_state,{Reader,M,A0,Ts},
              {{timeout,http11},T1,[]}};
         {done,StatusLine,Headers,Rest} ->
             {H,A1} = M:head(StatusLine, Headers, A0),
