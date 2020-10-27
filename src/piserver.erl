@@ -140,9 +140,14 @@ mitm(TcpSock, Host) ->
             {alpn_preferred_protocols,[<<"http/1.1">>]},
             {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
     %%inet:controlling_process(TcpSock, self()),
+    {ok,Timer} = timer:apply_after(?CONNECT_TIMEOUT, io, format, ["SSL handshake spoofing ~s timed out.", Host]),
     TlsSock = case ssl:handshake(TcpSock, Opts, ?CONNECT_TIMEOUT) of
-                  {error,_}=Err3 -> throw(Err3);
-                  {ok,X} -> X
+                  {error,_}=Err3 ->
+                      timer:cancel(Timer),
+                      throw(Err3);
+                  {ok,X} ->
+                      timer:cancel(Timer),
+                      X
               end,
     %% XXX: active does not always work when provided to handshake/2
     ssl:setopts(TlsSock, [{active,true}]),

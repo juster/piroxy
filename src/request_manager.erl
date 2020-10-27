@@ -5,7 +5,7 @@
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
--export([make_request/3, cancel_request/1, pending_requests/0]). % calls
+-export([make_request/3, cancel_request/1, pending_requests/0, targets/0]). % calls
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2]).
 
 %%%
@@ -20,6 +20,9 @@ cancel_request(Req) ->
 
 pending_requests() ->
     gen_server:call(?MODULE, pending_requests).
+
+targets() ->
+    gen_server:call(?MODULE, targets).
 
 %%%
 %%% BEHAVIOR CALLBACKS
@@ -57,7 +60,10 @@ handle_call(pending_requests, _From, State) ->
     L = [{Target, request_target:pending_requests(Pid)}
          || {Target,Pid} <- State],
     Reqs = lists:sort(lists:filter(Fun, L)),
-    {reply,Reqs,State}.
+    {reply,Reqs,State};
+
+handle_call(targets, _From, State) ->
+    {reply,State,State}.
 
 handle_info({'EXIT',Pid,_Reason}, L0) ->
     case keytake(Pid, 2, L0) of

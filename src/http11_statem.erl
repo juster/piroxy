@@ -2,8 +2,8 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/3, stop/1, stop/2, read/2, close/1, close/2, encode/1,
-         replace_cb_state/2]).
+-export([start_link/3, start_link/4, stop/1, stop/2, read/2, close/1, close/2,
+         encode/1, replace_cb_state/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
@@ -11,7 +11,15 @@
 %%%
 
 start_link(M, A, Opts) ->
-    gen_statem:start_link(?MODULE, [M,A], Opts).
+    start_link(M, A, {infinity,infinity}, Opts).
+
+%% Arguments:
+%% 1. Callback module
+%% 2. Callback extra args (state)
+%% 3. Timeouts: {active timeout, idle timeout}
+%% 4. gen_statem options
+start_link(M, A, {_,_}=Timeouts, Opts) ->
+    gen_statem:start_link(?MODULE, [M,A,Timeouts], Opts).
 
 stop(Pid) ->
     gen_statem:stop(Pid).
@@ -54,17 +62,17 @@ encode({status,HttpStatus}) ->
 
 callback_mode() -> [handle_event_function].
 
-init([M,A]) ->
-    {ok, eof, {null,M,A}}.
+init([M,A,Ts]) ->
+    {ok, eof, {null,M,A,Ts}}.
 
 handle_event(cast, empty, _, _) ->
     keep_state_and_data;
 
-handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A}) ->
-    {keep_state,{R,M,Fun(A)}};
+handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A,Ts}) ->
+    {keep_state,{R,M,Fun(A),Ts}};
 
 %% used to stop the process, without bypassing the messages in the queue
-handle_event(cast, {close,Reason}, _, {_,M,A}) ->
+handle_event(cast, {close,Reason}, _, {_,M,A,_}) ->
     case erlang:function_exported(M, terminate, 2) of
         true ->
             M:terminate(Reason, A);
@@ -73,42 +81,60 @@ handle_event(cast, {close,Reason}, _, {_,M,A}) ->
     end,
     {stop, {shutdown,Reason}};
 
+handle_event(cast, countdown, _, {_,_,_,{T1,_}}) ->
+    {keep_state_and_data, {{timeout,http11},T1,[]}};
+
+handle_event({timeout,http11}, _, _, _) ->
+    {stop, {shutdown,timeout}};
+
 handle_event(cast, {data,<<>>}, _, _) ->
     keep_state_and_data;
 
 handle_event(cast, {data,empty}, _, _) ->
     keep_state_and_data;
 
-handle_event(cast, {data,_}, eof, {_,M,A}) ->
-    {next_state, head, {pimsg:head_reader(),M,A}, postpone};
+handle_event(cast, {data,_}, eof, {_,M,A,{T1,_}=Ts}) ->
+    {next_state, head,
+     {pimsg:head_reader(),M,A,Ts},
+     [postpone,
+      {{timeout,http11},T1,[]}]};
 
-handle_event(cast, {data,Bin}, head, {Reader0,M,A0}) ->
+handle_event(cast, {data,Bin}, head, {Reader0,M,A0,{T1,T2}=Ts}) ->
     case pimsg:head_reader(Reader0, Bin) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,{Reader,M,A0}};
+            {keep_state,{Reader,M,A0},
+             {{timeout,http11},T1,[]}};
         {done,StatusLine,Headers,Rest} ->
             {H,A1} = M:head(StatusLine, Headers, A0),
             case H#head.bodylen of
                 0 ->
                     A2 = M:reset(A1),
-                    {next_state,eof, {null,M,A2}, {next_event,cast,{data,Rest}}};
+                    {next_state,eof,
+                     {null,M,A2,Ts},
+                     [{next_event,cast,{data,Rest}},
+                      {{timeout,http11},T2,[]}]};
                 _ ->
                     Reader = pimsg:body_reader(H#head.bodylen),
-                    {next_state,body, {Reader,M,A1}, {next_event,cast,{data,Rest}}}
+                    {next_state,body,
+                     {Reader,M,A1,Ts},
+                     [{next_event,cast,{data,Rest}},
+                      {{timeout,http11},T1,[]}]}
             end
     end;
 
-handle_event(cast, {data,Bin1}, body, {Reader0,M,A0}) ->
+handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,{T1,T2}=Ts}) ->
     case pimsg:body_reader(Reader0, Bin1) of
         {error,Reason} ->
             {stop, Reason};
         {continue,empty,Reader} ->
-            {keep_state,{Reader,M,A0}};
+            {keep_state,{Reader,M,A0,Ts},
+             {{timeout,http11},T1,[]}};
         {continue,Bin2,Reader} ->
             A = M:body(Bin2, A0),
-            {keep_state,{Reader,M,A}};
+            {keep_state,{Reader,M,A,Ts},
+             {{timeout,http11},T1,[]}};
         {done,Bin2,Rest} ->
             A1 = case Bin2 of
                      empty -> A0;
@@ -118,8 +144,9 @@ handle_event(cast, {data,Bin1}, body, {Reader0,M,A0}) ->
                 connection_close ->
                     {stop, {shutdown,connection_close}};
                 A2 ->
-                    {next_state,eof,{null,M,A2},
-                     {next_event,cast,{data,Rest}}}
+                    {next_state,eof,{null,M,A2,Ts},
+                     [{next_event,cast,{data,Rest}},
+                      {{timeout,http11},T2,[]}]}
             end
     end.
 

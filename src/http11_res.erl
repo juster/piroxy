@@ -8,7 +8,8 @@
 -export([head/3, body/2, reset/1]).
 
 start_link(RequestTargetPid) ->
-    http11_statem:start_link(?MODULE, {false,[],RequestTargetPid}, []).
+    http11_statem:start_link(?MODULE, {false,[],RequestTargetPid},
+                             {?RESPONSE_TIMEOUT, 60000}, []).
 
 stop(Pid) ->
     http11_statem:stop(Pid).

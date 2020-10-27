@@ -50,10 +50,10 @@ start(Pid, Host, Port, true) ->
 start2(TargetPid, Sock) ->
     {ok,StatePid} = http11_res:start_link(TargetPid),
     request_target:need_request(TargetPid),
-    loop(TargetPid, Sock, pipipe:new(), null, StatePid),
+    loop(TargetPid, Sock, pipipe:new(), StatePid),
     http11_res:stop(StatePid).
 
-loop(Pid, Sock, P0, Clock, Stm) ->
+loop(Pid, Sock, P0, Stm) ->
     receive
         Any ->
             case Any of
@@ -65,90 +65,53 @@ loop(Pid, Sock, P0, Clock, Stm) ->
                             request_target:need_request(Pid),
                             http11_res:push(Stm, Req, Head),
                             P = pipipe:push(Req, P0),
-                            loop_tick(Pid, Sock, P, Clock, Stm);
+                            loop_tick(Pid, Sock, P, Stm);
                         closed ->
-                            stop(Pid, Sock, P0, Clock, Stm, closed)
+                            stop(Pid, Sock, P0, Stm, closed)
                     end;
                 {body,Req,done} ->
                     P = flush(Pid, Sock, pipipe:close(Req, P0)),
-                    %%Clock1 = case pipipe:is_empty(P) of
-                    %%             true -> clock_stop(Clock);
-                    %%             false -> clock_restart(Clock)
-                    %%         end,
-                    loop(Pid, Sock, P, Clock, Stm);
+                    loop(Pid, Sock, P, Stm);
                 {body,Req,Body} ->
                     P = pipipe:append(Req, Body, P0),
-                    loop_tick(Pid, Sock, P, Clock, Stm);
+                    loop_tick(Pid, Sock, P, Stm);
                 {tcp, _, <<>>} ->
-                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                    loop_tick(Pid, Sock, P0, Stm);
                 {tcp, _Sock, Data} ->
                     %%?DBG("tcp/read", [{res_pid,Stm},{data,Data}]),
                     http11_res:read(Stm, Data),
-                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                    loop_tick(Pid, Sock, P0, Stm);
                 {ssl, _, <<>>} ->
-                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                    loop_tick(Pid, Sock, P0, Stm);
                 {ssl, _Sock, Data} ->
                     %%?DBG("ssl/read", [{res_pid,Stm},{data,Data}]),
                     http11_res:read(Stm, Data),
-                    loop_tick(Pid, Sock, P0, Clock, Stm);
+                    loop_tick(Pid, Sock, P0, Stm);
                 {tcp_closed,_} -> % closed must be placed after {tcp,_,_}
-                    stop(Pid, Sock, P0, Clock, Stm, closed),
-                    loop(Pid, Sock, P0, Clock, Stm);
+                    stop(Pid, Sock, P0, Stm, closed),
+                    loop(Pid, Sock, P0, Stm);
                 {ssl_closed,_} ->
-                    stop(Pid, Sock, P0, Clock, Stm, closed),
-                    loop(Pid, Sock, P0, Clock, Stm);
+                    stop(Pid, Sock, P0, Stm, closed),
+                    loop(Pid, Sock, P0, Stm);
                 {tcp_error,Reason} ->
                     ?DBG("loop", [{tcp_error,Reason}]),
-                    stop(Pid, Sock, P0, Clock, Stm, Reason);
+                    stop(Pid, Sock, P0, Stm, Reason);
                 {ssl_error,Reason} ->
                     ?DBG("loop", [{ssl_error,Reason}]),
-                    stop(Pid, Sock, P0, Clock, Stm, Reason);
-                heartbeat ->
-                    clock_check(Clock), % does exit(timeout) if a timeout occurs
-                    loop(Pid, Sock, P0, Clock, Stm);
+                    stop(Pid, Sock, P0, Stm, Reason);
                 _ ->
                     exit({unknown_msg,Any})
             end
     end.
 
-loop_tick(Pid, Sock, P, Clock, Stm) ->
-    loop(Pid, Sock, P, Clock, Stm).
+loop_tick(Pid, Sock, P, Stm) ->
+    loop(Pid, Sock, P, Stm).
     %%loop(Pid, Sock, P, clock_restart(Clock), Stm).
 
-stop(Pid, Sock, P, Clock, Stm, Reason) ->
+stop(Pid, Sock, P, Stm, Reason) ->
     %%?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
     http11_res:close(Pid, Reason),
-    loop(Pid, Sock, P, Clock, Stm).
-
-%%% Keep a timer to check if we have timed-out on sending/receiving requests.
-
-clock_restart(null) ->
-    {ok,Timer} = timer:send_interval(100, heartbeat),
-    {system_time(),Timer};
-
-clock_restart({_,Timer}) ->
-    {system_time(),Timer}.
-
-clock_stop({_,Timer}) ->
-    case timer:cancel(Timer) of
-        {ok,cancel} ->
-            null;
-        {error,Rsn} ->
-            error(Rsn)
-    end.
-
-clock_check(null) ->
-    ok;
-
-clock_check({LastRecv,_}) ->
-    Delta = convert_time_unit(system_time() - LastRecv,
-                              native, millisecond),
-    if
-        Delta > ?REQUEST_TIMEOUT ->
-            exit(timeout);
-        true ->
-            ok
-    end.
+    loop(Pid, Sock, P, Stm).
 
 %%% sending data over sockets
 %%%

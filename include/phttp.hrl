@@ -21,6 +21,7 @@
 
 %% outbound default request timeout
 -define(REQUEST_TIMEOUT, 15000).
+-define(RESPONSE_TIMEOUT, 500).
 -define(CONNECT_TIMEOUT, 15000).
 
 -define(DBG(Fname, T), io:format("*DBG* ~p {~s} [~s]~n***** ~p~n", [self(),?MODULE,Fname,T])).

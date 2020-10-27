@@ -13,6 +13,9 @@
 
 %%% called by request_handler
 
+%%start_link({https,<<"www.redditstatic.com">>,443} = HostInfo) ->
+%%    gen_server:start_link(?MODULE, [HostInfo], [{debug,[trace]}]);
+
 start_link(HostInfo) ->
     gen_server:start_link(?MODULE, [HostInfo], []).
 
@@ -40,8 +43,8 @@ init([HostInfo]) ->
     {ok,_Pid} = outbound:start_link(HostInfo),
     %% State: {[{Req,Head}], [{Req,Head,Pid}], [WaitingPids],
     %%         {Nprocs,MaxProcs,Nfails,Nrestarts}, HostInfo}
-    {ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000,
-                                 nrestarts_reset),
+    %%{ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000,
+    %%                             nrestarts_reset),
     {ok, #state{stats={1,1,0,0}, hostinfo=HostInfo}}.
 
 terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
@@ -86,7 +89,7 @@ handle_cast({make_request,Req,Head}, S0) ->
 
 handle_cast({cancel_request,Req}, S) ->
     %% this will also execute if no such Req exists in either list
-    Ltodo = lists:delete(Req, S#state.todo),
+    Ltodo = lists:keydelete(Req, 1, S#state.todo),
     case lists:keyfind(Req, 1, S#state.sent) of
         false ->
             {noreply, S#state{todo=Ltodo}};
@@ -183,20 +186,24 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                 true ->
                     Nfail0
             end,
-    ?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
-                         {reason,Reason},{nproc,Nproc},{nmax,Nmax},
-                         {nfail,Nfail},{nrestarts,Nrestarts}]),
+    %%?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
+    %%                     {reason,Reason},{nproc,Nproc},{nmax,Nmax},
+    %%                     {nfail,Nfail},{nrestarts,Nrestarts}]),
     if
-        Failure, Nrestarts > ?TARGET_RESTART_INTENSITY ->
-            {stop,Reason,S0};
+        %%Failure, Nrestarts > ?TARGET_RESTART_INTENSITY ->
+        %%    {stop,Reason,S0};
         Failure, Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
             {stop,Reason,S0};
         Nproc =< Nmax, S2#state.todo =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone over limit
             %% AND we actually have more pending requests
-            {ok,_} = outbound:start_link(S2#state.hostinfo),
+            {ok,OutPid} = outbound:start_link(S2#state.hostinfo),
             S3 = S2#state{stats={Nproc,Nmax,Nfail,Nrestarts+1}},
+            ?DBG("handle_info", [{pid,OutPid},
+                                 {todo,[{Req,H#head.line}
+                                        || {Req,H} <- S3#state.todo]},
+                                 {stats,{Nproc,Nmax,Nfail,Nrestarts+1}}]),
             {noreply,S3,{continue,check_waitlist}};
         S2#state.todo == [], S2#state.sent == [] ->
             %% cleanup if there are no more requests needed

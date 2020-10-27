@@ -10,7 +10,8 @@
 
 %%% Callback state: {RequestCounter,DefaultHostInfo,ServerPid}
 start_link() ->
-    http11_statem:start_link(?MODULE, {0,null,self()}, []).
+    http11_statem:start_link(?MODULE, {0,null,self()},
+                             {?REQUEST_TIMEOUT,infinity}, []).
 
 stop(Pid) ->
     http11_statem:stop(Pid).
