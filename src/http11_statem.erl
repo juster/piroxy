@@ -154,14 +154,19 @@ handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,Ts}) ->
 
 error_statusln(host_mismatch) -> error_statusln(http_bad_request);
 error_statusln(host_missing) -> error_statusln(http_bad_request);
+error_statusln(uri_too_long) -> error_statusln(http_uri_too_long);
 error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
 
-%% from pimsg:body_length/1 and http11_res:body_length/3
+%% from pimsg:body_length/1
 error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
-error_statusln({missing_length,_,_}) -> error_statusln(http_bad_request);
+
+%% from http11_res
+error_statusln({shutdown,timeout}) -> error_statusln(http_gateway_timeout);
+%% http11_res:body_length/3
+error_statusln({missing_length,_,_}) -> error_statusln(http_bad_gateway);
 
 error_statusln(Reason) ->
     case phttp:status_bin(Reason) of

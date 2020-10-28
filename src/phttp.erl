@@ -113,6 +113,7 @@ version_atom(_) -> unknown.
 
 status_bin(http_ok) -> {ok,<<"200 OK">>};
 status_bin(http_bad_request) -> {ok,<<"400 Bad Request">>};
+status_bin(http_uri_too_long) -> {ok,<<"414 URI Too Long">>};
 status_bin(http_server_error) -> {ok,<<"500 Server Error">>};
 status_bin(http_not_implemented) -> {ok,<<"501 Not Implemented">>};
 status_bin(http_bad_gateway) -> {ok,<<"502 Bad Gateway">>};

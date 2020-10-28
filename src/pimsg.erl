@@ -32,7 +32,8 @@ head_reader() -> {start,0,?EMPTY}.
 
 head_reader({start,N,Bin1}, Bin2) ->
     case next_line(Bin1, Bin2, ?HEADLN_MAX) of
-        {error,_} = T -> T;
+        {error,line_too_long} ->
+            {error,http_uri_too_long};
         {skip,Bin3} ->
             {continue, {start, track_header(N, Bin3), Bin3}};
         {ok,Line,Bin3} ->
