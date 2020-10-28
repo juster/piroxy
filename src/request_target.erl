@@ -186,6 +186,7 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                 true ->
                     Nfail0
             end,
+    ?DBG("handle_info", [{reason,Reason},{failure,Failure}]),
     %%?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
     %%                     {reason,Reason},{nproc,Nproc},{nmax,Nmax},
     %%                     {nfail,Nfail},{nrestarts,Nrestarts}]),
@@ -195,6 +196,9 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
         Failure, Nfail >= ?TARGET_FAIL_MAX ->
             %% terminate will notify the requests of failure
             {stop,Reason,S0};
+        S2#state.todo == [], S2#state.sent == [] ->
+            %% cleanup if there are no more requests needed and/or active
+            {stop,shutdown,S0};
         Nproc =< Nmax, S2#state.todo =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone over limit
             %% AND we actually have more pending requests
@@ -205,9 +209,6 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                                         || {Req,H} <- S3#state.todo]},
                                  {stats,{Nproc,Nmax,Nfail,Nrestarts+1}}]),
             {noreply,S3,{continue,check_waitlist}};
-        S2#state.todo == [], S2#state.sent == [] ->
-            %% cleanup if there are no more requests needed
-            {stop,shutdown,S0};
         true ->
             S3 = S2#state{stats={Nproc-1,Nmax,Nfail,Nrestarts}},
             {noreply,S3,{continue,check_waitlist}}
