@@ -140,7 +140,7 @@ handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,Ts}) ->
                  end,
             case M:reset(A1) of
                 connection_close ->
-                    {stop, {shutdown,connection_close}};
+                    {stop, {shutdown,closed}};
                 A2 ->
                     {next_state,eof,
                      {null,M,A2,Ts},

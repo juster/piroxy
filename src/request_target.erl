@@ -13,9 +13,6 @@
 
 %%% called by request_handler
 
-%%start_link({https,<<"www.redditstatic.com">>,443} = HostInfo) ->
-%%    gen_server:start_link(?MODULE, [HostInfo], [{debug,[trace]}]);
-
 start_link(HostInfo) ->
     gen_server:start_link(?MODULE, [HostInfo], []).
 
@@ -41,10 +38,6 @@ pending_requests(Pid) ->
 init([HostInfo]) ->
     process_flag(trap_exit, true),
     {ok,_Pid} = outbound:start_link(HostInfo),
-    %% State: {[{Req,Head}], [{Req,Head,Pid}], [WaitingPids],
-    %%         {Nprocs,MaxProcs,Nfails,Nrestarts}, HostInfo}
-    %%{ok,_} = timer:send_interval(?TARGET_RESTART_PERIOD * 1000,
-    %%                             nrestarts_reset),
     {ok, #state{stats={1,1,0,0}, hostinfo=HostInfo}}.
 
 terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
@@ -72,7 +65,7 @@ handle_cast({make_request,Req,Head}, S0) ->
             {noreply,S2};
         [] ->
             %% store the request in the todo list and perhaps spawn a new proc
-            {Nproc,Nmax,Nfail,Nrestarts} = S0#state.stats,
+            {Nproc,Nmax,Nfail,Nsuccess} = S0#state.stats,
             Ltodo = S0#state.todo ++ [{Req,Head}],
             S1 = S0#state{todo=Ltodo},
             if
@@ -82,7 +75,7 @@ handle_cast({make_request,Req,Head}, S0) ->
                 true ->
                     %% spawn a new proc
                     {ok,_Pid} = outbound:start_link(S1#state.hostinfo),
-                    S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nrestarts}},
+                    S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nsuccess}},
                     {noreply,S2}
             end
     end;
@@ -127,15 +120,16 @@ handle_cast({request_done,Req}, S0) ->
     S1 = S0#state{sent=Lsent},
     morgue:forget(Req),
     %% Increase the number of max possible workers until we reach hard limit.
-    {Nproc,Nmax,Nfail,Nrestarts} = S1#state.stats,
+    {Nproc,Nmax,Nfail,Nsuccess} = S1#state.stats,
+    S2 = S1#state{stats={Nproc,Nmax,Nfail,Nsuccess+1}},
     if
         Nproc >= Nmax ->
             %% We already hit the ceiling.
-            {noreply,S1};
+            {noreply,S2};
         true ->
             {ok,_} = outbound:start_link(S1#state.hostinfo),
-            S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nrestarts}},
-            {noreply,S2}
+            S3 = S2#state{stats={Nproc+1,Nmax,Nfail,Nsuccess}},
+            {noreply,S3}
     end;
 
 %%% Called when outbound cannot make a request work.
@@ -167,18 +161,13 @@ handle_continue(check_waitlist, S0) ->
             {noreply,S3}
     end.
 
-handle_info(nrestarts_reset, S) ->
-    Stats0 = S#state.stats,
-    Stats = setelement(4,Stats0,0),
-    {noreply, S#state{stats=Stats}};
-
 %% Unexpected errors in outbound process causes a target error.
 handle_info({'EXIT',Pid,Reason}, S0) ->
     Lwait = lists:delete(Pid, S0#state.waitlist),
-    {Nproc,Nmax,Nfail0,Nrestarts} = S0#state.stats,
+    {Nproc,Nmax,Nfail0,Nsuccess} = S0#state.stats,
     S1 = S0#state{waitlist=Lwait},
     S2 = redo(Pid, S1),
-    Failure = is_failure(Reason),
+    Failure = is_failure(Reason, S2),
     %% Normal errors do not cause a target error.
     Nfail = if
                 Failure ->
@@ -189,37 +178,37 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
     ?DBG("handle_info", [{reason,Reason},{failure,Failure}]),
     %%?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
     %%                     {reason,Reason},{nproc,Nproc},{nmax,Nmax},
-    %%                     {nfail,Nfail},{nrestarts,Nrestarts}]),
+    %%                     {nfail,Nfail},{nrestarts,Nsuccess}]),
     if
-        %%Failure, Nrestarts > ?TARGET_RESTART_INTENSITY ->
-        %%    {stop,Reason,S0};
         Failure, Nfail >= ?TARGET_FAIL_MAX ->
-            %% terminate will notify the requests of failure
+            %% terminate/2 will notify the requests of failure
             {stop,Reason,S0};
         S2#state.todo == [], S2#state.sent == [] ->
             %% cleanup if there are no more requests needed and/or active
             {stop,shutdown,S0};
         Nproc =< Nmax, S2#state.todo =/= [] ->
-            %% reconnect new target proc if we haven't (somehow) gone over limit
-            %% AND we actually have more pending requests
+            %% reconnect new target proc if we haven't (somehow) gone
+            %% over limit AND we actually have more pending requests
             {ok,OutPid} = outbound:start_link(S2#state.hostinfo),
-            S3 = S2#state{stats={Nproc,Nmax,Nfail,Nrestarts+1}},
+            S3 = S2#state{stats={Nproc,Nmax,Nfail,Nsuccess}},
             ?DBG("handle_info", [{pid,OutPid},
                                  {todo,[{Req,H#head.line}
                                         || {Req,H} <- S3#state.todo]},
-                                 {stats,{Nproc,Nmax,Nfail,Nrestarts+1}}]),
+                                 {stats,{Nproc,Nmax,Nfail,Nsuccess}}]),
             {noreply,S3,{continue,check_waitlist}};
         true ->
-            S3 = S2#state{stats={Nproc-1,Nmax,Nfail,Nrestarts}},
+            S3 = S2#state{stats={Nproc-1,Nmax,Nfail,Nsuccess}},
             {noreply,S3,{continue,check_waitlist}}
     end;
 
 handle_info(_, S) ->
     {noreply,S}.
 
-is_failure({shutdown,closed}) -> false;
-is_failure(cancelled) -> false;
-is_failure(_) -> true.
+%% Being closed before any successful request/response is a fail.
+is_failure({shutdown,closed}, #state{stats={_,_,_,0}}) -> true;
+is_failure({shutdown,closed}, _) -> false;
+is_failure(cancelled, _) -> false;
+is_failure(_, _) -> true.
 
 keywipe(K, I, L0) ->
     keywipe(K, I, L0, []).

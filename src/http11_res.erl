@@ -58,11 +58,11 @@ body(Chunk, {_,Q,_} = State) ->
     pievents:respond(Req, {body,Chunk}),
     State.
 
-%%% reset/1 is called by http11_stream
+%%% reset/1 is called by http11_statem
 
 reset({true,Q,RTPid}) ->
     %% The last response requested that we close the connection.
-    {Req,H} = hd(Q),
+    {Req,_H} = hd(Q),
     %%?DBG("reset", [{disconnect,true},{req,Req},{line,H#head.line}]),
     request_target:request_done(RTPid, Req),
     pievents:close_response(Req),
@@ -72,7 +72,7 @@ reset({true,Q,RTPid}) ->
     exit({shutdown,closed});
 
 reset({false,Q,RTPid}) ->
-    {Req,H} = hd(Q),
+    {Req,_H} = hd(Q),
     %%?DBG("reset", [{disconnect,false},{req,Req},{line,H#head.line}]),
     request_target:request_done(RTPid, Req),
     pievents:close_response(Req),
