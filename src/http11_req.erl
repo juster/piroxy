@@ -14,7 +14,7 @@ start_link() ->
                              {?REQUEST_TIMEOUT,infinity}, []).
 
 stop(Pid) ->
-    http11_statem:stop(Pid).
+    gen_statem:stop(Pid).
 
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).

@@ -14,7 +14,7 @@
 -define(CHUNKSZ_MAX, 16384).
 
 %% request_manager fail count limits
--define(TARGET_FAIL_MAX, 2).
+-define(TARGET_FAIL_MAX, 5).
 -define(REQUEST_FAIL_MAX, 5).
 
 -define(TARGET_PROC_MAX, 1).

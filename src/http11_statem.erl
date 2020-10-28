@@ -2,8 +2,8 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/3, start_link/4, stop/1, stop/2, read/2, close/1, close/2,
-         encode/1, replace_cb_state/2]).
+-export([start_link/3, start_link/4, read/2, encode/1,
+         replace_cb_state/2]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
@@ -21,23 +21,11 @@ start_link(M, A, Opts) ->
 start_link(M, A, {_,_}=Timeouts, Opts) ->
     gen_statem:start_link(?MODULE, [M,A,Timeouts], Opts).
 
-stop(Pid) ->
-    gen_statem:stop(Pid).
-
-stop(Pid, Reason) ->
-    gen_statem:stop(Pid, Reason, infinity).
-
 read(Pid, Bin) ->
     gen_statem:cast(Pid, {data,Bin}).
 
 replace_cb_state(Pid, Fun) ->
     gen_statem:cast(Pid, {replace_cb_state,Fun}).
-
-close(Pid) ->
-    close(Pid, normal).
-
-close(Pid, Reason) ->
-    gen_statem:cast(Pid, {close,Reason}).
 
 encode(#head{line=Line, headers=Headers}) ->
     [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
@@ -68,15 +56,19 @@ init([M,A,Ts]) ->
 %% use enter events to choose between the idle timeout and active timeout
 handle_event(enter, _, eof, {_,_,_,{_,T2}}) ->
     {keep_state_and_data,
-     {{timeout,http11},T2,[]}};
+     [{{timeout,idle},T2,[]},
+      {{timeout,active},cancel}]};
 
 handle_event(enter, _, _, {_,_,_,{T1,_}}) ->
     {keep_state_and_data,
-     {{timeout,http11},T1,[]}};
+     [{{timeout,idle},cancel},
+      {{timeout,active},T1,[]}]};
 
 %% switch to the active timeout when http11_res sends data and expects a result
 handle_event(cast, start_active_timer, _, {_,_,_,{T1,_}}) ->
-    {keep_state_and_data, {{timeout,http11},T1,[]}};
+    {keep_state_and_data,
+     [{{timeout,idle},cancel},
+      {{timeout,active},T1,[]}]};
 
 %% used by callback modules to replace their own state
 handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A,Ts}) ->
@@ -92,7 +84,11 @@ handle_event(cast, {close,Reason}, _, {_,M,A,_}) ->
     end,
     {stop, {shutdown,Reason}};
 
-handle_event({timeout,http11}, _, _, _) ->
+handle_event({timeout,idle}, _, _, _) ->
+    %% use the idle timeout to automatically close
+    {stop, {shutdown,closed}};
+
+handle_event({timeout,active}, _, _, _) ->
     {stop, {shutdown,timeout}};
 
 handle_event(cast, {data,<<>>}, _, _) ->

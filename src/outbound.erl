@@ -28,7 +28,7 @@ next_request(Pid, Req, Head) ->
 
 start(Pid, Host, Port, false) ->
     case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0},
-                                      {exit_on_close,false}],
+                                      {keepalive,true}],
                          ?CONNECT_TIMEOUT) of
         {error, Reason} ->
             exit(Reason);
@@ -38,7 +38,7 @@ start(Pid, Host, Port, false) ->
 
 start(Pid, Host, Port, true) ->
     case ssl:connect(Host, Port, [{active,true},binary,{packet,0},
-                                  {exit_on_close,false}],
+                                  {keepalive,true}],
                      ?CONNECT_TIMEOUT) of
         {error,Reason} ->
             exit(Reason);
@@ -56,6 +56,7 @@ start2(TargetPid, Sock) ->
 loop(Pid, Sock, P0, Stm) ->
     receive
         Any ->
+            %% receive messages in order they are received
             case Any of
                 {next_request,Req,Head} ->
                     %% sent from request_target
@@ -66,29 +67,31 @@ loop(Pid, Sock, P0, Stm) ->
                             request_target:need_request(Pid),
                             http11_res:push(Stm, Req, Head),
                             P = pipipe:push(Req, P0),
-                            loop_tick(Pid, Sock, P, Stm);
+                            loop(Pid, Sock, P, Stm);
                         closed ->
-                            stop(Pid, Sock, P0, Stm, closed)
+                            ?DBG("loop", "send returned closed"),
+                            stop(Pid, Sock, P0, Stm, closed),
+                            loop(Pid, Sock, P0, Stm)
                     end;
                 {body,Req,done} ->
                     P = flush(Pid, Sock, pipipe:close(Req, P0)),
                     loop(Pid, Sock, P, Stm);
                 {body,Req,Body} ->
                     P = pipipe:append(Req, Body, P0),
-                    loop_tick(Pid, Sock, P, Stm);
+                    loop(Pid, Sock, P, Stm);
                 {tcp, _, <<>>} ->
-                    loop_tick(Pid, Sock, P0, Stm);
+                    loop(Pid, Sock, P0, Stm);
                 {tcp, _Sock, Data} ->
                     %%?DBG("tcp/read", [{res_pid,Stm},{data,Data}]),
                     http11_res:read(Stm, Data),
-                    loop_tick(Pid, Sock, P0, Stm);
+                    loop(Pid, Sock, P0, Stm);
                 {ssl, _, <<>>} ->
-                    loop_tick(Pid, Sock, P0, Stm);
+                    loop(Pid, Sock, P0, Stm);
                 {ssl, _Sock, Data} ->
                     %%?DBG("ssl/read", [{res_pid,Stm},{data,Data}]),
                     http11_res:read(Stm, Data),
-                    loop_tick(Pid, Sock, P0, Stm);
-                {tcp_closed,_} -> % closed must be placed after {tcp,_,_}
+                    loop(Pid, Sock, P0, Stm);
+                {tcp_closed,_} ->
                     stop(Pid, Sock, P0, Stm, closed),
                     loop(Pid, Sock, P0, Stm);
                 {ssl_closed,_} ->
@@ -105,13 +108,9 @@ loop(Pid, Sock, P0, Stm) ->
             end
     end.
 
-loop_tick(Pid, Sock, P, Stm) ->
-    loop(Pid, Sock, P, Stm).
-    %%loop(Pid, Sock, P, clock_restart(Clock), Stm).
-
 stop(Pid, Sock, P, Stm, Reason) ->
     %%?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
-    http11_res:close(Pid, Reason),
+    http11_res:close(Stm, Reason),
     loop(Pid, Sock, P, Stm).
 
 %%% sending data over sockets

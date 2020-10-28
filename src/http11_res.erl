@@ -4,7 +4,7 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 
--export([start_link/1, stop/1, stop/2, read/2, encode/1, push/3, close/2,
+-export([start_link/1, stop/2, read/2, encode/1, push/3, close/2,
          activate/1]).
 -export([head/3, body/2, reset/1]).
 
@@ -12,11 +12,8 @@ start_link(RequestTargetPid) ->
     http11_statem:start_link(?MODULE, {false,[],RequestTargetPid},
                              {?RESPONSE_TIMEOUT, 60000}, []).
 
-stop(Pid) ->
-    http11_statem:stop(Pid).
-
 stop(Pid, Reason) ->
-    http11_statem:stop(Pid, Reason).
+    gen_statem:stop(Pid, Reason, infinity).
 
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).
@@ -31,7 +28,7 @@ push(Pid, Req, ReqHead) ->
     http11_statem:replace_cb_state(Pid, Fun).
 
 close(Pid, Reason) ->
-    http11_statem:close(Pid, Reason).
+    gen_statem:cast(Pid, {close,Reason}).
 
 activate(Pid) ->
     gen_statem:cast(Pid, start_active_timer).
