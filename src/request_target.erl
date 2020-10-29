@@ -2,12 +2,16 @@
 -behavior(gen_server).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
--import(lists, [foreach/2, unzip/1, unzip3/1, reverse/1,
-                keytake/3, keymember/3, keydelete/3]).
+-import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3]).
+
+-record(stats, {nproc=0,nmax=0,nfail=0,nsuccess=0}).
 -record(state, {todo=[], sent=[], waitlist=[], stats, hostinfo}).
 
+-define(DEC(Field, Stats), Stats#stats{Field=Stats#stats.Field-1}).
+-define(INC(Field, Stats), Stats#stats{Field=Stats#stats.Field+1}).
+
 -export([start_link/1, make_request/3, cancel_request/2, need_request/1,
-         request_done/2, pending_requests/1]).
+         request_done/2, pending_requests/1, retire_self/1]).
 -export([init/1, terminate/2,
          handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
 
@@ -30,15 +34,22 @@ request_done(Pid, Req) ->
 need_request(Pid) ->
     gen_server:cast(Pid, {need_request,self()}).
 
+retire_self(Pid) ->
+    gen_server:cast(Pid, {retire_self,self()}).
+
 %%% called by whomever
 
 pending_requests(Pid) ->
     gen_server:call(Pid, pending_requests).
 
+%%%
+%%% BEHAVIOR CALLBACKS
+%%%
+
 init([HostInfo]) ->
     process_flag(trap_exit, true),
     {ok,_Pid} = outbound:start_link(HostInfo),
-    {ok, #state{stats={1,1,0,0}, hostinfo=HostInfo}}.
+    {ok, #state{stats=#stats{nproc=1,nmax=1}, hostinfo=HostInfo}}.
 
 terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
     %% XXX: Child procs should be exited automatically after teminate.
@@ -65,17 +76,17 @@ handle_cast({make_request,Req,Head}, S0) ->
             {noreply,S2};
         [] ->
             %% store the request in the todo list and perhaps spawn a new proc
-            {Nproc,Nmax,Nfail,Nsuccess} = S0#state.stats,
+            N = S0#state.stats,
             Ltodo = S0#state.todo ++ [{Req,Head}],
             S1 = S0#state{todo=Ltodo},
             if
-                Nproc >= Nmax ->
+                N#stats.nproc >= N#stats.nmax ->
                     %% already at max allowed procs, add to todo list
                     {noreply,S1};
                 true ->
                     %% spawn a new proc
                     {ok,_Pid} = outbound:start_link(S1#state.hostinfo),
-                    S2 = S1#state{stats={Nproc+1,Nmax,Nfail,Nsuccess}},
+                    S2 = S1#state{stats=?INC(nproc, N)},
                     {noreply,S2}
             end
     end;
@@ -114,22 +125,21 @@ handle_cast({need_request,Pid}, S0) ->
 
 %%% Called when the request is finished (i.e. the response is completed).
 handle_cast({request_done,Req}, S0) ->
-    %%?DBG("request_done", [{req,Req}]),
     Lsent0 = S0#state.sent,
     Lsent = keydelete(Req, 1, Lsent0),
     S1 = S0#state{sent=Lsent},
     morgue:forget(Req),
     %% Increase the number of max possible workers until we reach hard limit.
-    {Nproc,Nmax,Nfail,Nsuccess} = S1#state.stats,
-    S2 = S1#state{stats={Nproc,Nmax,Nfail,Nsuccess+1}},
+    N = S1#state.stats,
+    Nsuccess = N#stats.nsuccess,
+    S2 = S1#state{stats=N#stats{nsuccess=Nsuccess+1}},
     if
-        Nproc >= Nmax ->
+        N#stats.nproc >= N#stats.nmax ->
             %% We already hit the ceiling.
             {noreply,S2};
         true ->
             {ok,_} = outbound:start_link(S1#state.hostinfo),
-            S3 = S2#state{stats={Nproc+1,Nmax,Nfail,Nsuccess}},
-            {noreply,S3}
+            {noreply,S2#state{stats=?INC(nproc,N)}}
     end;
 
 %%% Called when outbound cannot make a request work.
@@ -145,11 +155,24 @@ handle_cast({fail_request,Req,Reason}, S0) ->
             {noreply,S1}
     end;
 
+%%% retire_self is called when an outbound pid upgrades their protocol.
+handle_cast({retire_self,Pid}, S0) ->
+    %% Sanity checks to make sure Pid is not in the sent or the waitlist.
+    case ?DEC(nproc, S0#state.stats) of
+        #stats{nproc=0} ->
+            {stop,shutdown,S0};
+        N ->
+            Lwait = lists:delete(Pid, S0#state.waitlist),
+            S1 = redo(Pid, S0),
+            S2 = S1#state{waitlist=Lwait},
+            {noreply, S2#state{stats=N}}
+    end;
+
 handle_cast(_, S) ->
     {noreply,S}.
 
 handle_continue(check_waitlist, S0) ->
-    case {S0#state.sent, S0#state.waitlist} of
+    case {S0#state.todo, S0#state.waitlist} of
         {[],_} ->
             {noreply,S0};
         {_,[]} ->
@@ -164,40 +187,37 @@ handle_continue(check_waitlist, S0) ->
 %% Unexpected errors in outbound process causes a target error.
 handle_info({'EXIT',Pid,Reason}, S0) ->
     Lwait = lists:delete(Pid, S0#state.waitlist),
-    {Nproc,Nmax,Nfail0,Nsuccess} = S0#state.stats,
     S1 = S0#state{waitlist=Lwait},
     S2 = redo(Pid, S1),
     Failure = is_failure(Reason, S2),
     %% Normal errors do not cause a target error.
-    Nfail = if
-                Failure ->
-                    Nfail0+1;
-                true ->
-                    Nfail0
-            end,
-    ?DBG("handle_info", [{reason,Reason},{failure,Failure}]),
-    %%?DBG("handle_info", [{hostinfo,S0#state.hostinfo},{pid,Pid},
-    %%                     {reason,Reason},{nproc,Nproc},{nmax,Nmax},
-    %%                     {nfail,Nfail},{nrestarts,Nsuccess}]),
+    N = if
+            Failure ->
+                ?DBG("handle_info", [{reason,Reason},
+                                     {failure,Failure},
+                                     {stats,S0#state.stats}]),
+                ?INC(nfail, S0#state.stats);
+            true ->
+                S0#state.stats
+        end,
     if
-        Failure, Nfail >= ?TARGET_FAIL_MAX ->
+        Failure, N#stats.nfail >= ?TARGET_FAIL_MAX ->
             %% terminate/2 will notify the requests of failure
             {stop,Reason,S0};
         S2#state.todo == [], S2#state.sent == [] ->
             %% cleanup if there are no more requests needed and/or active
             {stop,shutdown,S0};
-        Nproc =< Nmax, S2#state.todo =/= [] ->
+        N#stats.nproc =< N#stats.nmax, S2#state.todo =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone
             %% over limit AND we actually have more pending requests
             {ok,OutPid} = outbound:start_link(S2#state.hostinfo),
-            S3 = S2#state{stats={Nproc,Nmax,Nfail,Nsuccess}},
-            ?DBG("handle_info", [{pid,OutPid},
-                                 {todo,[{Req,H#head.line}
-                                        || {Req,H} <- S3#state.todo]},
-                                 {stats,{Nproc,Nmax,Nfail,Nsuccess}}]),
+            S3 = S2#state{stats=N},
+            ?DBG("handle_info", [{host,element(2,S3#state.hostinfo)},
+                                 {reason,Reason},
+                                 {stats,N}]),
             {noreply,S3,{continue,check_waitlist}};
         true ->
-            S3 = S2#state{stats={Nproc-1,Nmax,Nfail,Nsuccess}},
+            S3 = S2#state{stats=?DEC(nproc, N)},
             {noreply,S3,{continue,check_waitlist}}
     end;
 

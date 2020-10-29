@@ -44,7 +44,7 @@ handle_cast({append,Key,Body}, {Tab,D}) ->
     ets:insert(Tab, {Key,Body}),
     case dict:find(Key, D) of
         {ok,Pid} ->
-            Pid ! {body,Key,Body};
+            Pid ! {stream,{Key,{body,Body}}};
         error ->
             ok
     end,
@@ -56,7 +56,7 @@ handle_cast({forget,Key}, {Tab,D}) ->
     {noreply, {Tab, dict:erase(Key, D)}};
 
 handle_cast({mute,Key}, {Tab,D}) ->
-    {noreply,{Tab,dict:erase(Key,D)}}.
+    {noreply,{Tab, dict:erase(Key, D)}}.
 
 handle_call({forward,Key,Pid}, _From, {Tab,D0}) ->
     %%?DBG("forward", {key,Key,pid,Pid}),
@@ -66,7 +66,7 @@ handle_call({forward,Key,Pid}, _From, {Tab,D0}) ->
         error ->
             D = dict:store(Key, Pid, D0),
             foreach(fun ({_,Body}) ->
-                            Pid ! {body,Key,Body}
+                            Pid ! {stream,{Key,{body,Body}}}
                     end, ets:lookup(Tab, Key)),
             {reply, ok, {Tab,D}}
     end.

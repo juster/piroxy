@@ -4,7 +4,7 @@
 -import(lists, [reverse/1, reverse/2]).
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
--export([get_value/2, get_value/3]).
+-export([get_value/2, get_value/3, get_value_split/2]).
 -export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
 
 trimows(?EMPTY) ->
@@ -49,7 +49,7 @@ ltrimows(Bin) ->
 add(F, FL) ->
     case binary:match(F, <<?COLON>>) of
         nomatch ->
-            {error, colon_missing};
+            {error,{colon_missing,F}};
         {Pos,_} ->
             {ok, [{Pos,F}|FL]}
     end.
@@ -104,6 +104,14 @@ get_value(Field, [{Len,Line}|FL], Default) ->
             trimows(binary_lcase(Value0));
         _ ->
             get_value(Field, FL, Default)
+    end.
+
+get_value_split(Field, FL) ->
+    case get_value(Field, FL) of
+        not_found ->
+            not_found;
+        V ->
+            [trimows(Bin) || Bin <- binary:split(V, <<";">>, [global,trim_all])]
     end.
 
 to_iolist([]) ->

@@ -1,7 +1,7 @@
 -module(http11_req).
 -include("../include/phttp.hrl").
 
--export([start_link/0, stop/1, read/2, encode/1]).
+-export([start_link/1, stop/1, read/2, push/3, encode/1, shutdown/2]).
 -export([head/3, body/2, reset/1]). % callbacks
 
 %%%
@@ -9,7 +9,7 @@
 %%% (called by piserver proc)
 
 %%% Callback state: {RequestCounter,DefaultHostInfo,ServerPid}
-start_link() ->
+start_link([]) ->
     http11_statem:start_link(?MODULE, {0,null,self()},
                              {?REQUEST_TIMEOUT,infinity}, []).
 
@@ -19,8 +19,20 @@ stop(Pid) ->
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).
 
+push(_Pid, Sock, Term) ->
+    case send(Sock, encode(Term)) of
+        {error,Reason} ->
+            io:format("*DBG* error! ~p~n", [Reason]),
+            exit(Reason);
+        ok ->
+            ok
+    end.
+
 encode(Bin) ->
     http11_statem:encode(Bin).
+
+shutdown(Pid, Reason) ->
+    http11_statem:shutdown(Pid, Reason).
 
 %%%
 %%% CALLBACKS
@@ -63,6 +75,12 @@ reset(State) ->
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
+
+send({tcp,Sock}, Bin) ->
+    gen_tcp:send(Sock, Bin);
+
+send({ssl,Sock}, Bin) ->
+    ssl:send(Sock, Bin).
 
 lastreq({I,_,Pid}) ->
     {Pid,I}.

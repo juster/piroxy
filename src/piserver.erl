@@ -48,7 +48,7 @@ superserver(Listen) ->
 
 server() ->
     response_handler:add_sup_handler(),
-    {ok,Pid} = http11_req:start_link(),
+    {ok,Pid} = http11_req:start_link([]),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
@@ -56,58 +56,48 @@ server() ->
             http11_req:stop(Pid)
     end.
 
-loop(Sock, Stream, State) ->
+loop(Sock, M, A) ->
     receive
         %% receive requests from the client and parse them out
         {tcp,_,Data} ->
-            stream(Sock, Stream, State, Data);
+            stream(Sock, M, A, Data);
         {tcp_closed,_} ->
             %% TODO: flush buffers etc
-            ok;
+            M:shutdown(A, closed),
+            loop(Sock, M, A);
         {tcp_error,_,Reason} ->
-            exit(Reason);
+            M:shutdown(A, Reason),
+            loop(Sock, M, A);
         {ssl,_,Data} ->
-            stream(Sock, Stream, State, Data);
+            stream(Sock, M, A, Data);
         {ssl_closed,_} ->
-            ok;
+            M:shutdown(A, closed),
+            loop(Sock, M, A);
         {ssl_error,_,Reason} ->
-            exit(Reason);
+            M:shutdown(A, Reason);
         {make_tunnel,HostInfo} ->
             %%?DBG("loop", [{msg,make_tunnel},{hostinfo,HostInfo}]),
-            send(Sock, Stream:encode({status,http_ok})),
-            case tunnel(Sock, HostInfo) of
-                {ok,TlsSock} ->
-                    loop({ssl,TlsSock}, Stream, State);
-                {error,Reason} ->
-                    exit(Reason)
-            end;
-        {respond,close} ->
-            ?LOG_WARNING("~p received {respond,close}", [self()]),
-            loop(Sock, Stream, State);
-        {respond,Resp} ->
-            case Resp of
-                {error,_} ->
-                    ?DBG("loop", [{msg,{respond,Resp}}]);
-                _ ->
-                    ok
-            end,
-            case Stream:encode(Resp) of
-                empty -> ok;
-                IoList -> send(Sock, IoList)
-            end,
-            loop(Sock, Stream, State);
+            send(Sock, M:encode({status,http_ok})),
+            TlsSock = tunnel(Sock, HostInfo),
+            loop({ssl,TlsSock}, M, A);
+        {upgrade_protocol,M2,InitArgs} ->
+            ?DBG("loop", [upgrade_protocol, {module,M2}, {args,InitArgs}]),
+            {ok,A2} = M2:start_link(InitArgs),
+            loop(Sock, M2, A2);
+        {stream,Resp} ->
+            M:push(A, Sock, Resp),
+            loop(Sock, M, A);
         Any ->
-            ?LOG_DEBUG("~p received unknown message: ~p", [self(),Any]),
-            loop(Sock, Stream, State)
+            exit({unknown_message, Any})
     end.
 
-stream(Sock, Stream, State, <<>>) ->
+stream(Sock, M, A, <<>>) ->
     ?LOG_DEBUG("~p received an empty data binary over socket", [self()]),
-    loop(Sock, Stream, State);
+    loop(Sock, M, A);
 
-stream(Sock, M, S, Data) ->
-    ok = M:read(S, Data),
-    loop(Sock, M, S).
+stream(Sock, M, A, Data) ->
+    ok = M:read(A, Data),
+    loop(Sock, M, A).
 
 send({tcp,Sock}, Data) ->
     gen_tcp:send(Sock, Data);
@@ -115,15 +105,15 @@ send({tcp,Sock}, Data) ->
 send({ssl,Sock}, Data) ->
     ssl:send(Sock, Data).
 
-shutdown({tcp,Sock}) ->
-    gen_tcp:shutdown(Sock, write);
-
-shutdown({ssl,Sock}) ->
-    ssl:shutdown(Sock, write).
-
-fail(Sock, M, _State, Reason) ->
-    send(Sock, M:encode({error,Reason})),
-    exit(Reason).
+%%shutdown({tcp,Sock}) ->
+%%    gen_tcp:shutdown(Sock, write);
+%%
+%%shutdown({ssl,Sock}) ->
+%%    ssl:shutdown(Sock, write).
+%%
+%%fail(Sock, M, _A, Reason) ->
+%%    send(Sock, M:encode({error,Reason})),
+%%    exit(Reason).
 
 mitm(TcpSock, Host) ->
     case inet:setopts(TcpSock, [{active,false}]) of
@@ -139,14 +129,11 @@ mitm(TcpSock, Host) ->
     Opts = [{mode,binary}, {packet,0}, {verify,verify_none},
             {alpn_preferred_protocols,[<<"http/1.1">>]},
             {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
-    %%inet:controlling_process(TcpSock, self()),
-    {ok,Timer} = timer:apply_after(?CONNECT_TIMEOUT, io, format, ["SSL handshake spoofing ~s timed out.", Host]),
+    %%{ok,Timer} = timer:apply_after(?CONNECT_TIMEOUT, io, format, ["SSL handshake spoofing ~s timed out.", Host]),
     TlsSock = case ssl:handshake(TcpSock, Opts, ?CONNECT_TIMEOUT) of
                   {error,_}=Err3 ->
-                      timer:cancel(Timer),
                       throw(Err3);
                   {ok,X} ->
-                      timer:cancel(Timer),
                       X
               end,
     %% XXX: active does not always work when provided to handshake/2
@@ -159,10 +146,12 @@ tunnel({tcp,TcpSock}, {https,Host,443}) ->
     try
         TlsSock = mitm(TcpSock, Host),
         %%?LOG_INFO("~p SSL handshake successful", [self()]),
-        {ok,TlsSock}
+        TlsSock
     catch
-        {error,Rsn} = Err ->
+        {error,closed} ->
+            exit(closed);
+        {error,Rsn} ->
             ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(),
                                                                       Host, Rsn]),
-            Err
+            exit(Rsn)
     end.

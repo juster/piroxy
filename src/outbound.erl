@@ -11,6 +11,7 @@
 %%% EXTERNAL FUNCTIONS
 %%%
 
+%% called by request_target
 start_link({http, Host, Port}) ->
     {ok,spawn_link(?MODULE, start, [self(), binary_to_list(Host), Port, false])};
 
@@ -19,7 +20,7 @@ start_link({https, Host, Port}) ->
 
 %% notify the outbound Pid that a new request is ready for it to send/recv
 next_request(Pid, Req, Head) ->
-    Pid ! {next_request,Req,Head},
+    Pid ! {stream,{Req,Head}},
     ok.
 
 %%%
@@ -48,98 +49,63 @@ start(Pid, Host, Port, true) ->
     end.
 
 start2(TargetPid, Sock) ->
-    {ok,StatePid} = http11_res:start_link(TargetPid),
+    process_flag(trap_exit, true),
+    M = http11_res,
+    {ok,StmPid} = M:start_link([TargetPid]),
     request_target:need_request(TargetPid),
-    loop(TargetPid, Sock, pipipe:new(), StatePid),
-    http11_res:stop(StatePid).
+    loop(TargetPid, Sock, M, StmPid).
 
-loop(Pid, Sock, P0, Stm) ->
+loop(Pid, Sock, M, A) ->
     receive
         Any ->
-            %% receive messages in order they are received
+            %% process messages in order they are received
             case Any of
-                {next_request,Req,Head} ->
-                    %% sent from request_target
-                    case send(Sock, http11_res:encode(Head)) of
-                        ok ->
-                            %% get ready to stream the next one
-                            http11_res:activate(Stm),
-                            request_target:need_request(Pid),
-                            http11_res:push(Stm, Req, Head),
-                            P = pipipe:push(Req, P0),
-                            loop(Pid, Sock, P, Stm);
-                        closed ->
-                            ?DBG("loop", "send returned closed"),
-                            stop(Pid, Sock, P0, Stm, closed),
-                            loop(Pid, Sock, P0, Stm)
-                    end;
-                {body,Req,done} ->
-                    P = flush(Pid, Sock, pipipe:close(Req, P0)),
-                    loop(Pid, Sock, P, Stm);
-                {body,Req,Body} ->
-                    P = pipipe:append(Req, Body, P0),
-                    loop(Pid, Sock, P, Stm);
+                {stream,Term} ->
+                    %% sent from request_target, morgue (http streams),
+                    %% or piserver (raw_streams)
+                    M:push(A, Sock, Term),
+                    case Term of
+                        {Req,#head{}} ->
+                            %% XXX: special logic for HTTP request head messages...
+                            request_target:need_request(Pid);
+                        _ ->
+                            ok
+                    end,
+                    loop(Pid, Sock, M, A);
                 {tcp, _, <<>>} ->
-                    loop(Pid, Sock, P0, Stm);
+                    loop(Pid, Sock, M, A);
                 {tcp, _Sock, Data} ->
-                    %%?DBG("tcp/read", [{res_pid,Stm},{data,Data}]),
-                    http11_res:read(Stm, Data),
-                    loop(Pid, Sock, P0, Stm);
+                    M:read(A, Data),
+                    loop(Pid, Sock, M, A);
                 {ssl, _, <<>>} ->
-                    loop(Pid, Sock, P0, Stm);
+                    loop(Pid, Sock, M, A);
                 {ssl, _Sock, Data} ->
-                    %%?DBG("ssl/read", [{res_pid,Stm},{data,Data}]),
-                    http11_res:read(Stm, Data),
-                    loop(Pid, Sock, P0, Stm);
+                    M:read(A, Data),
+                    loop(Pid, Sock, M, A);
                 {tcp_closed,_} ->
-                    stop(Pid, Sock, P0, Stm, closed),
-                    loop(Pid, Sock, P0, Stm);
+                    M:shutdown(A, closed),
+                    loop(Pid, Sock, M, A);
                 {ssl_closed,_} ->
-                    stop(Pid, Sock, P0, Stm, closed),
-                    loop(Pid, Sock, P0, Stm);
+                    M:shutdown(A, closed),
+                    loop(Pid, Sock, M, A);
                 {tcp_error,Reason} ->
                     ?DBG("loop", [{tcp_error,Reason}]),
-                    stop(Pid, Sock, P0, Stm, Reason);
+                    M:shutdown(A, Reason),
+                    loop(Pid, Sock, M, A);
                 {ssl_error,Reason} ->
                     ?DBG("loop", [{ssl_error,Reason}]),
-                    stop(Pid, Sock, P0, Stm, Reason);
+                    M:shutdown(A, Reason),
+                    loop(Pid, Sock, M, A);
+                {'EXIT',_StmPid,{shutdown,{upgraded,M_,InitA}}} ->
+                    {ok,A_} = M_:start_link(InitA),
+                    request_target:retire_self(Pid),
+                    unlink(Pid),
+                    %% XXX: we should probably not keep looping with Pid?!
+                    loop(Pid, Sock, M_, A_);
+                {'EXIT',_StmPid,Reason} ->
+                    %%?DBG("loop", [{reason,Reason}]),
+                    exit(Reason);
                 _ ->
                     exit({unknown_msg,Any})
             end
-    end.
-
-stop(Pid, Sock, P, Stm, Reason) ->
-    %%?DBG("stop", [{stm_pid,Stm},{reason,Reason}]),
-    http11_res:close(Stm, Reason),
-    loop(Pid, Sock, P, Stm).
-
-%%% sending data over sockets
-%%%
-
-send({tcp,Sock}, Data) ->
-    case gen_tcp:send(Sock, Data) of
-        {error,closed} ->
-            closed;
-        {error,Reason} ->
-            exit(Reason);
-        ok -> ok
-    end;
-
-send({ssl,Sock}, Data) ->
-    case ssl:send(Sock, Data) of
-        {error,closed} ->
-            closed;
-        {error,Reason} ->
-            exit(Reason);
-        ok -> ok
-    end.
-
-flush(Pid, Sock, P0) ->
-    case pipipe:pop(P0) of
-        not_done ->
-            P0;
-        {Req,Chunks,P} ->
-            %%?DBG("flush", [{req,Req}]),
-            foreach(fun (Chunk) -> send(Sock, Chunk) end, Chunks),
-            flush(Pid, Sock, P)
     end.

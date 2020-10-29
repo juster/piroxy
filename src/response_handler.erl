@@ -20,17 +20,18 @@ handle_event({make_request,{Pid,I},_,_}, {Pid,P}) ->
     {ok, {Pid, pipipe:push(I, P)}};
 
 handle_event({respond,{Pid,I},Resp}, {Pid,P}) ->
-    {ok, {Pid, pipipe:append(I, {respond,Resp}, P)}};
+    {ok, {Pid, pipipe:append(I, {stream,Resp}, P)}};
 
 handle_event({fail_request,{Pid,I},Reason}, {Pid,P0}) ->
-    P = write_last(I, {respond,{error,Reason}}, P0),
+    P = write_last(I, {stream,{error,Reason}}, P0),
     {ok, {Pid, flush(Pid, P)}};
 
 handle_event({close_response,{Pid,I}}, {Pid,P}) ->
     {ok, {Pid, flush(Pid, pipipe:close(I, P))}};
 
-handle_event({upgrade_stream,{Pid,I},M,A}, {Pid,P0}) ->
-    P = write_last(I, {upgrade_stream,M,A}, P0),
+handle_event({upgrade_protocol,{Pid,I},M,A}, {Pid,P0}) ->
+    ?DBG("upgrade_protocol", [{pid,Pid}]),
+    P = write_last(I, {upgrade_protocol,M,A}, P0),
     {ok, {Pid, flush(Pid, P)}};
 
 handle_event({make_tunnel,{Pid,I},HostInfo}, {Pid,P0}) ->

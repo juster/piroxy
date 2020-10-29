@@ -3,7 +3,7 @@
 
 -export([start/0, start_link/0]).
 -export([make_request/3, stream_request/2, fail_request/2, end_request/1,
-         respond/2, close_response/1, upgrade_stream/3, make_tunnel/2]).
+         respond/2, close_response/1, upgrade_protocol/3, make_tunnel/2]).
 
 start() ->
     gen_event:start({local,?MODULE}).
@@ -31,8 +31,8 @@ respond(Req, Any) ->
 close_response(Req) ->
     gen_event:notify(?MODULE, {close_response,Req}).
 
-upgrade_stream(Req, Stream, Args) ->
-    gen_event:notify(?MODULE, {upgrade_stream,Req,Stream,Args}).
+upgrade_protocol(Req, Stream, Args) ->
+    gen_event:notify(?MODULE, {upgrade_protocol,Req,Stream,Args}).
 
 make_tunnel(Req, HostInfo) ->
     gen_event:notify(?MODULE, {make_tunnel,Req,HostInfo}).

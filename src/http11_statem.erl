@@ -2,8 +2,8 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/3, start_link/4, read/2, encode/1,
-         replace_cb_state/2]).
+-export([start_link/3, start_link/4, read/2, swap_state/2, activate/1, shutdown/2,
+        encode/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
@@ -24,8 +24,14 @@ start_link(M, A, {_,_}=Timeouts, Opts) ->
 read(Pid, Bin) ->
     gen_statem:cast(Pid, {data,Bin}).
 
-replace_cb_state(Pid, Fun) ->
-    gen_statem:cast(Pid, {replace_cb_state,Fun}).
+swap_state(Pid, Fun) ->
+    gen_statem:cast(Pid, {swap_state,Fun}).
+
+activate(Pid) ->
+    gen_statem:cast(Pid, start_active_timer).
+
+shutdown(Pid, Reason) ->
+    gen_statem:cast(Pid, {shutdown,Reason}).
 
 encode(#head{line=Line, headers=Headers}) ->
     [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
@@ -71,11 +77,17 @@ handle_event(cast, start_active_timer, _, {_,_,_,{T1,_}}) ->
       {{timeout,active},T1,[]}]};
 
 %% used by callback modules to replace their own state
-handle_event(cast, {replace_cb_state,Fun}, _, {R,M,A,Ts}) ->
-    {keep_state,{R,M,Fun(A),Ts}};
+handle_event(cast, {swap_state,Fun}, _, {R,M,A,Ts}) ->
+    try
+        {keep_state,{R,M,Fun(A),Ts}}
+    catch
+        _:Reason ->
+            shutdown(self, Reason),
+            keep_state_and_data
+    end;
 
 %% used to stop the process, without bypassing the messages in the queue
-handle_event(cast, {close,Reason}, _, {_,M,A,_}) ->
+handle_event(cast, {shutdown,Reason}, _, {_,M,A,_}) ->
     case erlang:function_exported(M, terminate, 2) of
         true ->
             M:terminate(Reason, A);
@@ -109,18 +121,24 @@ handle_event(cast, {data,Bin}, head, {Reader0,M,A0,Ts}) ->
         {continue,Reader} ->
             {keep_state,{Reader,M,A0,Ts}};
         {done,StatusLine,Headers,Rest} ->
-            {H,A1} = M:head(StatusLine, Headers, A0),
-            case H#head.bodylen of
-                0 ->
-                    A2 = M:reset(A1),
-                    {next_state,eof,
-                     {null,M,A2,Ts},
-                     {next_event,cast,{data,Rest}}};
-                _ ->
-                    Reader = pimsg:body_reader(H#head.bodylen),
-                    {next_state,body,
-                     {Reader,M,A1,Ts},
-                     {next_event,cast,{data,Rest}}}
+            try
+                {H,A1} = M:head(StatusLine, Headers, A0),
+                case H#head.bodylen of
+                    0 ->
+                        A2 = M:reset(A1),
+                        {next_state,eof,
+                         {null,M,A2,Ts},
+                         {next_event,cast,{data,Rest}}};
+                    _ ->
+                        Reader = pimsg:body_reader(H#head.bodylen),
+                        {next_state,body,
+                         {Reader,M,A1,Ts},
+                         {next_event,cast,{data,Rest}}}
+                end
+            catch
+                %% Make sure we do not lose the "Rest" remainder bytes.
+                exit:{shutdown,{upgrade,Proto,Args}} ->
+                    exit({shutdown,{upgrade,Proto,Args++[Rest]}})
             end
     end;
 
@@ -154,7 +172,6 @@ handle_event(cast, {data,Bin1}, body, {Reader0,M,A0,Ts}) ->
 
 error_statusln(host_mismatch) -> error_statusln(http_bad_request);
 error_statusln(host_missing) -> error_statusln(http_bad_request);
-error_statusln(uri_too_long) -> error_statusln(http_uri_too_long);
 error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
 error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
