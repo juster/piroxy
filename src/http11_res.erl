@@ -4,9 +4,7 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
--record(state, {connection=keepalive,
-                pipeline=pipipe:new(),
-                waitqueue=[], pid, upgrading=false}).
+-record(state, {connection=keepalive, queue=[], pid, upgrading=false}).
 -import(lists, [any/2, reverse/1]).
 
 -export([start_link/1, read/2, push/3, shutdown/2]).
@@ -20,45 +18,29 @@ read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).
 
 push(Pid, Sock, {Req,Term}) ->
-    Fun = fun (S) ->
-                  P0 = S#state.pipeline,
-                  case Term of
-                      #head{} ->
-                          P = pipipe:append(Req, Term, pipipe:push(Req, P0)),
-                          %% an upgrade request will stall the pipeline until response
-                          case fieldlist:get_value(<<"upgrade">>,
-                                                   Term#head.headers) of
-                              not_found ->
-                                  S#state{pipeline=P,upgrading=true};
-                              _ ->
-                                  S#state{pipeline=P,upgrading=false}
-                          end;
-                      {body,done} ->
-                          %% A request is done, flush the pipeline. Moves finished
-                          %% requests to the (response) waitlist queue.
-                          try
-                              %% NOTE: flush should always succeed, the
-                              %% pipeline is used to prevent overlapping
-                              %% #head{}s from being sent before the previous
-                              %% body is finished.
-                              {P,Q2} = flush(Sock, pipipe:close(Req, P0)),
-                              %% ensure we switch to active timeout
-                              http11_statem:activate(Pid),
-                              Q1 = S#state.waitqueue,
-                              S#state{pipeline=P, waitqueue=Q1++Q2}
-                          catch
-                              closed -> % thrown by send, below
-                                  %% Gracefully shutdown to receive as much as the
-                                  %% pipeline as possible.
-                                  ?DBG("push", closed),
-                                  http11_statem:shutdown(Pid, closed),
-                                  S
-                          end;
-                      {body,_} ->
-                          S#state{pipeline=pipipe:append(Req, Term, P0)}
-                  end
-          end,
-    http11_statem:swap_state(Pid, Fun).
+    case send(Sock, Term) of
+        {error,closed} ->
+            http11_statem:close(closed);
+        {error,Reason} ->
+            exit(Reason);
+        ok ->
+            ok
+    end,
+    case Term of
+        #head{} ->
+            %% an upgrade request will stall the pipeline until response
+            Upgrading = case fieldlist:get_value(<<"upgrade">>, Term#head.headers) of
+                            not_found -> false;
+                            _ -> true
+                        end,
+            Fun = fun (S) ->
+                          Q = S#state.queue ++ [{Req,Term}],
+                          S#state{queue=Q,upgrading=Upgrading}
+                  end,
+            http11_statem:swap_state(Pid, Fun);
+        _ ->
+            ok
+    end.
 
 shutdown(Pid, Reason) ->
     http11_statem:shutdown(Pid, Reason).
@@ -66,41 +48,8 @@ shutdown(Pid, Reason) ->
 %%% sending data over sockets
 %%%
 
-flush(Sock,P0) ->
-    case pipipe:pop(P0) of
-        not_done ->
-            not_done;
-        {Req,[H|_]=L,P} ->
-            %%?DBG("flush", [{request,Req},{line,H#head.line}]),
-            send(Sock, L),
-            flush(Sock,P,[{Req,H}])
-    end.
-
-flush(Sock, P0, Q) ->
-    case pipipe:pop(P0) of
-        not_done ->
-            {P0, reverse(Q)};
-        {Req,[H|_]=L,P} ->
-            %%?DBG("flush", [{request,Req},{line,H#head.line}]),
-            send(Sock, L),
-            flush(Sock, P, [{Req,H}|Q])
-    end.
-
-send(_Sock, []) ->
-    ok;
-
-send(Sock, [Term|L]) ->
-    %% OK, remember we are calling this DEEP INSIDE of the http11_statem process!!
-    case send_(Sock, http11_statem:encode(Term)) of
-        {error,closed} ->
-            %% caught by http11_statem (this happens alot)
-            throw(closed);
-        {error,Reason} ->
-            %% not recoverable
-            exit(Reason);
-        ok ->
-            send(Sock, L)
-    end.
+send(Sock, Term) ->
+    send_(Sock, http11_statem:encode(Term)).
 
 send_({tcp,Sock}, Bin) ->
     gen_tcp:send(Sock, Bin);
@@ -119,7 +68,7 @@ send_({ssl,Sock}, Bin) ->
 
 head(StatusLn, Headers, S) ->
     %%?DBG("head", [{line, StatusLn}]),
-    {Req,ReqHead} = hd(S#state.waitqueue),
+    {Req,ReqHead} = hd(S#state.queue),
     Method = ReqHead#head.method,
     Len = body_length(StatusLn, Headers, ReqHead),
     ResHead = #head{method=Method, line=StatusLn, headers=Headers, bodylen=Len},
@@ -135,7 +84,7 @@ head(StatusLn, Headers, S) ->
     end.
 
 body(Chunk, S) ->
-    {Req,_} = hd(S#state.waitqueue),
+    {Req,_} = hd(S#state.queue),
     pievents:respond(Req, {body,Chunk}),
     S.
 
@@ -143,17 +92,17 @@ body(Chunk, S) ->
 
 reset(#state{connection=closed} = S) ->
     %% The last response requested that we close the connection.
-    {Req,_H} = hd(S#state.waitqueue),
+    {Req,_H} = hd(S#state.queue),
     request_target:request_done(S#state.pid, Req),
     pievents:close_response(Req),
     exit({shutdown,closed});
 
 reset(#state{connection=keepalive} = S) ->
-    Q = S#state.waitqueue,
+    Q = S#state.queue,
     {Req,_H} = hd(Q),
     request_target:request_done(S#state.pid, Req),
     pievents:close_response(Req),
-    S#state{waitqueue=tl(Q)}.
+    S#state{queue=tl(Q)}.
 
 %%%
 %%% INTERNAL FUNCTIONS

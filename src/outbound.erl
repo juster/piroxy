@@ -63,13 +63,13 @@ loop(Pid, Sock, M, A) ->
                 {stream,Term} ->
                     %% sent from request_target, morgue (http streams),
                     %% or piserver (raw_streams)
-                    M:push(A, Sock, Term),
                     case Term of
-                        {Req,#head{}} ->
-                            %% XXX: special logic for HTTP request head messages...
+                        {_Req,{body,done}} ->
+                            %% XXX: This special logic is http-specific, I need to
+                            %% think of how to generalize this...
                             request_target:need_request(Pid);
                         _ ->
-                            ok
+                            M:push(A, Sock, Term)
                     end,
                     loop(Pid, Sock, M, A);
                 {tcp, _, <<>>} ->
