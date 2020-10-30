@@ -4,7 +4,7 @@
 -module(http11_res).
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
--record(state, {connection=keepalive, queue=[], pid, upgrading=false}).
+-record(state, {connection=keepalive, queue=[], pid}).
 -import(lists, [any/2, reverse/1]).
 
 -export([start_link/1, read/2, push/3, shutdown/2]).
@@ -29,13 +29,9 @@ push(Pid, Sock, {Req,Term}) ->
     case Term of
         #head{} ->
             %% an upgrade request will stall the pipeline until response
-            Upgrading = case fieldlist:get_value(<<"upgrade">>, Term#head.headers) of
-                            not_found -> false;
-                            _ -> true
-                        end,
             Fun = fun (S) ->
                           Q = S#state.queue ++ [{Req,Term}],
-                          S#state{queue=Q,upgrading=Upgrading}
+                          S#state{queue=Q}
                   end,
             http11_statem:swap_state(Pid, Fun);
         _ ->
@@ -73,12 +69,13 @@ head(StatusLn, Headers, S) ->
     Len = body_length(StatusLn, Headers, ReqHead),
     ResHead = #head{method=Method, line=StatusLn, headers=Headers, bodylen=Len},
     pievents:respond(Req, ResHead),
-    case upgraded(ResHead) of
+    case upgraded(ReqHead, ResHead) of
         false ->
             {ResHead, S#state{connection=connection(Headers)}};
         {Proto1,Args1,Proto2,Args2} ->
             %% The state machine must be replaced by another on BOTH ends.
-            %% EXIT message is emitted from the http11_statem process.
+            %% An event is sent to the piserver process.
+            %% EXIT message is emitted to the outbound process.
             pievents:upgrade_protocol(Req, Proto1, Args1),
             exit({shutdown,{upgraded,Proto2,Args2}})
     end.
@@ -146,34 +143,40 @@ connection(Headers) ->
             keepalive
     end.
 
-upgraded(H) ->
-    %% check the least likely condition first
-    case response_code(H#head.line) of
-        <<"101">> ->
-            Upgrade = fieldlist:get_value(<<"upgrade">>, H#head.headers),
-            Connection = fieldlist:get_value_split(<<"connection">>, H#head.headers),
-            case {Upgrade,Connection} of
-                {not_found,_} ->
-                    ?LOG_WARNING("101 Switching Protocols "++
-                                 "is missing Upgrade field."),
-                    false;
-                {_,not_found} ->
-                    ?LOG_WARNING("101 Switching Protocols "++
-                                 "is missing Connection field."),
-                    false;
-                _ ->
-                    case any(fun (<<"upgrade">>)->true; (_)->false end,
-                             Connection) of
-                        false ->
-                            ?LOG_WARNING("101 Switching Protocols "++
-                                         "has invalid Connection field."),
-                            false;
-                        true ->
-                            upgrade_protocol(Upgrade)
-                    end
-            end;
+upgraded(Req, Res) ->
+    case fieldlist:get_value(<<"upgrade">>, Req#head.headers) of
+        not_found -> false;
         _ ->
-            false
+            %% check the least likely condition first
+            case response_code(Res#head.line) of
+                <<"101">> ->
+                    Upgrade = fieldlist:get_value(<<"upgrade">>,
+                                                  Res#head.headers),
+                    Connection = fieldlist:get_value_split(<<"connection">>,
+                                                           Res#head.headers),
+                    case {Upgrade,Connection} of
+                        {not_found,_} ->
+                            ?LOG_WARNING("101 Switching Protocols "++
+                                         "is missing Upgrade field."),
+                            false;
+                        {_,not_found} ->
+                            ?LOG_WARNING("101 Switching Protocols "++
+                                         "is missing Connection field."),
+                            false;
+                        _ ->
+                            case any(fun (<<"upgrade">>)->true; (_)->false end,
+                                     Connection) of
+                                false ->
+                                    ?LOG_WARNING("101 Switching Protocols "++
+                                                 "has invalid Connection field."),
+                                    false;
+                                true ->
+                                    upgrade_protocol(Upgrade)
+                            end
+                    end;
+                _ ->
+                    false
+            end
     end.
 
 %% TODO: figure out what args to start with
