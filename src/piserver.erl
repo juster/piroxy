@@ -150,6 +150,8 @@ tunnel({tcp,TcpSock}, {https,Host,443}) ->
     catch
         {error,closed} ->
             exit(closed);
+        {error,einval} ->
+            exit(closed);
         {error,Rsn} ->
             ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(),
                                                                       Host, Rsn]),
