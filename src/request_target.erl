@@ -190,7 +190,7 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
     S1 = S0#state{waitlist=Lwait},
     S2 = redo(Pid, S1),
     Failure = is_failure(Reason, S2),
-    %% Normal errors do not cause a target error.
+    %% Normal errors do not cause a failure.
     N = if
             Failure ->
                 ?DBG("handle_info", [{reason,Reason},

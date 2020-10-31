@@ -22,7 +22,6 @@ read(Pid, Bin) ->
 push(_Pid, Sock, Term) ->
     case send(Sock, encode(Term)) of
         {error,Reason} ->
-            io:format("*DBG* error! ~p~n", [Reason]),
             exit(Reason);
         ok ->
             ok
