@@ -1,4 +1,4 @@
--define(EMPTY, empty).
+-define(EMPTY, <<>>).
 -define(CR, 8#15).
 -define(LF, 8#12).
 -define(CRLF, 8#15, 8#12).

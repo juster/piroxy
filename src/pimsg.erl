@@ -16,11 +16,11 @@
 %%% exports
 %%%
 
-track_header(N, 0) ->
+track_header(N, ?EMPTY) ->
     N;
 
-track_header(N0, Bin) ->
-    N = N0 + byte_size(Bin),
+track_header(N0, M) ->
+    N = N0 + M,
     if
         N > ?HEADER_MAX ->
             exit(header_too_big);
@@ -28,45 +28,35 @@ track_header(N0, Bin) ->
             N
     end.
 
-head_reader() -> {start,0,?EMPTY}.
+head_reader() -> {start,0,linebuf()}.
 
-head_reader({start,N,Bin1}, Bin2) ->
-    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
+head_reader({start,N0,Buf0}, Bin0) ->
+    case next_line(Buf0, Bin0, ?HEADLN_MAX) of
         {error,line_too_long} ->
             {error,http_uri_too_long};
-        {skip,Bin3} ->
-            {continue, {start, track_header(N, Bin3), Bin3}};
-        {ok,Line,Bin3} ->
-            head_reader({headers,0,Line,[],?EMPTY}, Bin3)
+        {skip,Buf} ->
+            N = track_header(N0, buflen(Buf)),
+            {continue, {start,N,Buf}};
+        {ok,Line,Bin} ->
+            head_reader({headers,0,Line,[],Buf0}, Bin)
     end;
 
-head_reader({headers,N0,StatusLine,Headers0,Bin1}, Bin2) ->
-    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
+head_reader({headers,N0,StatusLine,Headers0,Buf0}, Bin0) ->
+    case next_line(Buf0, Bin0, ?HEADLN_MAX) of
         {error,_} = T -> T;
-        {skip,?EMPTY} ->
-            {continue, {headers,N0,StatusLine,Headers0,?EMPTY}};
-        {skip,Bin3} ->
-            N = track_header(N0, Bin3),
-            {continue, {headers,N,StatusLine,Headers0,Bin3}};
-        {ok,?EMPTY,Bin3} ->
+        {skip,Buf} ->
+            N = track_header(N0, buflen(Buf)),
+            {continue, {headers,N,StatusLine,Headers0,Buf}};
+        {ok,?EMPTY,Rest} ->
             %% end of header lines
-            {done,StatusLine,Headers0,Bin3};
-            %%head_reader({endline,N0+2,StatusLine,Headers0,?EMPTY}, Bin3);
-        {ok,Line,Bin3} ->
+            {done,StatusLine,Headers0,Rest};
+        {ok,Line,Rest} ->
             case fieldlist:add(Line, Headers0) of
                 {error,_} = Err -> Err;
                 {ok,Headers} ->
-                    N = track_header(N0, Line) + 2,
-                    head_reader({headers,N,StatusLine,Headers,?EMPTY}, Bin3)
+                    N = track_header(N0, byte_size(Line) + 2),
+                    head_reader({headers,N,StatusLine,Headers,Buf0}, Rest)
             end
-    end;
-
-head_reader({endline,N,StatusLine,Headers,Bin1}, Bin2) ->
-    case next_line(Bin1, Bin2, ?HEADLN_MAX) of
-        {error,_} = T -> T;
-        {skip,Bin3} -> {continue,{endline,N,StatusLine,Headers,Bin3}};
-        {ok,?EMPTY,Bin3} -> {done,StatusLine,Headers,Bin3};
-        {ok,Line,_} -> {error,{expected_empty_line,Line}}
     end.
 
 fixed({I,N}, Bin) when I >= N -> {done, ?EMPTY, Bin};
@@ -101,12 +91,12 @@ chunk(State, Bin) -> chunk(State, Bin, []).
 %%
 chunk({between,_}=S, ?EMPTY, L) ->
     {continue, reverse(L), S};
-chunk({between,Bin1}, Bin2, L) ->
-    case chunk_size(Bin1, Bin2) of
+chunk({between,Buf0}, Bin, L) ->
+    case chunk_size(Buf0, Bin) of
         {error,_} = Err ->
             Err;
-        {skip,Rest} ->
-            {continue, reverse(L), {between,Rest}};
+        {skip,Buf} ->
+            {continue, reverse(L), {between,Buf}};
         {ok,0,Line,Rest} ->
             %% The last chunk should have size zero (0) and have an empty
             %% line immediately after the size line.
@@ -130,7 +120,7 @@ chunk({trailing_crlf,Bin1}, Bin2, L) ->
         {continue,Bin3} ->
             {continue, reverse(L), {trailing_crlf,Bin3}};
         {done,Newline,Bin3} ->
-            chunk({between,?EMPTY}, Bin3, [Newline|L]);
+            chunk({between,linebuf()}, Bin3, [Newline|L]);
         {error,_} = Err ->
             Err
     end;
@@ -161,8 +151,8 @@ newline(Bin1, Bin2) ->
     io:format("*DBG* ~p~n", [[{bin1,Bin1},{bin2,Bin2}]]),
     {error,expected_crlf}.
 
-chunk_size(Bin1, Bin2) ->
-    case next_line(Bin1, Bin2, ?CHUNKSZ_MAX) of
+chunk_size(Buf, Bin) ->
+    case next_line(Buf, Bin, ?CHUNKSZ_MAX) of
         {skip,_} = T -> T;
         {error,_} = T -> T;
         {ok,?EMPTY,_Rest} -> {error,chunk_size_empty};
@@ -185,7 +175,7 @@ chunk_size(Bin1, Bin2) ->
 %% Pass the body_reader the result of body_length.
 %% Returns the initial state of the reader.
 body_reader(chunked) ->
-    {chunked,{between,?EMPTY}};
+    {chunked,{between,linebuf()}};
 
 body_reader(ContentLength) when is_integer(ContentLength) ->
     {fixed,{0,ContentLength}}.
@@ -235,32 +225,48 @@ concat(?EMPTY, Bin2) -> Bin2;
 concat(Bin1, ?EMPTY) -> Bin1;
 concat(Bin1, Bin2) -> <<Bin1/binary,Bin2/binary>>.
 
-next_line(Bin1, ?EMPTY, _Max) ->
-    {skip, Bin1};
+%% empty initial buffer for next_line
+linebuf() -> {?EMPTY,?EMPTY}.
 
-next_line(Bin1, Bin2, Max) ->
+buflen({?EMPTY,?EMPTY}) -> 0;
+buflen({?EMPTY,Bin2}) -> byte_size(Bin2);
+buflen({Bin1,?EMPTY}) -> byte_size(Bin1).
+
+bufdone({Bin1,_}) -> Bin1.
+
+bufnext({_,Bin2}, Bin3) -> concat(Bin2, Bin3).
+
+%% push done (scanned) binary into buffer or both done and todo binaries
+bufpush({Bin1,_}, Bin3) -> {concat(Bin1, Bin3), ?EMPTY}.
+bufpush({Bin1,_}, Bin3, Bin4) -> {concat(Bin1, Bin3), Bin4}.
+
+next_line(Buf, ?EMPTY, _Max) ->
+    {skip, Buf};
+
+next_line(Buf, Bin, Max) ->
+    Len = buflen(Buf),
     if
-        byte_size(Bin1) + byte_size(Bin2) > Max ->
-            {error, line_too_long};
+        Len > Max ->
+            {error,line_too_long};
         true ->
-            next_line_(Bin1, Bin2)
+            next_line_(Buf, Bin)
     end.
 
-next_line_(Bin1, Bin2) ->
+next_line_(Buf, Bin1) ->
     %%io:format("DBG next_line: ~p --- ~p~n", [Bin1, Bin2]),
+    Bin2 = bufnext(Buf, Bin1),
     case binary:match(Bin2, <<?CRLF>>) of
         nomatch ->
-            {skip, concat(Bin1, Bin2)};
-        {0,_} ->
-            {ok, Bin1, binary_part(Bin2, 2, byte_size(Bin2)-2)};
-        {Pos,_} when byte_size(Bin2) =:= Pos+2 ->
-            %% CRLF is at the end of Bin2
-            Bin3 = binary_part(Bin2, 0, Pos),
-            Line = concat(Bin1, Bin3),
-            {ok, Line, ?EMPTY};
+            case binary:last(Bin2) of
+                ?CR ->
+                    Pre = binary_part(Bin2, byte_size(Bin2)-1),
+                    {skip, bufpush(Buf, Pre, <<?CR>>)};
+                _ ->
+                    {skip, bufpush(Buf, Bin2)}
+            end;
         {Pos,_} ->
-            Bin3 = binary_part(Bin2, 0, Pos),
-            Line = concat(Bin1, Bin3),
+            Pre = binary_part(Bin2, 0, Pos),
+            Line = concat(bufdone(Buf), Pre),
             Rest = binary_part(Bin2, Pos+2, byte_size(Bin2)-Pos-2),
             {ok, Line, Rest}
     end.
