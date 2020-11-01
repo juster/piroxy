@@ -259,7 +259,7 @@ next_line_(Buf, Bin1) ->
         nomatch ->
             case binary:last(Bin2) of
                 ?CR ->
-                    Pre = binary_part(Bin2, byte_size(Bin2)-1),
+                    Pre = binary_part(Bin2, 0, byte_size(Bin2)-1),
                     {skip, bufpush(Buf, Pre, <<?CR>>)};
                 _ ->
                     {skip, bufpush(Buf, Bin2)}
