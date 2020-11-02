@@ -230,7 +230,8 @@ linebuf() -> {?EMPTY,?EMPTY}.
 
 buflen({?EMPTY,?EMPTY}) -> 0;
 buflen({?EMPTY,Bin2}) -> byte_size(Bin2);
-buflen({Bin1,?EMPTY}) -> byte_size(Bin1).
+buflen({Bin1,?EMPTY}) -> byte_size(Bin1);
+buflen({Bin1,Bin2}) -> byte_size(Bin1) + byte_size(Bin2).
 
 bufdone({Bin1,_}) -> Bin1.
 
