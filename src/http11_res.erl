@@ -20,7 +20,7 @@ read(Pid, Bin) ->
 push(Pid, Sock, {Req,Term}) ->
     case send(Sock, Term) of
         {error,closed} ->
-            http11_statem:close(closed);
+            shutdown(Pid, closed);
         {error,Reason} ->
             exit(Reason);
         ok ->

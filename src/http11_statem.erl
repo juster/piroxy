@@ -2,8 +2,8 @@
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
 
--export([start_link/3, start_link/4, read/2, swap_state/2, activate/1, shutdown/2,
-        encode/1]).
+-export([start_link/3, start_link/4, read/2, swap_state/2, activate/1,
+         shutdown/2, encode/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
