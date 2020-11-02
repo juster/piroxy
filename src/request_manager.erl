@@ -30,17 +30,16 @@ targets() ->
 
 init([]) ->
     process_flag(trap_exit, true),
-    ok = gen_event:add_sup_handler(pievents, request_handler, []),
     {ok, []}.
 
 handle_cast({make_request,Req,Target,Head}, L) ->
     case keyfind(Target, 1, L) of
         {_,Pid} ->
-            request_target:make_request(Pid, Req, Head),
+            request_target:send_request(Pid, Req, Head),
             {noreply,L};
         false ->
             {ok,Pid} = request_target:start_link(Target),
-            request_target:make_request(Pid, Req, Head),
+            request_target:send_request(Pid, Req, Head),
             {noreply,[{Target,Pid}|L]}
     end;
 

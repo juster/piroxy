@@ -35,6 +35,7 @@ handle_event({upgrade_protocol,{Pid,I},M,A}, {Pid,P0}) ->
     {ok, {Pid, flush(Pid, P)}};
 
 handle_event({make_tunnel,{Pid,I},HostInfo}, {Pid,P0}) ->
+    ?DBG("make_tunnel", [{pid,Pid},{i,I},{hostinfo,HostInfo}]),
     P = write_last(I, {make_tunnel,HostInfo}, P0),
     {ok, {Pid, flush(Pid, P)}};
 

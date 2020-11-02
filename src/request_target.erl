@@ -10,7 +10,7 @@
 -define(DEC(Field, Stats), Stats#stats{Field=Stats#stats.Field-1}).
 -define(INC(Field, Stats), Stats#stats{Field=Stats#stats.Field+1}).
 
--export([start_link/1, make_request/3, cancel_request/2, need_request/1,
+-export([start_link/1, send_request/3, cancel_request/2, need_request/1,
          request_done/2, pending_requests/1, retire_self/1]).
 -export([init/1, terminate/2,
          handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
@@ -20,8 +20,8 @@
 start_link(HostInfo) ->
     gen_server:start_link(?MODULE, [HostInfo], []).
 
-make_request(Pid, Req, Head) ->
-    gen_server:cast(Pid, {make_request,Req,Head}).
+send_request(Pid, Req, Head) ->
+    gen_server:cast(Pid, {send_request,Req,Head}).
 
 cancel_request(Pid, Req) ->
     gen_server:cast(Pid, {cancel_request,Req}).
@@ -67,7 +67,7 @@ handle_call(_, _, S) ->
 %%% from request_manager
 %%%
 
-handle_cast({make_request,Req,Head}, S0) ->
+handle_cast({send_request,Req,Head}, S0) ->
     case S0#state.waitlist of
         [Pid|Waitlist] ->
             %% we have a proc waiting for a request...
@@ -210,7 +210,7 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
         N#stats.nproc =< N#stats.nmax, S2#state.todo =/= [] ->
             %% reconnect new target proc if we haven't (somehow) gone
             %% over limit AND we actually have more pending requests
-            {ok,OutPid} = outbound:start_link(S2#state.hostinfo),
+            {ok,_OutPid} = outbound:start_link(S2#state.hostinfo),
             S3 = S2#state{stats=N},
             ?DBG("handle_info", [{host,element(2,S3#state.hostinfo)},
                                  {reason,Reason},

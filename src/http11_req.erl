@@ -45,7 +45,7 @@ head(StatusLn, Headers, State0) ->
         {tunnel,HI} ->
             %% Connect uses the "authority" form of URIs and so
             %% cannot be used with relativize/2.
-            pievents:make_request(Req, HI, H),
+            make_request(Req, HI, H),
             {H,setelement(2,State,HI)};
         relative ->
             %% HTTP header is for a relative URL. Hopefully this is inside of a
@@ -54,26 +54,41 @@ head(StatusLn, Headers, State0) ->
                 null ->
                     exit(host_missing);
                 HI ->
-                    pievents:make_request(Req, HI, H),
+                    make_request(Req, HI, H),
                     {H,State}
             end;
         {absolute,HI} ->
             Hrel = relativize(H),
-            pievents:make_request(Req, HI, Hrel),
+            make_request(Req, HI, Hrel),
             {Hrel,State}
     end.
 
 body(Bin, State) ->
-    pievents:stream_request(lastreq(State), Bin),
+    morgue:append(lastreq(State), Bin),
     State.
 
 reset(State) ->
-    pievents:end_request(lastreq(State)),
+    morgue:append(lastreq(State), done),
     State.
 
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
+
+make_request(Req, <<"*">>=Target, #head{method=options}=H) ->
+    pievents:make_request(Req, Target, H),
+    pievents:respond(Req, {status,ok}),
+    pievents:close_response(Req),
+    ok;
+
+make_request(Req, Target, #head{method=connect}=H) ->
+    pievents:make_request(Req, Target, H),
+    pievents:make_tunnel(Req, Target),
+    ok;
+
+make_request(Req, HI, H) ->
+    pievents:make_request(Req, HI, H),
+    request_manager:make_request(Req, HI, H).
 
 send({tcp,Sock}, Bin) ->
     gen_tcp:send(Sock, Bin);

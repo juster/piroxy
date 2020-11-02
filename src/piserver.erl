@@ -76,7 +76,6 @@ loop(Sock, M, A) ->
         {ssl_error,_,Reason} ->
             M:shutdown(A, Reason);
         {make_tunnel,HostInfo} ->
-            %%?DBG("loop", [{msg,make_tunnel},{hostinfo,HostInfo}]),
             send(Sock, M:encode({status,http_ok})),
             TlsSock = tunnel(Sock, HostInfo),
             loop({ssl,TlsSock}, M, A);
@@ -115,45 +114,17 @@ send({ssl,Sock}, Data) ->
 %%    send(Sock, M:encode({error,Reason})),
 %%    exit(Reason).
 
-mitm(TcpSock, Host) ->
-    case inet:setopts(TcpSock, [{active,false}]) of
-        %% socket may have suddenly closed!
-        {error,_}=Err1 -> throw(Err1);
-        ok -> ok
-    end,
-    {HostCert,Key,_CaCert} = case forger:forge(Host) of
-                                 {error,_}=Err2 -> throw(Err2);
-                                 {ok,T} -> T
-                             end,
-    DerKey = public_key:der_encode('ECPrivateKey', Key),
-    Opts = [{mode,binary}, {packet,0}, {verify,verify_none},
-            {alpn_preferred_protocols,[<<"http/1.1">>]},
-            {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
-    %%{ok,Timer} = timer:apply_after(?CONNECT_TIMEOUT, io, format, ["SSL handshake spoofing ~s timed out.", Host]),
-    TlsSock = case ssl:handshake(TcpSock, Opts, ?CONNECT_TIMEOUT) of
-                  {error,_}=Err3 ->
-                      throw(Err3);
-                  {ok,X} ->
-                      X
-              end,
-    %% XXX: active does not always work when provided to handshake/2
-    ssl:setopts(TlsSock, [{active,true}]),
-    TlsSock.
-
 %% TODO: handle ssl sockets as well? (allows nested CONNECTs)
 %% TODO: allow ports other than 443?
 tunnel({tcp,TcpSock}, {https,Host,443}) ->
-    try
-        TlsSock = mitm(TcpSock, Host),
-        %%?LOG_INFO("~p SSL handshake successful", [self()]),
-        TlsSock
-    catch
+    case forger:mitm(TcpSock, Host) of
+        {ok,TlsSock} ->
+            TlsSock;
         {error,closed} ->
             exit(closed);
         {error,einval} ->
             exit(closed);
         {error,Rsn} ->
-            ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(),
-                                                                      Host, Rsn]),
+            ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(), Host, Rsn]),
             exit(Rsn)
     end.
