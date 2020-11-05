@@ -7,7 +7,7 @@
 
 -export([nsplit/3, centenc/1, formenc/1, compose_uri/1]).
 -export([status_split/1, method_bin/1, method_atom/1, version_atom/1]).
--export([status_bin/1]).
+-export([status_bin/1, encode/1]).
 
 -import(lists, [reverse/1, flatten/1]).
 -include("../include/phttp.hrl").
@@ -120,3 +120,43 @@ status_bin(http_bad_gateway) -> {ok,<<"502 Bad Gateway">>};
 status_bin(http_gateway_timeout) -> {ok,<<"504 Gateway Timeout">>};
 status_bin(http_ver_not_supported) -> {ok,<<"505 HTTP Version Not Supported">>};
 status_bin(_) -> not_found.
+
+encode(#head{line=Line, headers=Headers}) ->
+    [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
+
+encode({body,Body}) ->
+    Body;
+
+encode({error,Reason}) ->
+    [error_statusln(Reason)|<<?CRLF>>];
+
+encode({status,HttpStatus}) ->
+    case phttp:status_bin(HttpStatus) of
+        {ok,Bin} ->
+            [<<?HTTP11>>," ",Bin,<<?CRLF>>|<<?CRLF>>];
+        not_found ->
+            exit(badarg)
+    end.
+
+error_statusln(host_mismatch) -> error_statusln(http_bad_request);
+error_statusln(host_missing) -> error_statusln(http_bad_request);
+error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
+error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
+
+%% from pimsg:body_length/1
+error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
+
+%% from http11_res
+error_statusln({shutdown,timeout}) -> error_statusln(http_gateway_timeout);
+%% http11_res:body_length/3
+error_statusln({missing_length,_,_}) -> error_statusln(http_bad_gateway);
+
+error_statusln(Reason) ->
+    case phttp:status_bin(Reason) of
+        {ok,Bin} -> Bin;
+        not_found ->
+            {ok,Bin} = phttp:status_bin(http_bad_gateway),
+            [<<?HTTP11>>," ",Bin|<<?CRLF>>]
+    end.

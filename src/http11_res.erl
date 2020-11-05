@@ -12,7 +12,7 @@
 
 start_link([RequestTargetPid]) ->
     http11_statem:start_link(?MODULE, #state{pid=RequestTargetPid},
-                             {?RESPONSE_TIMEOUT, 60000}, []).
+                             {?RESPONSE_TIMEOUT, 60000}, [{debug,[trace]}]).
 
 read(Pid, Bin) ->
     http11_statem:read(Pid, Bin).
@@ -90,14 +90,14 @@ body(Chunk, S) ->
 reset(#state{connection=closed} = S) ->
     %% The last response requested that we close the connection.
     {Req,_H} = hd(S#state.queue),
-    request_target:request_done(S#state.pid, Req),
+    request_target:close(S#state.pid, Req),
     pievents:close_response(Req),
     exit({shutdown,closed});
 
 reset(#state{connection=keepalive} = S) ->
     Q = S#state.queue,
     {Req,_H} = hd(Q),
-    request_target:request_done(S#state.pid, Req),
+    request_target:close(S#state.pid, Req),
     pievents:close_response(Req),
     S#state{queue=tl(Q)}.
 

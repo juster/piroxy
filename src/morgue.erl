@@ -41,10 +41,16 @@ init([]) ->
     {ok,{ets:new(?MODULE, [duplicate_bag,private]), dict:new()}}.
 
 handle_cast({append,Key,Body}, {Tab,D}) ->
+    case Body of
+        eof ->
+            ?DBG("append", [{key,Key},{body,Body}]);
+        _ ->
+            ok
+    end,
     ets:insert(Tab, {Key,Body}),
     case dict:find(Key, D) of
         {ok,Pid} ->
-            Pid ! {stream,{Key,{body,Body}}};
+            pipipe:drip(Pid, Key, Body);
         error ->
             ok
     end,
@@ -66,7 +72,7 @@ handle_call({forward,Key,Pid}, _From, {Tab,D0}) ->
         error ->
             D = dict:store(Key, Pid, D0),
             foreach(fun ({_,Body}) ->
-                            Pid ! {stream,{Key,{body,Body}}}
+                            pipipe:drip(Pid, Key, Body)
                     end, ets:lookup(Tab, Key)),
             {reply, ok, {Tab,D}}
     end.
