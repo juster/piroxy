@@ -25,13 +25,17 @@ loop(Pid, Q, Cache) ->
         {expect,Key} ->
             loop(Pid, Q++[{Key,wait}], dict:store(Key, [], Cache));
         {drip,Key,eof} ->
-            ?DBG("loop", [{pid,Pid},{q,Q},{drip,Key,eof}]),
+            %%?DBG("loop", [{pid,Pid},{q,Q},{drip,Key,eof}]),
             case Q of
                 [{Key,_}|Q_] ->
                     %% Flush pipeline as much as possible if 'eof' is received.
+                    Pid ! {pipe,Key,eof},
                     flush(Pid, Q_, dict:erase(Key, Cache));
                 _ ->
-                    loop(Pid, lists:keyreplace(Key, 1, Q, {Key,done}), Cache)
+                    io:format("[~B] blocked [~B] *PIPE*~n",
+                              [element(1,hd(Q)), Key]),
+                    loop(Pid, lists:keyreplace(Key, 1, Q, {Key,done}),
+                         dict:append(Key, eof, Cache))
             end;
         {drip,Key,Val} ->
             case Q of

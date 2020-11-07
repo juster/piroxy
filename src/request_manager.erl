@@ -36,12 +36,12 @@ init([]) ->
     {ok, {[],1}}.
 
 %% cancel a request, but we do not know which host the request is for...
-handle_cast({cancel_request,Req}, L) ->
+handle_cast({cancel_request,Req}, {L,_}=State) ->
     foreach(fun ({_,TargetPid}) ->
                     request_target:cancel(TargetPid, Req)
             end, L),
     morgue:forget(Req),
-    {noreply,L};
+    {noreply,State};
 
 handle_cast(_, State) ->
     {noreply,State}.
@@ -50,8 +50,22 @@ handle_call(nextid, _From, {L,I}) ->
     {reply,I,{L,I+1}};
 
 handle_call({make_request,Pid1,Target,Head}, _From, {L,I}) ->
+    Host = element(2,Target),
+    Line = if
+               length(Head#head.line) > 60 ->
+                   lists:sublist(Head#head.line, 1, 60) ++ "...";
+               true ->
+                   Head#head.line
+           end,
+    io:format("[~B] (~s) ~p NEW ~s~n", [I, Host, Pid1, Line]),
     %%?DBG("make_request", [{req,I},{target,element(2,Target)},
-    %%                      {head,Head#head.line}]),
+    %%                      {head,
+    %%                       if
+    %%                           length(Head#head.line) > 20 ->
+    %%                               lists:sublist(Head#head.line, 1, 20) ++ "...";
+    %%                           true ->
+    %%                               Head#head.line
+    %%                       end}]),
     pipipe:expect(Pid1, I),
     case keyfind(Target, 1, L) of
         {_,Pid2} ->

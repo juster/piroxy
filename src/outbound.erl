@@ -80,6 +80,14 @@ loop(Sock, Pids, {Q,Close}=State) ->
         {pipe,Req,{start,Head,PidI}} ->
             %% pipeline the next request ASAP
             {Pid1,Pid2,_} = Pids,
+            Host = fieldlist:get_value(<<"host">>, Head#head.headers),
+            Line = if
+                       length(Head#head.line) > 60 ->
+                           lists:sublist(Head#head.line, 1, 60) ++ "...";
+                       true ->
+                           Head#head.line
+                   end,
+            io:format("[~B] (~s) -> ~s~n", [Req, Host, Line]),
             request_target:ready(Pid1, Pid2),
             send(Sock, phttp:encode(Head)),
             loop(Sock, Pids, {Q ++ [{Req,Head,PidI}], Close});
@@ -109,7 +117,7 @@ loop(Sock, Pids, {Q,Close}=State) ->
             http11_statem:read(element(3,Pids), Data),
             loop(Sock, Pids, State);
         {ssl_closed,_} ->
-            ?DBG("loop", ssl_closed),
+            %%?DBG("loop", ssl_closed),
             http11_statem:shutdown(element(3,Pids), closed),
             loop(Sock, Pids, State);
         {ssl_error,Reason} ->
@@ -124,18 +132,20 @@ loop(Sock, Pids, {Q,Close}=State) ->
     end.
 
 http(Sock, Pids, {Q0, Close0}=State, Term) ->
-    [{Req,_Head,PidI}|Q] = Q0,
+    [{Req,Head,PidI}|Q] = Q0,
     pipipe:drip(PidI, Req, Term),
     case Term of
         #head{} ->
             Close = connection_close(Term),
             loop(Sock, Pids, {Q0,Close});
         eof ->
-            ?DBG("http", [eof,{req,Req},{pidi,PidI}]),
+            %%?DBG("http", [eof,{req,Req},{pidi,PidI}]),
             request_target:finish(element(1,Pids), Req),
             case Close0 of
                 true ->
-                    ?DBG("http", closing),
+                    Host = fieldlist:get_value(<<"host">>, Head#head.headers),
+                    io:format("[~B] (~s) EOF -> ~p~n", [Req, Host,PidI]),
+                    %%?DBG("http", closing),
                     exit({shutdown,closed});
                 false ->
                     loop(Sock, Pids, {Q,false})
@@ -188,10 +198,10 @@ response_code(StatusLn) ->
 connection_close(#head{headers=Headers}) ->
     case fieldlist:get_value(<<"connection">>, Headers) of
         <<"close">> ->
-            ?DBG("connection_close", {connection,<<"close">>}),
+            %%?DBG("connection_close", {connection,<<"close">>}),
             true;
         Bin ->
-            ?DBG("connection_close", {connection,Bin}),
+            %%?DBG("connection_close", {connection,Bin}),
             false
     end.
 

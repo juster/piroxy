@@ -57,7 +57,7 @@ server() ->
     end.
 
 loop(Sock, Pid1, Pid2) ->
-    loop(Sock, Pid1, Pid2, {null,null}).
+    loop(Sock, Pid1, Pid2, {null,[],null}).
 
 loop(Sock, Pid1, Pid2, State) ->
     receive
@@ -67,6 +67,7 @@ loop(Sock, Pid1, Pid2, State) ->
             loop(Sock, Pid1, Pid2, State);
         {tcp_closed,_} ->
             %%?DBG("loop", tcp_closed),
+            cancelall(State),
             http11_statem:shutdown(Pid1, closed),
             loop(Sock, Pid1, Pid2, State);
         {tcp_error,_,Reason} ->
@@ -77,7 +78,11 @@ loop(Sock, Pid1, Pid2, State) ->
             http11_statem:read(Pid1, Data),
             loop(Sock, Pid1, Pid2, State);
         {ssl_closed,_} ->
+            Reqs = lists:join(",", [io_lib:format("~B", [R]) || R <- element(2,State)]),
+            Host = element(2,element(1,State)),
+            io:format("[~s] (~s) inbound closed (pipe ~p)~n", [Reqs, Host, Pid2]),
             %%?DBG("loop", ssl_closed),
+            cancelall(State),
             http11_statem:shutdown(Pid1, closed),
             loop(Sock, Pid1, Pid2, State);
         {ssl_error,_,Reason} ->
@@ -87,8 +92,26 @@ loop(Sock, Pid1, Pid2, State) ->
         {http,Term} ->
             %%?DBG("loop", http),
             http(Sock, Pid1, Pid2, State, Term);
+        {pipe,Req,eof} ->
+            {HI,Reqs,Req} = State,
+            Host = element(2, element(1, State)),
+            io:format("[~B] (~s) EOF <- ~p~n", [Req, Host, Pid2]),
+            loop(Sock, Pid1, Pid2, {HI,tl(Reqs),Req});
         {pipe,Req,Term} ->
             %%?DBG("loop", [{pipe,Req}]),
+            case Term of
+                #head{}=H ->
+                    Host = element(2, element(1, State)),
+                    Line = if
+                               length(H#head.line) > 60 ->
+                                   lists:sublist(H#head.line, 1, 60) ++ "...";
+                               true ->
+                                   H#head.line
+                           end,
+                    io:format("[~B] (~s) <- ~s~n", [Req, Host, Line]);
+                _ ->
+                    ok
+            end,
             send(Sock, phttp:encode(Term)),
             loop(Sock, Pid1, Pid2, State);
         {'EXIT',Pid,Reason} ->
@@ -99,7 +122,7 @@ loop(Sock, Pid1, Pid2, State) ->
             exit({unknown_message, Any})
     end.
 
-http(Sock, Pid1, Pid2, {HI,_Req0}, {head,StatusLn,Headers}) ->
+http(Sock, Pid1, Pid2, {HI,Reqs,_}, {head,StatusLn,Headers}) ->
     H = head(StatusLn, Headers),
     http11_statem:expect_bodylen(Pid1, H#head.bodylen),
     case target(H) of
@@ -109,7 +132,7 @@ http(Sock, Pid1, Pid2, {HI,_Req0}, {head,StatusLn,Headers}) ->
             ok = send(Sock, phttp:encode({status,http_ok})),
             receive {http,eof} -> ok end,
             Sock2 = tunnel(Sock, HI2),
-            loop(Sock2, Pid1, Pid2, {HI2,null});
+            loop(Sock2, Pid1, Pid2, {HI2,Reqs,null});
         self ->
             %% OPTIONS * refers to the proxy itself
             %% TODO: not yet implemented, really
@@ -119,7 +142,7 @@ http(Sock, Pid1, Pid2, {HI,_Req0}, {head,StatusLn,Headers}) ->
             pipipe:expect(Pid2, Req),
             pipipe:drip(Pid2, Req, {body,phttp:encode({status,http_ok})}),
             pipipe:drip(Pid2, Req, eof),
-            loop(Sock, Pid1, Pid2, {HI,Req});
+            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req});
         relative ->
             %% HTTP header is for a relative URL. Hopefully this is inside of a
             %% CONNECT tunnel!
@@ -128,7 +151,7 @@ http(Sock, Pid1, Pid2, {HI,_Req0}, {head,StatusLn,Headers}) ->
                 _ -> ok
             end,
             Req = request_manager:make(Pid2, HI, H),
-            loop(Sock, Pid1, Pid2, {HI,Req});
+            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req});
         {absolute,HI2} ->
             case HI of
                 null -> ok;
@@ -136,10 +159,10 @@ http(Sock, Pid1, Pid2, {HI,_Req0}, {head,StatusLn,Headers}) ->
             end,
             Hrel = relativize(H),
             Req = request_manager:make(Pid2, HI2, Hrel),
-            loop(Sock, Pid1, Pid2, {HI,Req})
+            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req})
     end;
 
-http(Sock, Pid1, Pid2, {_,Req}=State, Term) ->
+http(Sock, Pid1, Pid2, {_,_,Req}=State, Term) ->
     morgue:append(Req, Term),
     loop(Sock, Pid1, Pid2, State).
 
@@ -267,3 +290,7 @@ check_host(Host, Headers) ->
             {error,{host_mismatch,Host2}}
     end.
 
+cancelall({_,Reqs,_}) ->
+    lists:foreach(fun (Req) ->
+                          request_manager:cancel(Req)
+                  end, Reqs).

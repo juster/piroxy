@@ -37,34 +37,31 @@ init([Pid,Ts]) ->
     {ok, eof, {null,Pid,Ts}}.
 
 %% use enter events to choose between the idle timeout and active timeout
-handle_event(enter, _, eof, {_,_,{_,T2}}) ->
-    {keep_state_and_data,
-     [{{timeout,idle},T2,[]},
-      {{timeout,active},cancel}]};
+handle_event(enter, _, eof, {_,Pid,{_,T2}}) ->
+    {keep_state_and_data, {timeout,T2,idle}};
 
 handle_event(enter, _, _, {_,_,{T1,_}}) ->
-    {keep_state_and_data,
-     [{{timeout,idle},cancel},
-      {{timeout,active},T1,[]}]};
+    {keep_state_and_data, {timeout,T1,active}};
 
 %% switch to the active timeout when http11_res sends data and expects a result
-handle_event(cast, start_active_timer, _, {_,_,{T1,_}}) ->
-    {keep_state_and_data,
-     [{{timeout,idle},cancel},
-      {{timeout,active},T1,[]}]};
+handle_event(cast, start_active_timer, eof, {_,_,{T1,_}}) ->
+    {keep_state_and_data, {timeout,T1,active}};
 
-handle_event({timeout,idle}, _, _, _) ->
-    %% use the idle timeout to automatically close
+handle_event(timeout, idle, _, _) ->
+    %% Use the idle timeout to automatically close.
     {stop, {shutdown,closed}};
 
-handle_event({timeout,active}, _, _, _) ->
+handle_event(timeout, active, _, _) ->
+    %% Only a timeout in 'eof' is not considered an error.
     {stop, {shutdown,timeout}};
 
-handle_event(cast, {data,<<>>}, _, _) ->
-    keep_state_and_data;
-
-handle_event(cast, {data,empty}, _, _) ->
-    keep_state_and_data;
+%% Ignore empty data but reset the event timers.
+handle_event(cast, {data,Empty}, State, {_,_,{T1,T2}})
+  when Empty == <<>>; Empty == empty ->
+    case State of
+        eof -> {keep_state_and_data, {timeout,T2,idle}};
+        _ -> {keep_state_and_data, {timeout,T1,active}}
+    end;
 
 handle_event(cast, {data,_}, eof, {_,Pid,Ts}) ->
     {next_state, head,
@@ -96,7 +93,6 @@ handle_event(cast, _, bodywait, _) ->
 
 %% used to stop the process, without bypassing the messages in the queue
 handle_event(cast, {shutdown,Reason}, eof, _) ->
-    ?DBG("shutdown", [{reason,Reason}]),
     {stop, {shutdown,Reason}};
 
 handle_event(cast, {data,Bin1}, body, {Reader0,Pid,Ts}) ->

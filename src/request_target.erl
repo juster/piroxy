@@ -100,7 +100,7 @@ handle_cast({cancel_request,Req}, S) ->
     case lists:keyfind(Req, 2, S#state.sent) of
         false ->
             {noreply, S#state{todo=Ltodo}};
-        {Req,_,Pid} ->
+        {Pid,_,_,_} ->
             %% we were unlucky and the request is in progress
             %% cancel it to force a restart
             exit(Pid, cancelled),
@@ -129,7 +129,7 @@ handle_cast({outbound_ready,Pid1}, S0) ->
 %%% Called when the request is finished (i.e. the response is completed).
 handle_cast({finish_request,Req}, S0) ->
     Lsent = keydelete(Req, 2, S0#state.sent),
-    ?DBG("finish_request", [{req,Req}]),
+    %%?DBG("finish_request", [{req,Req}]),
     S1 = S0#state{sent=Lsent},
     morgue:forget(Req),
     %% Increase the number of max possible workers until we reach hard limit.
@@ -195,9 +195,9 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
     %% Normal errors do not cause a failure.
     N = if
             Failure ->
-                ?DBG("handle_info", [{reason,Reason},
-                                     {failure,Failure},
-                                     {stats,S0#state.stats}]),
+                %%?DBG("handle_info", [{reason,Reason},
+                %%                     {failure,Failure},
+                %%                     {stats,S0#state.stats}]),
                 ?INC(nfail, S0#state.stats);
             true ->
                 S0#state.stats
@@ -214,9 +214,9 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
             %% over limit AND we actually have more pending requests
             outbound:start_link(S2#state.hostinfo),
             S3 = S2#state{stats=N},
-            ?DBG("handle_info", [{host,element(2,S3#state.hostinfo)},
-                                 {reason,Reason},
-                                 {stats,N}]),
+            %%?DBG("handle_info", [{host,element(2,S3#state.hostinfo)},
+            %%                     {reason,Reason},
+            %%                     {stats,N}]),
             {noreply,S3,{continue,check_waitlist}};
         true ->
             S3 = S2#state{stats=?DEC(nproc, N)},
@@ -253,6 +253,8 @@ redo(Pid, S) ->
                     pipipe:reset(PidP, Req)
             end, L0),
     L = [{Req,Head,Pid2} || {_,Req,Head,Pid2} <- L0],
+    io:format("[~s] REDO~n",
+              [lists:join(",", [io_lib:format("~B", [Req]) || {Req,_,_} <- L])]),
     Ltodo = L ++ S#state.todo, % move to front of todo list
     %%?DBG("redo", [{pid,Pid},{todo,Ltodo}]),
     S#state{todo=Ltodo, sent=Lsent}.
