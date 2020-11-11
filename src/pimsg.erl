@@ -13,7 +13,7 @@
 -include("../include/phttp.hrl").
 
 %%%
-%%% exports
+%%% EXPORTS
 %%%
 
 track_header(N, ?EMPTY) ->
@@ -23,7 +23,7 @@ track_header(N0, M) ->
     N = N0 + M,
     if
         N > ?HEADER_MAX ->
-            exit(header_too_big);
+            exit(head_too_big);
         true ->
             N
     end.

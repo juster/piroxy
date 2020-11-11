@@ -29,3 +29,5 @@
 -define(DBG(Fname, T), io:format("*DBG* ~p {~s} [~s]~n***** ~p~n", [self(),?MODULE,Fname,T])).
 %%-define(DBG(Fname, T), ok).
 -record(head, {line, method, version, headers=[], bodylen}).
+
+-define(TRACE(Sess, Host, Dir, Str), phttp:trace(Sess,Host,Dir,Str)).

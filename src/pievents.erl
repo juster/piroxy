@@ -1,38 +1,22 @@
 -module(pievents).
--include("../include/phttp.hrl").
-
--export([start/0, start_link/0]).
--export([make_request/3, stream_request/2, fail_request/2, end_request/1,
-         respond/2, close_response/1, upgrade_protocol/3, make_tunnel/2]).
-
-start() ->
-    gen_event:start({local,?MODULE}).
+-export([start_link/0, connect/2, send/3, recv/3, cancel/2, fail/2]).
 
 start_link() ->
     gen_event:start_link({local,?MODULE}).
 
 %%% called by the inbound process
 
-make_request(Req, HostInfo, Head) ->
-    gen_event:notify(?MODULE, {make_request,Req,HostInfo,Head}).
+connect(Req, Target) ->
+    gen_event:notify(?MODULE, {connect,Req,Target}).
 
-stream_request(Req, Body) ->
-    gen_event:notify(?MODULE, {stream_request,Req,Body}).
+send(Req, Proto, Term) ->
+    gen_event:notify(?MODULE, {send,Req,Proto,Term}).
 
-fail_request(Req, Reason) ->
-    gen_event:notify(?MODULE, {fail_request,Req,Reason}).
+recv(Req, Proto, Term) ->
+    gen_event:notify(?MODULE, {recv,Req,Proto,Term}).
 
-end_request(Req) ->
-    gen_event:notify(?MODULE, {end_request,Req}).
+cancel(Req, Reason) ->
+    gen_event:notify(?MODULE, {cancel,Req,Reason}).
 
-respond(Req, Any) ->
-    gen_event:notify(?MODULE, {respond,Req,Any}).
-
-close_response(Req) ->
-    gen_event:notify(?MODULE, {close_response,Req}).
-
-upgrade_protocol(Req, Stream, Args) ->
-    gen_event:notify(?MODULE, {upgrade_protocol,Req,Stream,Args}).
-
-make_tunnel(Req, HostInfo) ->
-    gen_event:notify(?MODULE, {make_tunnel,Req,HostInfo}).
+fail(Req, Reason) ->
+    gen_event:notify(?MODULE, {fail,Req,Reason}).

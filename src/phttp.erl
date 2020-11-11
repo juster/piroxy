@@ -8,6 +8,7 @@
 -export([nsplit/3, centenc/1, formenc/1, compose_uri/1]).
 -export([status_split/1, method_bin/1, method_atom/1, version_atom/1]).
 -export([status_bin/1, encode/1]).
+-export([trace/4]).
 
 -import(lists, [reverse/1, flatten/1]).
 -include("../include/phttp.hrl").
@@ -160,3 +161,21 @@ error_statusln(Reason) ->
             {ok,Bin} = phttp:status_bin(http_bad_gateway),
             [<<?HTTP11>>," ",Bin|<<?CRLF>>]
     end.
+
+trace(Sess, Host, Arrow, Term) ->
+    {_,{H,M,S}} = calendar:local_time(),
+    Str = case Term of
+              #head{} ->
+                  Line = iolist_to_binary(Term#head.line),
+                  if
+                      byte_size(Line) > 60 ->
+                          Bin = binary_part(Line, 0, 60),
+                          <<Bin/binary,"...">>;
+                      true ->
+                          Line
+                  end;
+              _ ->
+                  Term
+          end,
+    io:format("~2..0B~2..0B [~B] (~s) ~s ~s~n",
+              [M,S,Sess,Host,Arrow,Str]).

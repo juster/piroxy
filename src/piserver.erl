@@ -47,102 +47,100 @@ superserver(Listen) ->
     end.
 
 server() ->
-    process_flag(trap_exit, true),
+    %%process_flag(trap_exit, true),
     {ok,Pid1} = http11_statem:start_link({?REQUEST_TIMEOUT,infinity}, []),
-    Pid2 = pipipe:start_link(self()),
     receive
         {start,TcpSock} ->
             inet:setopts(TcpSock, [{active,true}]),
-            loop({tcp,TcpSock}, Pid1, Pid2)
+            loop({tcp,TcpSock}, Pid1)
     end.
 
-loop(Sock, Pid1, Pid2) ->
-    loop(Sock, Pid1, Pid2, {null,[],null}).
+loop(Sock, Pid1) ->
+    loop(Sock, Pid1, {null,[],null}).
 
-loop(Sock, Pid1, Pid2, State) ->
+loop(Sock, Pid1, State) ->
     receive
         %% receive requests from the client and parse them out
         {tcp,_,Data} ->
             http11_statem:read(Pid1, Data),
-            loop(Sock, Pid1, Pid2, State);
+            loop(Sock, Pid1, State);
         {tcp_closed,_} ->
             %%?DBG("loop", tcp_closed),
-            cancelall(State),
-            http11_statem:shutdown(Pid1, closed),
-            loop(Sock, Pid1, Pid2, State);
+            Reqs = lists:join(",", [io_lib:format("~B", [R]) || R <- element(2,State)]),
+            Host = case State of
+                       {null,_,_} -> "???";
+                       {{_,Host_,_},_,_} -> Host_
+                   end,
+            io:format("[~s] (~s) ~p inbound tcp closed~n", [Reqs, Host, self()]),
+            cancelall(element(2,State)),
+            http11_statem:shutdown(Pid1, cancel),
+            loop(Sock, Pid1, State);
         {tcp_error,_,Reason} ->
             ?DBG("loop", tcp_error),
             http11_statem:shutdown(Pid1, Reason),
-            loop(Sock, Pid1, Pid2, State);
+            loop(Sock, Pid1, State);
         {ssl,_,Data} ->
             http11_statem:read(Pid1, Data),
-            loop(Sock, Pid1, Pid2, State);
+            loop(Sock, Pid1, State);
         {ssl_closed,_} ->
             Reqs = lists:join(",", [io_lib:format("~B", [R]) || R <- element(2,State)]),
             Host = element(2,element(1,State)),
-            io:format("[~s] (~s) inbound closed (pipe ~p)~n", [Reqs, Host, Pid2]),
+            io:format("[~s] (~s) ~p inbound ssl closed~n", [Reqs, Host, self()]),
             %%?DBG("loop", ssl_closed),
-            cancelall(State),
-            http11_statem:shutdown(Pid1, closed),
-            loop(Sock, Pid1, Pid2, State);
+            cancelall(element(2,State)),
+            http11_statem:shutdown(Pid1, cancel),
+            loop(Sock, Pid1, State);
         {ssl_error,_,Reason} ->
             ?DBG("loop", ssl_error),
             http11_statem:shutdown(Pid1, Reason),
-            loop(Sock, Pid1, Pid2, State);
+            loop(Sock, Pid1, State);
         {http,Term} ->
             %%?DBG("loop", http),
-            http(Sock, Pid1, Pid2, State, Term);
-        {pipe,Req,eof} ->
+            http(Sock, Pid1, State, Term);
+        %% message from http_pipe/outbound
+        {http_pipe,Res,eof} ->
             {HI,Reqs,Req} = State,
-            Host = element(2, element(1, State)),
-            io:format("[~B] (~s) EOF <- ~p~n", [Req, Host, Pid2]),
-            loop(Sock, Pid1, Pid2, {HI,tl(Reqs),Req});
-        {pipe,Req,Term} ->
-            %%?DBG("loop", [{pipe,Req}]),
+            %% Pop the top request off the stack.
+            Host = case HI of
+                null -> "???";
+                {_,Host_,_} -> Host_
+            end,
+            ?TRACE(Res, Host, "<", "EOF"),
+            loop(Sock, Pid1, {HI,tl(Reqs),Req});
+        {http_pipe,Res,Term} ->
+            %%?DBG("loop", [{pipe,Res}]),
             case Term of
-                #head{}=H ->
-                    Host = element(2, element(1, State)),
-                    Line = if
-                               length(H#head.line) > 60 ->
-                                   lists:sublist(H#head.line, 1, 60) ++ "...";
-                               true ->
-                                   H#head.line
-                           end,
-                    io:format("[~B] (~s) <- ~s~n", [Req, Host, Line]);
+                #head{} ->
+                    Host = case element(1,State) of null -> "???"; {_,Host_,_} -> Host_ end,
+                    ?TRACE(Res, Host, "<", Term);
                 _ ->
                     ok
             end,
             send(Sock, phttp:encode(Term)),
-            loop(Sock, Pid1, Pid2, State);
-        {'EXIT',Pid,Reason} ->
-            %%?DBG("loop", [{reason,Reason},{pid,Pid}]),
-            exit(Reason);
+            loop(Sock, Pid1, State);
         Any ->
             ?DBG("loop", [{unknown_message,Any}]),
             exit({unknown_message, Any})
     end.
 
-http(Sock, Pid1, Pid2, {HI,Reqs,_}, {head,StatusLn,Headers}) ->
+http(Sock, Pid1, {HI,Reqs,_}, {head,StatusLn,Headers}) ->
     H = head(StatusLn, Headers),
     http11_statem:expect_bodylen(Pid1, H#head.bodylen),
     case target(H) of
         {authority,HI2} ->
             %% Connect uses the "authority" form of URIs and so
             %% cannot be used with relativize/2.
-            ok = send(Sock, phttp:encode({status,http_ok})),
+            send(Sock, phttp:encode({status,http_ok})),
             receive {http,eof} -> ok end,
             Sock2 = tunnel(Sock, HI2),
-            loop(Sock2, Pid1, Pid2, {HI2,Reqs,null});
+            loop(Sock2, Pid1, {HI2,Reqs,null});
         self ->
             %% OPTIONS * refers to the proxy itself
             %% TODO: not yet implemented, really
             %% Create a fake response.
             receive {http,eof} -> ok end,
-            Req = request_manager:nextid(),
-            pipipe:expect(Pid2, Req),
-            pipipe:drip(Pid2, Req, {body,phttp:encode({status,http_ok})}),
-            pipipe:drip(Pid2, Req, eof),
-            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req});
+            send(Sock, phttp:encode({status,http_ok})),
+            loop(Sock, Pid1, {HI,Reqs});
         relative ->
             %% HTTP header is for a relative URL. Hopefully this is inside of a
             %% CONNECT tunnel!
@@ -150,27 +148,40 @@ http(Sock, Pid1, Pid2, {HI,Reqs,_}, {head,StatusLn,Headers}) ->
                 null -> exit(host_missing);
                 _ -> ok
             end,
-            Req = request_manager:make(Pid2, HI, H),
-            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req});
+            Req = http_pipe:new(),
+            ?TRACE(Req, element(2,HI), ">", H),
+            piroxy_events:connect(Req, http, HI),
+            piroxy_events:send(Req, http, H),
+            loop(Sock, Pid1, {HI,Reqs++[Req],Req});
         {absolute,HI2} ->
             case HI of
                 null -> ok;
                 _ -> exit(already_connected)
             end,
             Hrel = relativize(H),
-            Req = request_manager:make(Pid2, HI2, Hrel),
-            loop(Sock, Pid1, Pid2, {HI,Reqs++[Req],Req})
+            Req = http_pipe:new(),
+            piroxy_events:connect(Req, http, HI2),
+            piroxy_events:send(Req, http, Hrel),
+            Host = fieldlist:get_value(<<"host">>, Hrel#head.headers),
+            ?TRACE(Req, Host, ">", Hrel),
+            loop(Sock, Pid1, {HI,Reqs++[Req],Req})
     end;
 
-http(Sock, Pid1, Pid2, {_,_,Req}=State, Term) ->
-    morgue:append(Req, Term),
-    loop(Sock, Pid1, Pid2, State).
+http(Sock, Pid1, {_,_,Req}=State, Term) ->
+    piroxy_events:send(Req, http, Term),
+    loop(Sock, Pid1, State).
 
 send({tcp,Sock}, Bin) ->
-    gen_tcp:send(Sock, Bin);
+    case gen_tcp:send(Sock, Bin) of
+        ok -> ok;
+        {error,Rsn} -> exit(Rsn)
+    end;
 
 send({ssl,Sock}, Bin) ->
-    ssl:send(Sock, Bin).
+    case ssl:send(Sock, Bin) of
+        ok -> ok;
+        {error,Rsn} -> exit(Rsn)
+    end.
 
 %% TODO: handle ssl sockets as well? (allows nested CONNECTs)
 %% TODO: allow ports other than 443?
@@ -290,7 +301,7 @@ check_host(Host, Headers) ->
             {error,{host_mismatch,Host2}}
     end.
 
-cancelall({_,Reqs,_}) ->
+cancelall(Reqs) ->
     lists:foreach(fun (Req) ->
-                          request_manager:cancel(Req)
+                          piroxy_events:fail(Req, http, cancelled)
                   end, Reqs).

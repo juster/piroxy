@@ -92,7 +92,7 @@ handle_event(cast, _, bodywait, _) ->
     {keep_state_and_data, postpone};
 
 %% used to stop the process, without bypassing the messages in the queue
-handle_event(cast, {shutdown,Reason}, eof, _) ->
+handle_event(cast, {shutdown,Reason}, _, _) ->
     {stop, {shutdown,Reason}};
 
 handle_event(cast, {data,Bin1}, body, {Reader0,Pid,Ts}) ->
