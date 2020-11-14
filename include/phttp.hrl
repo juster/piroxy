@@ -8,7 +8,7 @@
 -define(HTTP11, "HTTP/1.1").
 
 -define(HEADLN_MAX, 16384).
--define(HEADER_MAX, 32768).
+-define(HEADER_MAX, 65536).
 -define(STATUS_MAX, ?HEADLN_MAX).
 -define(REQUEST_MAX, ?HEADER_MAX).
 -define(CHUNKSZ_MAX, 16384).

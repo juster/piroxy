@@ -50,12 +50,12 @@ head_reader({headers,N0,StatusLine,Headers0,Buf0}, Bin0) ->
         {ok,?EMPTY,Rest} ->
             %% end of header lines
             {done,StatusLine,Headers0,Rest};
-        {ok,Line,Rest} ->
+        {ok,Line,Bin} ->
             case fieldlist:add(Line, Headers0) of
                 {error,_} = Err -> Err;
                 {ok,Headers} ->
                     N = track_header(N0, byte_size(Line) + 2),
-                    head_reader({headers,N,StatusLine,Headers,Buf0}, Rest)
+                    head_reader({headers,N,StatusLine,Headers,linebuf()}, Bin)
             end
     end.
 
@@ -228,17 +228,18 @@ concat(Bin1, Bin2) -> <<Bin1/binary,Bin2/binary>>.
 %% empty initial buffer for next_line
 linebuf() -> {?EMPTY,?EMPTY}.
 
+%% buffers are pairs of {AlreadyScanned, NeedToScan} binaries
 buflen({?EMPTY,?EMPTY}) -> 0;
 buflen({?EMPTY,Bin2}) -> byte_size(Bin2);
 buflen({Bin1,?EMPTY}) -> byte_size(Bin1);
 buflen({Bin1,Bin2}) -> byte_size(Bin1) + byte_size(Bin2).
 
-bufdone({Bin1,_}) -> Bin1.
+bufpop({Bin1,_}) -> Bin1.
 
 bufnext({_,Bin2}, Bin3) -> concat(Bin2, Bin3).
 
 %% push done (scanned) binary into buffer or both done and todo binaries
-bufpush({Bin1,_}, Bin3) -> {concat(Bin1, Bin3), ?EMPTY}.
+bufpush({Bin1,_}, Bin3) -> {<<Bin1/binary,Bin3/binary>>, ?EMPTY}.
 bufpush({Bin1,_}, Bin3, Bin4) -> {concat(Bin1, Bin3), Bin4}.
 
 next_line(Buf, ?EMPTY, _Max) ->
@@ -267,7 +268,7 @@ next_line_(Buf, Bin1) ->
             end;
         {Pos,_} ->
             Pre = binary_part(Bin2, 0, Pos),
-            Line = concat(bufdone(Buf), Pre),
+            Line = concat(bufpop(Buf), Pre),
             Rest = binary_part(Bin2, Pos+2, byte_size(Bin2)-Pos-2),
             {ok, Line, Rest}
     end.

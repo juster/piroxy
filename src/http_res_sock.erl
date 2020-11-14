@@ -1,4 +1,4 @@
-%%% http_resp_sock
+%%% http_res_sock
 %%% State machine.
 %%% Sends HTTP requests from 'http_pipe' as tuples.
 %%% Receives HTTP responses from the socket as binary.
@@ -55,18 +55,6 @@ handle_event(timeout, active, _, _) ->
     %% Only a timeout in 'eof' is not considered an error.
     {stop, {shutdown,timeout}};
 
-%% Ignore empty data but reset the event timers.
-handle_event(cast, {data,Empty}, State, _)
-  when Empty == <<>>; Empty == empty ->
-    case State of
-        eof ->
-            {keep_state_and_data, {timeout,?IDLE_TIMEOUT,idle}};
-        HttpState when HttpState == head; HttpState == body ->
-            {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
-        _ ->
-            keep_state_and_data
-    end;
-
 %%%
 %%% disconnected state: connect socket to protocol/host/port provided by start_link
 %%%
@@ -96,6 +84,23 @@ handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
 %%% TCP/SSL messages
 %%%
 
+%% Ignore empty data but reset the event timers.
+handle_event(info, {A,_,<<>>}, eof, _)
+  when A == tcp; A == ssl ->
+    {keep_state_and_data, {timeout,?IDLE_TIMEOUT,idle}};
+
+%%handle_event(info, {A,_,empty}, eof, _)
+%%  when A == tcp; A == ssl ->
+%%    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,idle}};
+
+handle_event(info, {A,_,<<>>}, _, _)
+  when A == tcp; A == ssl ->
+    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
+
+%%handle_event(info, {A,_,empty}, _, _)
+%%  when A == tcp; A == ssl ->
+%%    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
+
 handle_event(info, {A,_,_}, eof, D)
   when A == tcp; A == ssl ->
     {next_state, head, D#data{reader=pimsg:head_reader()}, postpone};
@@ -123,7 +128,7 @@ handle_event(info, {A,_,Bin1}, body, D)
     case pimsg:body_reader(D#data.reader, Bin1) of
         {error,Reason} ->
             {stop,Reason};
-        {continue,empty,Reader} ->
+        {continue,?EMPTY,Reader} ->
             {keep_state,D#data{reader=Reader}};
         {continue,Bin2,Reader} ->
             {Req,_} = hd(D#data.queue),
@@ -133,7 +138,7 @@ handle_event(info, {A,_,Bin1}, body, D)
             Q = D#data.queue,
             {Req,Hreq} = hd(Q),
             case Bin2 of
-                empty -> ok; <<>> -> ok;
+                ?EMPTY -> ok;
                 _ -> piroxy_events:recv(Req, http, {body,Bin2})
             end,
             Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
@@ -150,7 +155,7 @@ handle_event(info, {A,_,Bin1}, body, D)
                     {stop,shutdown};
                 false ->
                     case Rest of
-                        Empty when Empty == empty, Empty == <<>> ->
+                        ?EMPTY ->
                             {next_state,eof, D#data{reader=undefined, queue=tl(Q)}};
                         _ ->
                             {next_state,eof, D#data{reader=undefined, queue=tl(Q)},
@@ -223,7 +228,8 @@ body_length(StatusLn, Headers, ReqH) ->
 response_length(Method, Line, Headers) ->
     response_length_(Method, response_code(Line), Headers).
 
-response_length_(head, <<"200">>, _) -> {ok, 0};
+%%% Reference: RFC7230 3.3.3 p32
+response_length_(head, <<"200">>, _) -> {ok, 0}; % optimize 200
 response_length_(_, <<"200">>, Headers) -> pimsg:body_length(Headers);
 response_length_(_, <<"1",_,_>>, _) -> {ok, 0};
 response_length_(_, <<"204">>, _) -> {ok, 0};

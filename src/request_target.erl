@@ -4,8 +4,8 @@
 -include("../include/phttp.hrl").
 -import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2]).
 
--record(stats, {nproc=0,nmax=0,nfail=0,nsuccess=0}).
--record(state, {todo=[], sent=[], waitlist=[], stats, hostinfo}).
+-record(stats, {nproc=0,nmax=1,nfail=0,nsuccess=0}).
+-record(state, {todo=[], sent=[], waitlist=[], stats=#stats{}, hostinfo}).
 
 %% Awful.
 -define(DEC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field-1}}).
@@ -15,7 +15,7 @@
 -export([init/1, terminate/2,
          handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
 
-%%% called by request_handler
+%%% called by request_manager
 
 start_link(Req, HostInfo) ->
     gen_server:start_link(?MODULE, [Req, HostInfo], []).
@@ -26,7 +26,7 @@ connect(Pid, Id) ->
 cancel(Pid, Id) ->
     gen_server:cast(Pid, {cancel,Id}).
 
-%%% called by outbound
+%%% called by http_res_sock
 
 notify(Pid, A) ->
     gen_server:cast(Pid, {notify,A,self()}).
@@ -34,7 +34,7 @@ notify(Pid, A) ->
 retire_self(Pid) ->
     gen_server:cast(Pid, {retire_self,self()}).
 
-%%% called by whomever
+%%% used during debugging
 
 pending(Pid) ->
     gen_server:call(Pid, pending).
@@ -45,14 +45,11 @@ pending(Pid) ->
 
 init([Req, HostInfo]) ->
     process_flag(trap_exit, true),
-    {ok,Pid} = http_res_sock:start_link(HostInfo),
-    ?TRACE(Req, element(2,HostInfo), ">>", io_lib:format("outbound started: ~p", [Pid])),
-    {ok,
-     #state{todo=[Req], waitlist=[Pid], stats=#stats{nproc=1,nmax=1}, hostinfo=HostInfo},
-     {continue, check_lists}}.
+    {ok, #state{todo=[Req], hostinfo=HostInfo}, {continue, check_lists}}.
 
 terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
     %% XXX: Child procs should be exited automatically after teminate.
+    %%?DBG("terminate", ding),
     foreach(fun (Req) ->
                     piroxy_events:fail(Req, http, Reason)
             end, Ltodo),
@@ -95,27 +92,9 @@ handle_cast({cancel,Id}, S0) ->
 %%%
 
 handle_cast({notify,ready,OutPid}, S) ->
-    case S#state.todo of
-        [] ->
-            %% If todo list is empty, then add Pid to waiting list.
-            Waitlist = S#state.waitlist ++ [OutPid],
-            {noreply,S#state{waitlist=Waitlist}};
-        [Req|Ltodo] ->
-            %% O/W pop off the todo list and push to sent list.
-            case http_pipe:listen(Req, OutPid) of
-                ok ->
-                    Lsent = S#state.sent ++ [{OutPid,Req}],
-                    {noreply,S#state{todo=Ltodo, sent=Lsent}};
-                {error,unknown_session} ->
-                    %% Sometimes the session is closed before we can get to it.
-                    Waitlist = S#state.waitlist ++ [OutPid],
-                    {noreply,
-                     S#state{todo=Ltodo,waitlist=Waitlist},
-                     {continue,check_lists}};
-                {error,Reason} ->
-                    {stop,Reason,S}
-            end
-    end;
+    %% If todo list is empty, then add Pid to waiting list.
+    Waitlist = S#state.waitlist ++ [OutPid],
+    {noreply, S#state{waitlist=Waitlist}, {continue,check_lists}};
 
 %%% Called when the request is finished (i.e. the response is completed).
 handle_cast({notify,done,Pid}, S0) ->
@@ -155,7 +134,7 @@ handle_continue(check_lists, S) ->
                     %% spawn a new proc
                     {ok,Pid} = http_res_sock:start_link(S#state.hostinfo),
                     Host = element(2,S#state.hostinfo),
-                    ?TRACE(Req, Host, ">", io_lib:format("outbound started: ~p", [Pid])),
+                    ?TRACE(Req, Host, ">>", io_lib:format("outbound started: ~p", [Pid])),
                     {noreply, ?INC(nproc, S#state{waitlist=[Pid]}), {continue,check_lists}};
                 true ->
                     {noreply,S}
@@ -175,7 +154,8 @@ handle_continue(check_lists, S) ->
 
 %% Unexpected errors in outbound process.
 handle_info({'EXIT',Pid,Reason}, S0) ->
-    ?TRACE(0, element(2,S0#state.hostinfo), ">>", io_lib:format("outbound closed: ~p", [Pid])),
+    ?TRACE(0, element(2,S0#state.hostinfo), ">>",
+           io_lib:format("outbound closed ~p reason: ~p", [Pid,Reason])),
     FailType = failure_type(Reason),
     S1 = case FailType of
              soft ->
@@ -192,6 +172,9 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                  ?INC(nfail, S0)
          end,
     if
+        S1#state.stats#stats.nfail > 5 ->
+            %% We have reached the maximum failure count, so we must abort.
+            {stop,Reason,S1};
         FailType == fatal ->
             %% Does NOT try to redo the sent requests.
             {Lpid,Lsent} = partition(fun ({Pid_,_})
@@ -204,22 +187,10 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                             piroxy_events:fail(Req, http, Reason)
                     end, Lpid),
             Lwait = lists:delete(Pid, S1#state.waitlist),
-            {noreply, S1#state{waitlist=Lwait,sent=Lsent}};
-        S1#state.stats#stats.nfail > 5 ->
-            %% We have reached the maximum failure count, so we must abort.
-            {stop,Reason,S1};
-        S1#state.todo /= [] ->
-            %% Do not decrement the process count, since we start a replacement
-            %% process.
-            {ok,Pid2} = http_res_sock:start_link(S1#state.hostinfo),
-            Lwait = S1#state.waitlist ++ [Pid2],
-            {noreply, S1#state{waitlist=Lwait}, {continue,check_lists}};
-        S1#state.sent /= [] ->
-            %% No more requests to do, but there are pending requests sent to
-            %% other processes.
-            {noreply, ?DEC(nproc, S1)};
+            ?DBG("EXIT", [{failtype,fatal}]),
+            {noreply, ?DEC(nproc, S1#state{waitlist=Lwait,sent=Lsent}), {continue,check_lists}};
         true ->
-            {stop,shutdown,S1}
+            {noreply, ?DEC(nproc, S1), {continue,check_lists}}
     end;
 
 handle_info(_, S) ->
@@ -237,11 +208,18 @@ failure_type(_) -> fatal.
 %%% Calls http_pipe:reset on all new todo list entries.
 redo(Pid, S) ->
     Lwait = lists:delete(Pid, S#state.waitlist),
-    {Lpid,Lsent} = lists:partition(fun ({Pid_,Req}) when Pid == Pid_ ->
-                                           http_pipe:reset(Req),
-                                           true;
-                                       (_) ->
-                                           false
-                                   end, S#state.sent),
-    Ltodo = [Req || {_,Req} <- Lpid] ++ S#state.todo,
+    {L0,Lsent} = lists:partition(fun ({Pid_,_}) when Pid == Pid_ ->
+                                         true;
+                                     (_) ->
+                                         false
+                                 end, S#state.sent),
+    %% Rarely, a reset pipe will need to be cancelled because it was reset
+    %% while in the middle of sending a response.
+    L = lists:filter(fun (Req) ->
+                             case http_pipe:reset(Req) of
+                                 ok -> true;
+                                 cancel -> false
+                             end
+                     end, [Req || {_,Req} <- L0]),
+    Ltodo = L ++ S#state.todo,
     S#state{waitlist=Lwait, todo=Ltodo, sent=Lsent}.

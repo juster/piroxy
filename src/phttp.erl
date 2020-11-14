@@ -112,14 +112,14 @@ version_atom(<<"HTTP/1.0">>) -> http10;
 version_atom(<<"HTTP/2.0">>) -> http20;
 version_atom(_) -> unknown.
 
-status_bin(http_ok) -> {ok,<<"200 OK">>};
-status_bin(http_bad_request) -> {ok,<<"400 Bad Request">>};
-status_bin(http_uri_too_long) -> {ok,<<"414 URI Too Long">>};
-status_bin(http_server_error) -> {ok,<<"500 Server Error">>};
-status_bin(http_not_implemented) -> {ok,<<"501 Not Implemented">>};
-status_bin(http_bad_gateway) -> {ok,<<"502 Bad Gateway">>};
-status_bin(http_gateway_timeout) -> {ok,<<"504 Gateway Timeout">>};
-status_bin(http_ver_not_supported) -> {ok,<<"505 HTTP Version Not Supported">>};
+status_bin(http_ok) -> <<"200 OK">>;
+status_bin(http_bad_request) -> <<"400 Bad Request">>;
+status_bin(http_uri_too_long) -> <<"414 URI Too Long">>;
+status_bin(http_server_error) -> <<"500 Server Error">>;
+status_bin(http_not_implemented) -> <<"501 Not Implemented">>;
+status_bin(http_bad_gateway) -> <<"502 Bad Gateway">>;
+status_bin(http_gateway_timeout) -> <<"504 Gateway Timeout">>;
+status_bin(http_ver_not_supported) -> <<"505 HTTP Version Not Supported">>;
 status_bin(_) -> not_found.
 
 encode(#head{line=Line, headers=Headers}) ->
@@ -129,41 +129,36 @@ encode({body,Body}) ->
     Body;
 
 encode({error,Reason}) ->
-    [error_statusln(Reason)|<<?CRLF>>];
+    Bin = error_bin(Reason),
+    [<<?HTTP11," ">>,Bin,<<?CRLF>>,<<"content-length:0">>,<<?CRLF>>,<<?CRLF>>];
 
 encode({status,HttpStatus}) ->
-    case phttp:status_bin(HttpStatus) of
-        {ok,Bin} ->
-            [<<?HTTP11>>," ",Bin,<<?CRLF>>|<<?CRLF>>];
+    case status_bin(HttpStatus) of
         not_found ->
-            exit(badarg)
+            exit(badarg);
+        Bin ->
+            [<<?HTTP11," ">>,Bin,<<?CRLF>>,<<"content-length:0">>,<<?CRLF>>,<<?CRLF>>]
     end.
 
-error_statusln(host_mismatch) -> error_statusln(http_bad_request);
-error_statusln(host_missing) -> error_statusln(http_bad_request);
-error_statusln({malformed_uri,_,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_method,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_version,_}) -> error_statusln(http_bad_request);
-error_statusln({unknown_length,_,_}) -> error_statusln(http_bad_request);
+error_bin(host_mismatch) -> status_bin(http_bad_request);
+error_bin(host_missing) -> status_bin(http_bad_request);
+error_bin({malformed_uri,_,_}) -> status_bin(http_bad_request);
+error_bin({unknown_method,_}) -> status_bin(http_bad_request);
+error_bin({unknown_version,_}) -> status_bin(http_bad_request);
+error_bin({unknown_length,_,_}) -> status_bin(http_bad_request);
 
 %% from pimsg:body_length/1
-error_statusln({missing_length,_}) -> error_statusln(http_bad_request);
+error_bin({missing_length,_}) -> status_bin(http_bad_request);
 
 %% from http11_res
-error_statusln({shutdown,timeout}) -> error_statusln(http_gateway_timeout);
+error_bin({shutdown,timeout}) -> status_bin(http_gateway_timeout);
 %% http11_res:body_length/3
-error_statusln({missing_length,_,_}) -> error_statusln(http_bad_gateway);
+error_bin({missing_length,_,_}) -> status_bin(http_bad_gateway);
 
-error_statusln(Reason) ->
-    case phttp:status_bin(Reason) of
-        {ok,Bin} -> Bin;
-        not_found ->
-            {ok,Bin} = phttp:status_bin(http_bad_gateway),
-            [<<?HTTP11>>," ",Bin|<<?CRLF>>]
-    end.
+error_bin(_) -> status_bin(http_bad_gateway).
 
 trace(Sess, Host, Arrow, Term) ->
-    {_,{H,M,S}} = calendar:local_time(),
+    {_,{_H,M,S}} = calendar:local_time(),
     Str = case Term of
               #head{} ->
                   Line = iolist_to_binary(Term#head.line),

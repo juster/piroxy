@@ -45,4 +45,5 @@ handle_event({fail,Id,http,cancelled}, S) ->
 handle_event({fail,Id,http,Reason}, S) ->
     http_pipe:reset(Id),
     http_pipe:recv(Id, {error,Reason}),
+    http_pipe:recv(Id, eof),
     {ok,S}.

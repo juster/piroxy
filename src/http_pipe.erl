@@ -1,5 +1,6 @@
 -module(http_pipe).
 -behavior(gen_server).
+-include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0, start_shell/0, new/0, dump/0, send/2, listen/2, recv/2,
@@ -32,7 +33,7 @@ listen(Id, Pid) ->
     gen_server:call(?MODULE, {listen,Id,Pid}).
 
 reset(Id) ->
-    gen_server:cast(?MODULE, {reset,Id}).
+    gen_server:call(?MODULE, {reset,Id}).
 
 cancel(Id) ->
     gen_server:cast(?MODULE, {cancel,Id}).
@@ -55,6 +56,7 @@ handle_call(new, {Pid,_Ref}, {MsgTab,Sessions0,I}) ->
 handle_call(dump, _From, {MsgTab,_,_}=State) ->
     {reply, ets:tab2list(MsgTab), State};
 
+%% The receive end of the pipe starts to 'listen' for send messages.
 handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,I}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
@@ -62,33 +64,75 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,I}=State) ->
         {_,Pid1,null} ->
             case lists:keyfind(Pid2, 3, Sessions0) of
                 false ->
-                    %% Ensure this is the first session for Pid2 and then send any
-                    %% previously cached messages.
+                    %% Ensure this is the first session for Pid2 and then send
+                    %% any previously cached messages.
                     Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,send})],
                     case sendall(Id, Pid2, Msgs) of
                         true ->
-                            %% We sent all the messages and we do not need to
-                            %% update the keylist (only to replace it with null).
+                            %% We do not have to "close" the send end of the
+                            %% pipe because we never fully "opened" the
+                            %% endpoint. To open the endpoint is to assign Pid2
+                            %% to the keylist tuple entry.
+                            %%
+                            %% We do not flush because this is the only pending
+                            %% pipeline for Pid2, it only now began listening.
                             {reply,ok,State};
                         false ->
-                            %%link(Pid2),
-                            Sessions = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,Pid2}),
+                            %% Open the send end of the pipe by assigning a
+                            %% receiving Pid2 in the keylist entry.
+                            Sessions = lists:keyreplace(Id, 1, Sessions0,
+                                                        {Id,Pid1,Pid2}),
                             {reply,ok,{MsgTab,Sessions,I}}
                     end;
                 _ ->
-                    %% This is not the first session for Pid2 and so we wait until it
-                    %% has finished the previous one.
+                    %% This is not the first session for Pid2 and so we wait
+                    %% until it has finished the previous one.
                     {reply,ok,State}
             end;
         {Id,_,Pid2} ->
             {reply,{error,{already_receiving,Id,Pid2}},State}
+    end;
+
+%% reset the recv side of the pipe involves forgetting the receiving pid and
+%% preparing for it to be replaced by a new one
+handle_call({reset,Id}, _From, {MsgTab,Sessions0,I}=State) ->
+    case lists:keyfind(Id, 1, Sessions0) of
+        false ->
+            %% Do not be strict on recv endpoints about whether a sessions
+            %% disappears.
+            {reply,cancel,State};
+        {_,Pid1,_Pid2} = T ->
+            Received = case lists:keyfind(Pid1, 2, Sessions0) of
+                           T ->
+                               %% This is the active session for Pid1
+                               case ets:match(MsgTab, {{recv,Id},'_'}, 1) of
+                                   '$end_of_table' -> false;
+                                   {[],_} -> false;
+                                   _ -> true
+                               end;
+                           _ ->
+                               false
+                       end,
+            case Received of
+                true ->
+                    %% Pid1 has received some data from Pid2! We must break the pipeline.
+                    %% This will trigger 'cancel' events for every request from Pid1.
+                    ?DBG("reset", [{shutdown,Pid1}]),
+                    exit(Pid1, shutdown),
+                    Sessions = cleanup(Id, MsgTab, Sessions0),
+                    {reply,cancel,{MsgTab,Sessions,I}};
+                false ->
+                    %% Pid1 has not received data from Pid2, so we should be okay...
+                    ets:delete(MsgTab, {recv,Id}),
+                    Sessions = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,null}),
+                    {reply,ok,{MsgTab,Sessions,I}}
+            end
     end.
 
 handle_cast({send, Id, Term}, {MsgTab,Sessions0,I}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
             {noreply,State};
-            %%{stop,{unknown_session,Id},State};
         {_,_,null} ->
             ets:insert(MsgTab, {{Id,send}, Term}),
             {noreply,State};
@@ -118,48 +162,34 @@ handle_cast({cancel,Id}, {MsgTab,Sessions0,I}) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
     {noreply, {MsgTab,Sessions,I}};
 
-%% reset the recv side of the pipe involves forgetting the receiving pid and
-%% preparing for it to be replaced by a new one
-handle_cast({reset,Id}, {MsgTab,Sessions0,I}=State) ->
+handle_cast({recv,Id,Term}, {MsgTab,Sessions0,I}=State) ->
+    case Term of
+        {error,_} = Err ->
+            io:format("*DBG* ~p~n", [[{id,Id},Err]]);
+        _ ->
+            ok
+    end,
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
-            {stop,unknown_session,State};
-        {_,Pid1,_Pid2} = T ->
+            %%io:format("*DBG* unknown_session: ~p~n", [Id]),
+            {noreply,State};
+        {_,Pid1,_} = T ->
             case lists:keyfind(Pid1, 2, Sessions0) of
                 T ->
-                    %% This is the first session for Pid1 and so we must abort it.
-                    %% We cannot be sure that some data has not already been piped
-                    %% to Pid1. We have to break the pipeline to ensure responses
-                    %% are not mangled together.
-                    exit(Pid1, pipe_reset);
-                _ ->
-                    ets:delete(MsgTab, {recv,Id})
-            end,
-            Sessions = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,null}),
-            {noreply,{MsgTab,Sessions,I}}
-    end;
-
-handle_cast({recv,Id,Term}, {MsgTab,Sessions0,I}=State) ->
-    case lists:keyfind(Id, 1, Sessions0) of
-        false ->
-            {noreply,State};
-            %%{stop,{unknown_session,Id},State};
-        {_,Pid1,_} ->
-            case lists:keyfind(Pid1, 2, Sessions0) of
-                {Id,_,_} ->
                     %% This session is at the front of the Pid1's pipeline so we
                     %% can send it directly.
                     Pid1 ! {http_pipe,Id,Term},
                     case endterm(Term) of
                         true ->
+                            %% Avoid inserting into ETS table if we are going to
+                            %% cleanup immediately aftwards.
                             Sessions = close_recv(Id, MsgTab, Sessions0),
                             {noreply,{MsgTab,Sessions,I}};
                         false ->
+                            ets:insert(MsgTab, {{Id,recv}, Term}),
                             {noreply,State}
                     end;
                 _ ->
-                    %% Unlike with sends, we only cache received terms that
-                    %% were not yet relayed.
                     ets:insert(MsgTab, {{Id,recv}, Term}),
                     {noreply,State}
             end
@@ -177,6 +207,9 @@ endterm(_) ->
     false.
 
 close_send(Id, MsgTab, Sessions0) ->
+    %%{_,{_H,M,S}} = calendar:local_time(),
+    %%io:format("~2..0B~2..0B [~B] (???) close_send~n", [M,S,Id]),
+
     %% After the last term is sent, we 'null' out the receiving
     %% Pid.  This is in case we need to send the messages
     %% again, due to failure. At the same, time we see if we
@@ -184,6 +217,7 @@ close_send(Id, MsgTab, Sessions0) ->
     %% well.
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
+            %% Send end of the pipe may NOT ignore missing sessions.
             error(unknown_session);
         {_,Pid1,Pid2} ->
             Sessions1 = lists:keyreplace(Id, 1, Sessions0,
@@ -208,8 +242,6 @@ cleanup(Id, MsgTab, Sessions) ->
     ets:delete(MsgTab, {Id,recv}),
     lists:keydelete(Id, 1, Sessions).
 
-%% The send end of the pipe has exited. Send cancel messages to all linked recv
-%% procs.
 exit_send({Id,Pid1,_Pid2}, MsgTab, Sessions0) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
     exit_send(lists:keyfind(Pid1, 2, Sessions), MsgTab, Sessions);
@@ -244,9 +276,6 @@ flush_recv(Pid1, MsgTab, Sessions0) ->
                     Sessions = cleanup(Id, MsgTab, Sessions0),
                     flush_recv(Pid1, MsgTab, Sessions);
                 false ->
-                    %% 'recv' messages must be deleted after they have been
-                    %% sent!
-                    ets:delete(MsgTab, {Id,recv}),
                     Sessions0
             end
     end.
