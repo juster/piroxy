@@ -6,7 +6,7 @@
 -module(http_res_sock).
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
--define(ACTIVE_TIMEOUT, 5000).
+-define(ACTIVE_TIMEOUT, 2500).
 -define(IDLE_TIMEOUT, 60000).
 
 -record(data, {target, socket, reader, queue=[], closed=false}).
@@ -61,8 +61,11 @@ handle_event(timeout, active, _, _) ->
 
 handle_event(cast, {connect,{http,Host,Port}}, disconnected, D) ->
     case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0},
-                                      {keepalive,true}],
+                                      {keepalive,true},
+                                      {exit_on_close,false}],
                          ?CONNECT_TIMEOUT) of
+        {error,timeout} ->
+            {stop,{shutdown,timeout}};
         {error,Reason} ->
             {stop,Reason};
         {ok,Socket} ->
@@ -71,8 +74,11 @@ handle_event(cast, {connect,{http,Host,Port}}, disconnected, D) ->
 
 handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
     case ssl:connect(Host, Port, [{active,true},binary,{packet,0},
-                                  {keepalive,true}],
+                                  {keepalive,true},
+                                  {exit_on_close,false}],
                      ?CONNECT_TIMEOUT) of
+        {error,timeout} ->
+            {stop,{shutdown,timeout}};
         {error,Reason} ->
             {stop,Reason};
         {ok,Socket} ->
@@ -164,9 +170,14 @@ handle_event(info, {A,_,Bin1}, body, D)
             end
     end;
 
-handle_event(info, {A,_}, _, _)
+handle_event(info, {A,_}, _, D)
   when A == tcp_closed; A == ssl_closed ->
-    {stop,shutdown};
+    case D#data.queue of
+        [] ->
+            {stop,shutdown};
+        _ ->
+            {keep_state,D#data{closed=true}}
+    end;
 
 handle_event(info, {A,_,Reason}, _, _)
   when A == tcp_error, A == ssl_error ->
@@ -178,6 +189,10 @@ handle_event(info, {A,_,Reason}, _, _)
 
 handle_event(info, {http_pipe,_,_}, disconnected, _) ->
     {keep_state_and_data, postpone};
+
+handle_event(info, {http_pipe,_,_}, _, #data{closed=true}) ->
+    %% discard http_pipe events after the socket has been remotely closed
+    keep_state_and_data;
 
 handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
     %% pipeline the next request ASAP

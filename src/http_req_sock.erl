@@ -319,7 +319,7 @@ recv_head(H, relative, Bin, D) ->
     relay_head(H, HI, Bin, D);
 
 recv_head(H, {absolute,HI2}, Bin, D) ->
-    case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
+    %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
     H2 = relativize(H),
     relay_head(H2, HI2, Bin, D).
 

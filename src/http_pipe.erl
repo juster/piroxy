@@ -3,8 +3,8 @@
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--export([start_link/0, start_shell/0, new/0, dump/0, send/2, listen/2, recv/2,
-         reset/1, cancel/1]).
+-export([start_link/0, start_shell/0, new/0, dump/0, sessions/0,
+         send/2, listen/2, recv/2, reset/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 %%% EXPORTS
@@ -22,6 +22,9 @@ start_shell() ->
 
 new() ->
     gen_server:call(?MODULE, new).
+
+sessions() ->
+    gen_server:call(?MODULE, sessions).
 
 dump() ->
     gen_server:call(?MODULE, dump).
@@ -52,6 +55,9 @@ handle_call(new, {Pid,_Ref}, {MsgTab,Sessions0,I}) ->
     %%link(Pid),
     Sessions = Sessions0 ++ [{I,Pid,null}],
     {reply, I, {MsgTab, Sessions, I+1}};
+
+handle_call(sessions, _From, {_,Sessions,_}=State) ->
+    {reply, Sessions, State};
 
 handle_call(dump, _From, {MsgTab,_,_}=State) ->
     {reply, ets:tab2list(MsgTab), State};
