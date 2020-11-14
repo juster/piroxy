@@ -38,8 +38,9 @@ handle_cast({connect,Req,http,Target}, L) ->
             request_target:connect(Pid, Req),
             {noreply, L};
         false ->
-            case request_target:start_link(Req, Target) of
+            case request_target:start_link(Target) of
                 {ok,Pid} ->
+                    request_target:connect(Pid, Req),
                     {noreply, [{Target,Pid}|L]};
                 ignore ->
                     {noreply, L};

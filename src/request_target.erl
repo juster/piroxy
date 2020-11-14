@@ -2,23 +2,25 @@
 -behavior(gen_server).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
--import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2]).
+-import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2,
+                filter/2, any/2]).
 
--record(stats, {nproc=0,nmax=1,nfail=0,nsuccess=0}).
--record(state, {todo=[], sent=[], waitlist=[], stats=#stats{}, hostinfo}).
+-define(MAX_SOCKETS, 4).
+-record(stats, {nfail=0,nsuccess=0}).
+-record(state, {sent=[], pids=erlang:make_tuple(?MAX_SOCKETS, null),
+                i=0, stats=#stats{}, hostinfo}).
 
 %% Awful.
--define(DEC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field-1}}).
+%%-define(DEC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field-1}}).
 -define(INC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field+1}}).
 
--export([start_link/2, connect/2, cancel/2, notify/2, pending/1, retire_self/1]).
--export([init/1, terminate/2,
-         handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
+-export([start_link/1, connect/2, cancel/2, finish/2, pending/1, retire_self/1]).
+-export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
 %%% called by request_manager
 
-start_link(Req, HostInfo) ->
-    gen_server:start_link(?MODULE, [Req, HostInfo], []).
+start_link(HostInfo) ->
+    gen_server:start_link(?MODULE, [HostInfo], []).
 
 connect(Pid, Id) ->
     gen_server:cast(Pid, {connect,Id}).
@@ -28,8 +30,8 @@ cancel(Pid, Id) ->
 
 %%% called by http_res_sock
 
-notify(Pid, A) ->
-    gen_server:cast(Pid, {notify,A,self()}).
+finish(Pid, Res) ->
+    gen_server:cast(Pid, {finish,Res}).
 
 retire_self(Pid) ->
     gen_server:cast(Pid, {retire_self,self()}).
@@ -43,16 +45,13 @@ pending(Pid) ->
 %%% BEHAVIOR CALLBACKS
 %%%
 
-init([Req, HostInfo]) ->
+init([HostInfo]) ->
     process_flag(trap_exit, true),
-    {ok, #state{todo=[Req], hostinfo=HostInfo}, {continue, check_lists}}.
+    {ok, #state{hostinfo=HostInfo}}.
 
-terminate(Reason, #state{todo=Ltodo, sent=Lsent}) ->
+terminate(Reason, #state{sent=Lsent}) ->
     %% XXX: Child procs should be exited automatically after teminate.
     %%?DBG("terminate", ding),
-    foreach(fun (Req) ->
-                    piroxy_events:fail(Req, http, Reason)
-            end, Ltodo),
     foreach(fun ({_Pid,Req}) ->
                     piroxy_events:fail(Req, http, Reason)
             end, Lsent),
@@ -69,87 +68,69 @@ handle_call(_, _, S) ->
 %%%
 
 handle_cast({connect,Req}, S) ->
-    Ltodo = S#state.todo ++ [Req],
-    {noreply, S#state{todo=Ltodo}, {continue,check_lists}};
-
-handle_cast({cancel,Id}, S0) ->
-    Ltodo = lists:delete(Id, S0#state.todo),
-    case lists:keytake(Id, 2, S0#state.sent) of
-        false ->
-            {noreply,
-             S0#state{todo=Ltodo},
-             {continue,check_lists}};
-        {value,{Pid,_},Lsent} ->
-            ?DBG("cancel", [{session,Id},{stopping,Pid}]),
-            http_res_sock:stop(Pid),
-            {noreply,
-             ?DEC(nproc, S0#state{todo=Ltodo,sent=Lsent}),
-             {continue,check_lists}}
-    end;
-
-%%%
-%%% from outbound
-%%%
-
-handle_cast({notify,ready,OutPid}, S) ->
-    %% If todo list is empty, then add Pid to waiting list.
-    Waitlist = S#state.waitlist ++ [OutPid],
-    {noreply, S#state{waitlist=Waitlist}, {continue,check_lists}};
-
-%%% Called when the request is finished (i.e. the response is completed).
-handle_cast({notify,done,Pid}, S0) ->
-    Lsent = keydelete(Pid, 1, S0#state.sent),
-    %%?DBG("finish_request", [{req,Req}]),
-    {noreply,?INC(nsuccess,S0#state{sent=Lsent})};
-
-handle_cast({notify,A,_}, S0) ->
-    {stop,{unknown_notify,A}, S0};
-
-%%% retire_self is called when an outbound pid upgrades their protocol.
-handle_cast({retire_self,Pid}, S0) ->
-    unlink(Pid),
-    S1 = redo(Pid, S0),
-    case {S1#state.todo, S1#state.sent} of
-        {[], []} ->
-            {stop,shutdown,S1};
-        {_, []} ->
-            outbound:start_link(S1#state.hostinfo),
-            {noreply, S1};
-        {[], _} ->
-            {noreply, ?DEC(nproc, S1)}
-    end.
-
-handle_continue(check_lists, S) ->
-    case {S#state.sent, S#state.todo, S#state.waitlist} of
-        {[],[],_} ->
-            %% Request todo list AND active request list is empty.
-            {stop,shutdown,S};
-        {_,[],_} ->
-            %% Request todo list is empty.
-            {noreply,S};
-        {_,[Req|_],[]} ->
-            N = S#state.stats,
-            if
-                N#stats.nproc < N#stats.nmax ->
-                    %% spawn a new proc
-                    {ok,Pid} = http_res_sock:start_link(S#state.hostinfo),
-                    Host = element(2,S#state.hostinfo),
-                    ?TRACE(Req, Host, ">>", io_lib:format("outbound started: ~p", [Pid])),
-                    {noreply, ?INC(nproc, S#state{waitlist=[Pid]}), {continue,check_lists}};
-                true ->
-                    {noreply,S}
+    %% Use a circular buffer for assigning requests to each proc.
+    I = S#state.i+1,
+    J = (I+1) rem ?MAX_SOCKETS,
+    case element(I, S#state.pids) of
+        null ->
+            %% Empty slot, spawn a new proc.
+            case http_res_sock:start_link(S#state.hostinfo) of
+                {ok,Pid} ->
+                    case http_pipe:listen(Req, Pid) of
+                        ok ->
+                            Pids = setelement(I, S#state.pids, Pid),
+                            Lsent = S#state.sent ++ [{Pid,Req}],
+                            {noreply, S#state{i=J, pids=Pids, sent=Lsent}};
+                        {error,unknown_session} ->
+                            http_res_sock:stop(Pid),
+                            {noreply, S}
+                    end;
+                {error,Rsn} ->
+                    exit(Rsn)
             end;
-        {_, [Req|Ltodo], [Pid|Waitlist]} ->
+        Pid ->
+            %% Reuse an existing slot.
             case http_pipe:listen(Req, Pid) of
                 ok ->
                     Lsent = S#state.sent ++ [{Pid,Req}],
-                    {noreply, S#state{sent=Lsent, todo=Ltodo, waitlist=Waitlist}};
+                    {noreply, S#state{i=J, sent=Lsent}};
                 {error,unknown_session} ->
-                    %% Ignore dropped sessions.
-                    {noreply, S#state{todo=Ltodo}, {continue,check_lists}};
-                {error,Rsn} ->
-                    {stop,Rsn,S}
+                    {noreply, S}
             end
+    end;
+
+handle_cast({cancel,Id}, S0) ->
+    case keytake(Id, 2, S0#state.sent) of
+        false ->
+            %% Ignore requests we are not responsible for.
+            {noreply, S0};
+        {value,{Pid,_},Lsent} ->
+            %% We must restart the process because the cancelled request has
+            %% corrupted the pipeline. We cannot be sure where in the
+            %% request/response pipeline the request currently is.
+            ?DBG("cancel", [{session,Id},{stopping,Pid}]),
+            http_res_sock:stop(Pid),
+            {noreply, S0#state{sent=Lsent}}
+    end;
+
+%%%
+%%% from http_res_sock
+%%%
+
+%%% Called when the request is finished (i.e. the response is completed).
+handle_cast({finish,Res}, S0) ->
+    Lsent = keydelete(Res, 2, S0#state.sent),
+    %%?DBG("finish", [{res,Res}]),
+    {noreply, ?INC(nsuccess, S0#state{sent=Lsent})};
+
+%%% retire_self is called when an outbound pid upgrades their protocol.
+handle_cast({retire_self,Pid}, S) ->
+    unlink(Pid),
+    {L,Lsent} = partpid(Pid, S#state.sent),
+    try
+        {noreply, resend(Pid, L, S#state{sent=Lsent})}
+    catch
+        shutdown -> {stop,shutdown,S}
     end.
 
 %% Unexpected errors in outbound process.
@@ -164,62 +145,112 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                  %%L2 = lists:subtract(L1, S_#state.todo),
                  %%?DBG("handle_info", [{redoing, L2}]),
                  %%S_;
-                 redo(Pid, S0);
+                 S0;
              hard ->
-                 S_ = redo(Pid, S0),
-                 ?INC(nfail, S_);
+                 ?INC(nfail, S0);
              fatal ->
                  ?INC(nfail, S0)
          end,
+    {L0,Lsent} = partpid(Pid, S1#state.sent),
     if
         S1#state.stats#stats.nfail > 5 ->
             %% We have reached the maximum failure count, so we must abort.
             {stop,Reason,S1};
-        FailType == fatal ->
-            %% Does NOT try to redo the sent requests.
-            {Lpid,Lsent} = partition(fun ({Pid_,_})
-                                           when Pid == Pid_ ->
-                                             true;
-                                         (_) ->
-                                             false
-                                     end, S1#state.sent),
-            foreach(fun ({_,Req}) ->
-                            piroxy_events:fail(Req, http, Reason)
-                    end, Lpid),
-            Lwait = lists:delete(Pid, S1#state.waitlist),
-            ?DBG("EXIT", [{failtype,fatal}]),
-            {noreply, ?DEC(nproc, S1#state{waitlist=Lwait,sent=Lsent}), {continue,check_lists}};
         true ->
-            {noreply, ?DEC(nproc, S1), {continue,check_lists}}
-    end;
-
-handle_info(_, S) ->
-    {noreply,S}.
+            try
+                if
+                    FailType == fatal ->
+                        %% Fail the first request that was sent to Pid.
+                        %% Redo the rest of the requests.
+                        ?DBG("EXIT", [{failtype,fatal}]),
+                        case L0 of
+                            [] ->
+                                %% We should have at least a single sent request.
+                                error(internal);
+                            [{_,Req1}|L1] ->
+                                piroxy_events:fail(Req1, http, Reason),
+                                S2 = resend(Pid, [Req || {_,Req} <- L1], S1#state{sent=Lsent}),
+                                {noreply, S2}
+                        end;
+                    FailType == soft; FailType == hard ->
+                        S2 = resend(Pid, [Req || {_,Req} <- L0], S1#state{sent=Lsent}),
+                        {noreply, S2}
+                end
+            catch
+                shutdown -> {stop,shutdown,S1}
+            end
+    end.
 
 failure_type(shutdown) -> soft;
-failure_type({shutdown,{timeout,active}}) -> hard;
+failure_type({shutdown,timeout}) -> hard;
 failure_type({ssl_error,_}) -> hard;
 failure_type({tcp_error,_}) -> hard;
 failure_type({shutdown,cancelled}) -> hard;
 failure_type(_) -> fatal.
 
-%%% Move requests that were sent to Pid back into todo list.
-%%% Remove Pid from the waitlist (sanity check).
-%%% Calls http_pipe:reset on all new todo list entries.
-redo(Pid, S) ->
-    Lwait = lists:delete(Pid, S#state.waitlist),
-    {L0,Lsent} = lists:partition(fun ({Pid_,_}) when Pid == Pid_ ->
-                                         true;
-                                     (_) ->
-                                         false
-                                 end, S#state.sent),
-    %% Rarely, a reset pipe will need to be cancelled because it was reset
-    %% while in the middle of sending a response.
-    L = lists:filter(fun (Req) ->
-                             case http_pipe:reset(Req) of
-                                 ok -> true;
-                                 cancel -> false
-                             end
-                     end, [Req || {_,Req} <- L0]),
-    Ltodo = L ++ S#state.todo,
-    S#state{waitlist=Lwait, todo=Ltodo, sent=Lsent}.
+tfind(X, T) ->
+    tfind(X, T, 1).
+
+tfind(_, T, I) when I > tuple_size(T) ->
+    error(not_found);
+
+tfind(X, T, I) when element(I,T) =:= X ->
+    I;
+
+tfind(X, T, I) ->
+    tfind(X, T, I+1).
+
+partpid(Pid, Lsent) ->
+    partition(fun ({Pid_,_})
+                    when Pid == Pid_ ->
+                      true;
+                  (_) ->
+                      false
+              end, Lsent).
+
+resend(Pid, L, S0) ->
+    S = resend2(Pid, L, S0),
+    case active(S) of
+        true ->
+            S;
+        false ->
+            throw(shutdown)
+    end.
+
+resend2(Pid, [], S) ->
+    %% Special case: there is nothing to resend.
+    I = tfind(Pid, S#state.pids),
+    Tpids = setelement(I, S#state.pids, null),
+    S#state{pids=Tpids};
+
+resend2(Pid0, L0, S) ->
+    %% Things get a little juicy when we account for pipe endpoints which have
+    %% since ceased to exist.
+    case http_res_sock:start_link(S#state.hostinfo) of
+        {ok,Pid} ->
+            L = filter(fun (Req) ->
+                               http_pipe:reset(Req),
+                               case http_pipe:listen(Req, Pid) of
+                                   ok ->
+                                       true;
+                                   {error,unknown_session} ->
+                                       false
+                               end
+                       end, L0),
+            I = tfind(Pid0, S#state.pids),
+            Tpids = case L of
+                        [] ->
+                            http_res_sock:stop(Pid),
+                            setelement(I, S#state.pids, null);
+                        _ ->
+                            setelement(I, S#state.pids, Pid)
+                    end,
+            Lsent = S#state.sent ++ [{Pid,Req} || Req <- L],
+            S#state{pids=Tpids, sent=Lsent};
+        {error,Rsn} ->
+            error(Rsn)
+    end.
+
+active(S) ->
+    any(fun (null) -> false; (_) -> true end,
+        tuple_to_list(S#state.pids)).

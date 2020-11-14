@@ -146,7 +146,7 @@ handle_event(info, {A,_,Bin1}, body, D)
             piroxy_events:recv(Req, http, eof),
             %% Notify request_target that we have finished receiving the response for Req.
             %% This will remove it from the sent list.
-            request_target:notify(D#data.target, done),
+            request_target:finish(D#data.target, Req),
             case D#data.closed of
                 true ->
                     %% If the response had "Connection: close" then we are supposed to
@@ -184,10 +184,8 @@ handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Req, Host, ">>", Head),
     send(D#data.socket, Head),
-    %% Request another... request as soon as the head is sent on this one.
-    Q = D#data.queue,
-    request_target:notify(D#data.target, ready),
-    {keep_state, D#data{queue=Q++[{Req,Head}]}};
+    Q = D#data.queue ++ [{Req,Head}],
+    {keep_state, D#data{queue=Q}};
 
 handle_event(info, {http_pipe,Req,eof}, _, D) ->
     %% Avoid trying to encode the 'eof' atom.
