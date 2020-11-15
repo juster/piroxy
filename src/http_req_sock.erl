@@ -149,6 +149,11 @@ handle_event(info, {http_pipe,Res,eof}, _, D) ->
     ?TRACE(Res, Host, "<", "EOF"),
     {keep_state, D#data{queue=Q}};
 
+handle_event(info, {http_pipe,Res,{upgrade,M,Args}}, _, D) ->
+    %% Transfers the socket to the new process and shuts down.
+    M:start(D#data.socket, Args),
+    {stop, shutdown};
+
 handle_event(info, {http_pipe,Res,Term}, _, D) ->
     case Term of
         {error,Rsn} ->

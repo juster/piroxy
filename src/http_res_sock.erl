@@ -121,13 +121,34 @@ handle_event(info, {A,_,Bin}, head, D0)
             {keep_state,D0#data{reader=Reader}};
         {done,StatusLn,Headers,Rest} ->
             {Req,Hreq} = hd(D0#data.queue),
-            Hres = head(StatusLn, Headers, Hreq),
+            {ok, [_HttpVer, Code, _]} = phttp:nsplit(3, StatusLn, <<" ">>),
+            Hres = head(Code, StatusLn, Headers, Hreq),
             Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
             ?TRACE(Req, Host, "<<", Hres),
-            piroxy_events:recv(Req, http, Hres),
-            Closed = connection_close(Hres),
-            D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen), closed=Closed},
-            {next_state,body,D,{next_event,info,{A,null,Rest}}}
+            http_pipe:recv(Req, Hres),
+            case Code of
+                <<"101">> ->
+                    %%Proto = fieldlist:get_value(<<"upgrade">>, Hres#head.headers),
+                    %%if
+                    %%    is_binary(Proto),
+                    %%    fieldlist:binary_lcase(Proto) == <<"websocket">> ->
+                    %%        piroxy_events:recv(Req, http, {upgrade,raw});
+                    %%    _ ->
+                    %%        piroxy_events:recv(Req, http, {upgrade,raw});
+                    %%;
+                    %% TODO: create a separate session ID generator?
+                    ?DBG(body, "101 Upgrade"),
+                    MitmPid = raw_sock:start_mitm(),
+                    Args = [null,MitmPid],
+                    raw_sock:start(D0#data.socket, Args),
+                    http_pipe:recv(Req, {upgrade,raw_sock,Args}),
+                    request_target:finish(D0#data.target, Req),
+                    {stop,shutdown};
+                _ ->
+                    Closed = connection_close(Hres),
+                    D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen), closed=Closed},
+                    {next_state,body,D,{next_event,info,{A,null,Rest}}}
+            end
     end;
 
 handle_event(info, {A,_,Bin1}, body, D)
@@ -224,39 +245,30 @@ send({tcp,Sock}, Term) ->
 send({ssl,Sock}, Term) ->
     ssl:send(Sock, phttp:encode(Term)).
 
-head(StatusLn, Headers, Head) ->
+head(Code, StatusLn, Headers, Head) ->
     Method = Head#head.method,
-    Len = body_length(StatusLn, Headers, Head),
-    #head{method=Method, line=StatusLn, headers=Headers, bodylen=Len}.
-
-body_length(StatusLn, Headers, ReqH) ->
-    %% the response length depends on the request method
-    Method = ReqH#head.method,
-    case response_length(Method, StatusLn, Headers) of
-        {ok,BodyLen} -> BodyLen;
-        {error,{missing_length,_}} ->
-            exit({missing_length,StatusLn,Headers})
+    case body_length(Method, Code, Headers) of
+        not_found ->
+            exit({missing_length,StatusLn,Headers});
+        Len ->
+            #head{method=Method, line=StatusLn, headers=Headers, bodylen=Len}
     end.
 
-response_length(Method, Line, Headers) ->
-    response_length_(Method, response_code(Line), Headers).
+body_length(Method, Code, Headers) ->
+    %% the response length depends on the request method
+    case response_length(Method, Code, Headers) of
+        {ok,BodyLen} -> BodyLen;
+        _ -> not_found
+    end.
 
 %%% Reference: RFC7230 3.3.3 p32
-response_length_(head, <<"200">>, _) -> {ok, 0}; % optimize 200
-response_length_(_, <<"200">>, Headers) -> pimsg:body_length(Headers);
-response_length_(_, <<"1",_,_>>, _) -> {ok, 0};
-response_length_(_, <<"204">>, _) -> {ok, 0};
-response_length_(_, <<"304">>, _) -> {ok, 0};
-response_length_(head, _, _) -> {ok, 0};
-response_length_(_, _, ResHeaders) -> pimsg:body_length(ResHeaders).
-
-response_code(StatusLn) ->
-    case phttp:nsplit(3, StatusLn, <<" ">>) of
-        {ok,[_,Status,_]} ->
-            Status;
-        {error,Reason} ->
-            error(Reason)
-    end.
+response_length(head, <<"200">>, _) -> {ok, 0}; % optimize 200
+response_length(_, <<"200">>, Headers) -> pimsg:body_length(Headers);
+response_length(_, <<"1",_,_>>, _) -> {ok, 0};
+response_length(_, <<"204">>, _) -> {ok, 0};
+response_length(_, <<"304">>, _) -> {ok, 0};
+response_length(head, _, _) -> {ok, 0};
+response_length(_, _, ResHeaders) -> pimsg:body_length(ResHeaders).
 
 %%% TODO: double-check RFC7231 for other values
 connection_close(#head{headers=Headers}) ->
