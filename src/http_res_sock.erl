@@ -6,7 +6,7 @@
 -module(http_res_sock).
 -behavior(gen_statem).
 -include("../include/phttp.hrl").
--define(ACTIVE_TIMEOUT, 2500).
+-define(ACTIVE_TIMEOUT, 5000).
 -define(IDLE_TIMEOUT, 60000).
 
 -record(data, {target, socket, reader, queue=[], closed=false}).
@@ -38,20 +38,21 @@ init([Pid,T]) ->
 
 %% use enter events to choose between the idle timeout and active timeout
 handle_event(enter, _, eof, _) ->
-    {keep_state_and_data, {timeout,?IDLE_TIMEOUT,idle}};
+    {keep_state_and_data,
+     {state_timeout,?IDLE_TIMEOUT,idle}};
 
 handle_event(enter, _, HttpState, _)
   when HttpState == head; HttpState == body ->
-    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
+    {keep_state_and_data, {state_timeout,?ACTIVE_TIMEOUT,active}};
 
 handle_event(enter, _, _, _) ->
     keep_state_and_data;
 
-handle_event(timeout, idle, _, _) ->
+handle_event(state_timeout, idle, _, _) ->
     %% Use the idle timeout to automatically close.
     {stop, shutdown};
 
-handle_event(timeout, active, _, _) ->
+handle_event(state_timeout, active, _, _) ->
     %% Only a timeout in 'eof' is not considered an error.
     {stop, {shutdown,timeout}};
 
@@ -232,7 +233,6 @@ body_length(StatusLn, Headers, ReqH) ->
     %% the response length depends on the request method
     Method = ReqH#head.method,
     case response_length(Method, StatusLn, Headers) of
-        {ok,0} -> 0;
         {ok,BodyLen} -> BodyLen;
         {error,{missing_length,_}} ->
             exit({missing_length,StatusLn,Headers})
