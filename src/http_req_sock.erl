@@ -47,7 +47,8 @@ terminate(_, D) ->
     Sock = element(1,D#data.socket),
     io:format("[~B] (~s) < inbound ~s socket closed~n", [Req, Host, Sock]),
     lists:foreach(fun (X) ->
-                          piroxy_events:cancel(X, http)
+                          request_manager:cancel(X),
+                          http_pipe:cancel(X)
                   end, D#data.queue).
 
 %%%
@@ -103,20 +104,20 @@ handle_event(info, {A,_,Bin1}, body, D)
         {continue,?EMPTY,Reader} ->
             {keep_state,D#data{reader=Reader}};
         {continue,Bin2,Reader} ->
-            piroxy_events:send(D#data.active, http, {body,Bin2}),
+            http_pipe:send(D#data.active, {body,Bin2}),
             {keep_state,D#data{reader=Reader}};
         {done,Bin2,Rest} ->
             Req = D#data.active,
             case Bin2 of
                 ?EMPTY -> ok;
-                _ -> piroxy_events:send(Req, http, {body,Bin2})
+                _ -> http_pipe:send(Req, {body,Bin2})
             end,
             Host = case D#data.target of
                        undefined -> "???";
                        _ -> element(2,D#data.target)
                    end,
             ?TRACE(Req, Host, ">", "EOF"),
-            piroxy_events:send(Req, http, eof),
+            http_pipe:send(Req, eof),
             {next_state, head, D#data{reader=pimsg:head_reader()},
              {next_event,info,{A,null,Rest}}}
     end;
@@ -332,13 +333,13 @@ relay_head(H, HI, Bin, D) ->
     {_,Host,_} = HI,
     Req = http_pipe:new(),
     Q = D#data.queue ++ [Req],
-    piroxy_events:connect(Req, http, HI),
-    piroxy_events:send(Req, http, H),
+    request_manager:connect(Req, http, HI),
+    http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
     {State, Reader} = case H#head.bodylen of
                           0 ->
                               ?TRACE(Req, Host, ">", "EOF"),
-                              piroxy_events:send(Req, http, eof),
+                              http_pipe:send(Req, eof),
                               {head, pimsg:head_reader()};
                           _ ->
                               {body, pimsg:body_reader(H#head.bodylen)}

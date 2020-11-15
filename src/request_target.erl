@@ -5,7 +5,7 @@
 -import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2,
                 filter/2, any/2]).
 
--define(MAX_SOCKETS, 4).
+-define(MAX_SOCKETS, 1).
 -record(stats, {nfail=0,nsuccess=0}).
 -record(state, {sent=[], pids=erlang:make_tuple(?MAX_SOCKETS, null),
                 i=0, stats=#stats{}, hostinfo}).
@@ -53,7 +53,7 @@ terminate(Reason, #state{sent=Lsent}) ->
     %% XXX: Child procs should be exited automatically after teminate.
     %%?DBG("terminate", ding),
     foreach(fun ({_Pid,Req}) ->
-                    piroxy_events:fail(Req, http, Reason)
+                    fail(Req, Reason)
             end, Lsent),
     ok.
 
@@ -70,7 +70,7 @@ handle_call(_, _, S) ->
 handle_cast({connect,Req}, S) ->
     %% Use a circular buffer for assigning requests to each proc.
     I = S#state.i+1,
-    J = (I+1) rem ?MAX_SOCKETS,
+    J = I rem ?MAX_SOCKETS,
     case element(I, S#state.pids) of
         null ->
             %% Empty slot, spawn a new proc.
@@ -82,7 +82,6 @@ handle_cast({connect,Req}, S) ->
                             Lsent = S#state.sent ++ [{Pid,Req}],
                             {noreply, S#state{i=J, pids=Pids, sent=Lsent}};
                         {error,unknown_session} ->
-                            http_res_sock:stop(Pid),
                             {noreply, S}
                     end;
                 {error,Rsn} ->
@@ -127,11 +126,7 @@ handle_cast({finish,Res}, S0) ->
 handle_cast({retire_self,Pid}, S) ->
     unlink(Pid),
     {L,Lsent} = partpid(Pid, S#state.sent),
-    try
-        {noreply, resend(Pid, L, S#state{sent=Lsent})}
-    catch
-        shutdown -> {stop,shutdown,S}
-    end.
+    {noreply, resend(Pid, L, S#state{sent=Lsent})}.
 
 %% Unexpected errors in outbound process.
 handle_info({'EXIT',Pid,Reason}, S0) ->
@@ -157,27 +152,23 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
             %% We have reached the maximum failure count, so we must abort.
             {stop,Reason,S1};
         true ->
-            try
-                if
-                    FailType == fatal ->
-                        %% Fail the first request that was sent to Pid.
-                        %% Redo the rest of the requests.
-                        ?DBG("EXIT", [{failtype,fatal}]),
-                        case L0 of
-                            [] ->
-                                %% We should have at least a single sent request.
-                                error(internal);
-                            [{_,Req1}|L1] ->
-                                piroxy_events:fail(Req1, http, Reason),
-                                S2 = resend(Pid, [Req || {_,Req} <- L1], S1#state{sent=Lsent}),
-                                {noreply, S2}
-                        end;
-                    FailType == soft; FailType == hard ->
-                        S2 = resend(Pid, [Req || {_,Req} <- L0], S1#state{sent=Lsent}),
-                        {noreply, S2}
-                end
-            catch
-                shutdown -> {stop,shutdown,S1}
+            if
+                FailType == fatal ->
+                    %% Fail the first request that was sent to Pid.
+                    %% Redo the rest of the requests.
+                    ?DBG("EXIT", [{failtype,fatal}]),
+                    case L0 of
+                        [] ->
+                            %% We should have at least a single sent request.
+                            error(internal);
+                        [{_,Req1}|L1] ->
+                            fail(Req1, Reason),
+                            S2 = resend(Pid, [Req || {_,Req} <- L1], S1#state{sent=Lsent}),
+                            {noreply, S2}
+                    end;
+                FailType == soft; FailType == hard ->
+                    S2 = resend(Pid, [Req || {_,Req} <- L0], S1#state{sent=Lsent}),
+                    {noreply, S2}
             end
     end.
 
@@ -187,6 +178,11 @@ failure_type({ssl_error,_}) -> hard;
 failure_type({tcp_error,_}) -> hard;
 failure_type({shutdown,cancelled}) -> hard;
 failure_type(_) -> fatal.
+
+fail(Id, Reason) ->
+    http_pipe:reset(Id),
+    http_pipe:recv(Id, {error,Reason}),
+    http_pipe:recv(Id, eof).
 
 tfind(X, T) ->
     tfind(X, T, 1).
@@ -214,7 +210,7 @@ resend(Pid, L, S0) ->
         true ->
             S;
         false ->
-            throw(shutdown)
+            throw({stop,shutdown,S0})
     end.
 
 resend2(Pid, [], S) ->
@@ -228,21 +224,14 @@ resend2(Pid0, L0, S) ->
     %% since ceased to exist.
     case http_res_sock:start_link(S#state.hostinfo) of
         {ok,Pid} ->
-            L = filter(fun (Req) ->
-                               http_pipe:reset(Req),
-                               case http_pipe:listen(Req, Pid) of
-                                   ok ->
-                                       true;
-                                   {error,unknown_session} ->
-                                       false
-                               end
-                       end, L0),
+            foreach(fun (Req) -> http_pipe:reset(Req) end, L0),
+            L = relay(Pid, L0),
             I = tfind(Pid0, S#state.pids),
             Tpids = case L of
                         [] ->
                             http_res_sock:stop(Pid),
                             setelement(I, S#state.pids, null);
-                        _ ->
+                        L ->
                             setelement(I, S#state.pids, Pid)
                     end,
             Lsent = S#state.sent ++ [{Pid,Req} || Req <- L],
@@ -250,6 +239,16 @@ resend2(Pid0, L0, S) ->
         {error,Rsn} ->
             error(Rsn)
     end.
+
+relay(Pid, Reqs) ->
+    filter(fun (Req) ->
+                   case http_pipe:listen(Req, Pid) of
+                       ok ->
+                           true;
+                       {error,unknown_session} ->
+                           false
+                   end
+           end, Reqs).
 
 active(S) ->
     any(fun (null) -> false; (_) -> true end,

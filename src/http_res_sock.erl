@@ -160,18 +160,18 @@ handle_event(info, {A,_,Bin1}, body, D)
             {keep_state,D#data{reader=Reader}};
         {continue,Bin2,Reader} ->
             {Req,_} = hd(D#data.queue),
-            piroxy_events:recv(Req, http, {body,Bin2}),
+            http_pipe:recv(Req, {body,Bin2}),
             {keep_state,D#data{reader=Reader}};
         {done,Bin2,Rest} ->
             Q = D#data.queue,
             {Req,Hreq} = hd(Q),
             case Bin2 of
                 ?EMPTY -> ok;
-                _ -> piroxy_events:recv(Req, http, {body,Bin2})
+                _ -> http_pipe:recv(Req, {body,Bin2})
             end,
             Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
             ?TRACE(Req, Host, "<<", "EOF"),
-            piroxy_events:recv(Req, http, eof),
+            http_pipe:recv(Req, eof),
             %% Notify request_target that we have finished receiving the response for Req.
             %% This will remove it from the sent list.
             request_target:finish(D#data.target, Req),

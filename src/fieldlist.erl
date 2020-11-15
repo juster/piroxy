@@ -6,6 +6,7 @@
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
 -export([get_value/2, get_value/3, get_value_split/2]).
 -export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
+-export([trimows/1, binary_lcase/1]).
 
 trimows(?EMPTY) ->
     ?EMPTY;
