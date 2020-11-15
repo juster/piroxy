@@ -106,7 +106,7 @@ handle_event(info, {A,_,Bin}, head, D0)
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,D0#data{reader=Reader}};
+            {keep_state,D0#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
             {Req,Hreq} = hd(D0#data.queue),
             {ok, [_HttpVer, Code, _]} = phttp:nsplit(3, StatusLn, <<" ">>),
@@ -149,7 +149,7 @@ handle_event(info, {A,_,Bin1}, body, D)
         {continue,Bin2,Reader} ->
             {Req,_} = hd(D#data.queue),
             http_pipe:recv(Req, {body,Bin2}),
-            {keep_state,D#data{reader=Reader}};
+            {keep_state,D#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,Bin2,Rest} ->
             Q = D#data.queue,
             {Req,Hreq} = hd(Q),
