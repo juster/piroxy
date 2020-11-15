@@ -5,7 +5,7 @@
 -import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2,
                 filter/2, any/2]).
 
--define(MAX_SOCKETS, 1).
+-define(MAX_SOCKETS, 4).
 -record(stats, {nfail=0,nsuccess=0}).
 -record(state, {sent=[], pids=erlang:make_tuple(?MAX_SOCKETS, null),
                 i=0, stats=#stats{}, hostinfo}).
