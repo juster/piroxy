@@ -19,6 +19,11 @@
 
 start_link({Proto,Host,Port}) ->
     gen_statem:start_link(?MODULE, [self(), {Proto,binary_to_list(Host),Port}], []).
+    %%case Host of
+    %%    <<"v.redd.it">> ->
+    %%        gen_statem:start_link(?MODULE, [self(), {Proto,binary_to_list(Host),Port}], [{debug,[trace]}]);
+    %%    _ -> gen_statem:start_link(?MODULE, [self(), {Proto,binary_to_list(Host),Port}], [])
+    %%end.
 
 stop(Pid) ->
     try
@@ -90,23 +95,6 @@ handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
 %%%
 %%% TCP/SSL messages
 %%%
-
-%% Ignore empty data but reset the event timers.
-handle_event(info, {A,_,<<>>}, eof, _)
-  when A == tcp; A == ssl ->
-    {keep_state_and_data, {timeout,?IDLE_TIMEOUT,idle}};
-
-%%handle_event(info, {A,_,empty}, eof, _)
-%%  when A == tcp; A == ssl ->
-%%    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,idle}};
-
-handle_event(info, {A,_,<<>>}, _, _)
-  when A == tcp; A == ssl ->
-    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
-
-%%handle_event(info, {A,_,empty}, _, _)
-%%  when A == tcp; A == ssl ->
-%%    {keep_state_and_data, {timeout,?ACTIVE_TIMEOUT,active}};
 
 handle_event(info, {A,_,_}, eof, D)
   when A == tcp; A == ssl ->
@@ -272,11 +260,15 @@ response_length(_, _, ResHeaders) -> pimsg:body_length(ResHeaders).
 
 %%% TODO: double-check RFC7231 for other values
 connection_close(#head{headers=Headers}) ->
-    case fieldlist:get_value(<<"connection">>, Headers) of
+    Close = case fieldlist:get_value(<<"connection">>, Headers) of
+                not_found ->
+                    not_found;
+                Bin ->
+                    fieldlist:trimows(fieldlist:binary_lcase(Bin))
+            end,
+    case Close of
         <<"close">> ->
-            %%?DBG("connection_close", {connection,<<"close">>}),
             true;
-        _Bin ->
-            %%?DBG("connection_close", {connection,Bin}),
+        _ ->
             false
     end.
