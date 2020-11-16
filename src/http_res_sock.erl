@@ -9,7 +9,7 @@
 -define(ACTIVE_TIMEOUT, 5000).
 -define(IDLE_TIMEOUT, 60000).
 
--record(data, {target, socket, reader, queue=[], closed=false}).
+-record(data, {target, socket, reader, queue=[], closed=open}).
 -export([start_link/1, stop/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
@@ -110,7 +110,8 @@ handle_event(info, {A,_,Bin}, head, D0)
         {done,StatusLn,Headers,Rest} ->
             {Req,Hreq} = hd(D0#data.queue),
             {ok, [_HttpVer, Code, _]} = phttp:nsplit(3, StatusLn, <<" ">>),
-            Hres = head(Code, StatusLn, Headers, Hreq),
+            ConnClosed = connection_close(Headers),
+            Hres = head(Hreq#head.method, Code, Headers, ConnClosed, StatusLn),
             Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
             ?TRACE(Req, Host, "<<", Hres),
             http_pipe:recv(Req, Hres),
@@ -133,8 +134,13 @@ handle_event(info, {A,_,Bin}, head, D0)
                     request_target:finish(D0#data.target, Req),
                     {stop,shutdown};
                 _ ->
-                    Closed = connection_close(Hres),
-                    D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen), closed=Closed},
+                    CloseStatus = case {Hres#head.bodylen, ConnClosed} of
+                                      {until_closed,_} -> eof_on_close;
+                                      {_,true} -> close_on_eof;
+                                      {_,false} -> open
+                                  end,
+                    D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen),
+                                closed=CloseStatus},
                     {next_state,body,D,{next_event,info,{A,null,Rest}}}
             end
     end;
@@ -164,12 +170,15 @@ handle_event(info, {A,_,Bin1}, body, D)
             %% This will remove it from the sent list.
             request_target:finish(D#data.target, Req),
             case D#data.closed of
-                true ->
+                eof_on_close ->
+                    %% This should never happen.
+                    error(internal);
+                close_on_eof ->
                     %% If the response had "Connection: close" then we are supposed to
                     %% disconnect the socket after receiving a response.
                     ?DBG("body", closing),
                     {stop,shutdown};
-                false ->
+                open ->
                     case Rest of
                         ?EMPTY ->
                             {next_state,eof, D#data{reader=undefined, queue=tl(Q)}};
@@ -181,16 +190,18 @@ handle_event(info, {A,_,Bin1}, body, D)
     end;
 
 handle_event(info, {A,_}, _, D)
-  when A == tcp_closed; A == ssl_closed ->
-    case D#data.queue of
-        [] ->
-            {stop,shutdown};
+  when A =:= tcp_closed; A =:= ssl_closed ->
+    case D#data.closed of
+        eof_on_close ->
+            {Res,_} = hd(D#data.queue),
+            http_pipe:recv(Res, eof);
         _ ->
-            {keep_state,D#data{closed=true}}
-    end;
+            ok
+    end,
+    {stop,shutdown};
 
 handle_event(info, {A,_,Reason}, _, _)
-  when A == tcp_error, A == ssl_error ->
+  when A =:= tcp_error, A =:= ssl_error ->
     {stop,Reason};
 
 %%%
@@ -200,7 +211,7 @@ handle_event(info, {A,_,Reason}, _, _)
 handle_event(info, {http_pipe,_,_}, disconnected, _) ->
     {keep_state_and_data, postpone};
 
-handle_event(info, {http_pipe,_,_}, _, #data{closed=true}) ->
+handle_event(info, {http_pipe,_,_}, _, #data{closed=close_on_eof}) ->
     %% discard http_pipe events after the socket has been remotely closed
     keep_state_and_data;
 
@@ -233,20 +244,24 @@ send({tcp,Sock}, Term) ->
 send({ssl,Sock}, Term) ->
     ssl:send(Sock, phttp:encode(Term)).
 
-head(Code, StatusLn, Headers, Head) ->
-    Method = Head#head.method,
-    case body_length(Method, Code, Headers) of
+head(ReqMethod, Code, Headers, Closed, StatusLn) ->
+    case body_length(ReqMethod, Code, Headers) of
         not_found ->
-            exit({missing_length,StatusLn,Headers});
+            case Closed of
+                true ->
+                    #head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=until_closed};
+                false ->
+                    exit({missing_length,StatusLn,Headers})
+            end;
         Len ->
-            #head{method=Method, line=StatusLn, headers=Headers, bodylen=Len}
+            #head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=Len}
     end.
 
 body_length(Method, Code, Headers) ->
     %% the response length depends on the request method
     case response_length(Method, Code, Headers) of
         {ok,BodyLen} -> BodyLen;
-        _ -> not_found
+        {error,{missing_length,_}} -> not_found
     end.
 
 %%% Reference: RFC7230 3.3.3 p32
@@ -256,10 +271,10 @@ response_length(_, <<"1",_,_>>, _) -> {ok, 0};
 response_length(_, <<"204">>, _) -> {ok, 0};
 response_length(_, <<"304">>, _) -> {ok, 0};
 response_length(head, _, _) -> {ok, 0};
-response_length(_, _, ResHeaders) -> pimsg:body_length(ResHeaders).
+response_length(_, _, Headers) -> pimsg:body_length(Headers).
 
 %%% TODO: double-check RFC7231 for other values
-connection_close(#head{headers=Headers}) ->
+connection_close(Headers) ->
     Close = case fieldlist:get_value(<<"connection">>, Headers) of
                 not_found ->
                     not_found;

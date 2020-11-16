@@ -177,8 +177,16 @@ chunk_size(Buf, Bin) ->
 body_reader(chunked) ->
     {chunked,{between,linebuf()}};
 
+%% Used when content length is unknown and connection:close is specified.
+%% The body never finishes and only stops when the socket is closed.
+body_reader(until_closed) ->
+    neverdone;
+
 body_reader(ContentLength) when is_integer(ContentLength) ->
     {fixed,{0,ContentLength}}.
+
+body_reader(neverdone, Bin) ->
+    {continue,Bin,neverdone};
 
 body_reader({chunked,State0}, Bin) ->
     case chunk(State0, Bin) of
