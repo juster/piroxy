@@ -131,6 +131,7 @@ handle_event(info, {A,_,Bin}, head, D0)
                     Args = [null,MitmPid],
                     raw_sock:start(D0#data.socket, Args),
                     http_pipe:recv(Req, {upgrade,raw_sock,Args}),
+                    http_pipe:recv(Req, eof),
                     request_target:finish(D0#data.target, Req),
                     {stop,shutdown};
                 _ ->

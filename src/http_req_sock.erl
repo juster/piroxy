@@ -8,10 +8,11 @@
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--define(TIMEOUT, 15000).
+-define(IDLE_TIMEOUT, 5*60*1000).
+-define(ACTIVE_TIMEOUT, 5000).
 %% TODO: move CONNECT_TIMEOUT here
 
--record(data, {target, socket, reader, queue=[], active}).
+-record(data, {target, socket, reader, queue=[], active, upgrade}).
 -export([start/0, stop/1, control/2]).
 -export([init/1, terminate/2, callback_mode/0, handle_event/4]).
 
@@ -56,32 +57,48 @@ terminate(_, D) ->
 %%%
 
 handle_event(enter, connect, _, _) ->
-    {keep_state_and_data, {timeout,?CONNECT_TIMEOUT,connect}};
+    {keep_state_and_data, {state_timeout,?CONNECT_TIMEOUT,connect}};
+
+handle_event(enter, idle, _, _) ->
+    {keep_state_and_data, {state_timeout,?IDLE_TIMEOUT,idle}};
 
 handle_event(enter, _, _, _) ->
-    {keep_state_and_data, {timeout,?TIMEOUT,idle}};
+    {keep_state_and_data, {state_timeout,?ACTIVE_TIMEOUT,active}};
 
-handle_event(timeout, _, _, _) ->
+handle_event(state_timeout, idle, _, _) ->
     %% Use the idle timeout to automatically close.
     {stop, shutdown};
+
+handle_event(state_timeout, active, _, _) ->
+    %% Similar to http_res_sock
+    {stop, {shutdown,timeout}};
 
 %%%
 %%% RECEIVE THE SOCKET FROM PISERVER
 %%%
 
-%% only one event should happen in this state (or timeout, above)
+%% Only the socket control event or a timeout event should happen in the
+%% connect state.
 handle_event(cast, {control,Sock}, connect, D) ->
     ok = inet:setopts(Sock, [{active,true}]),
-    {next_state, head, D#data{socket={tcp,Sock}, reader=pimsg:head_reader()}};
+    {next_state, idle, D#data{socket={tcp,Sock}}};
 
 %%%
 %%% TCP/SSL messages
 %%%
 
 %% Ignore empty data but reset timer.
-handle_event(info, {A,_,<<>>}, _, _)
+handle_event(info, {A,_,?EMPTY}, idle, _)
   when A == tcp; A == ssl ->
-    {keep_state_and_data, {timeout,?TIMEOUT,idle}};
+    {keep_state_and_data, {state_timeout,?IDLE_TIMEOUT,idle}};
+
+%%handle_event(info, {A,_,<<>>}, _, _)
+%%  when A == tcp; A == ssl ->
+%%    {keep_state_and_data, {state_timeout,?ACTIVE_TIMEOUT,active}};
+
+handle_event(info, {A,_,_}, idle, D)
+  when A == tcp; A == ssl ->
+    {next_state, head, D#data{reader=pimsg:head_reader()}, postpone};
 
 handle_event(info, {A,_,Bin}, head, D)
   when A == tcp; A == ssl ->
@@ -89,23 +106,27 @@ handle_event(info, {A,_,Bin}, head, D)
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,D#data{reader=Reader}};
+            %% Keep the 'head' state but reset the timer.
+            {keep_state,D#data{reader=Reader},
+             {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
             H = head(StatusLn, Headers),
             recv_head(H, target(H), Rest, D)
     end;
-
 
 handle_event(info, {A,_,Bin1}, body, D)
   when A == tcp; A == ssl ->
     case pimsg:body_reader(D#data.reader, Bin1) of
         {error,Reason} ->
             {stop,Reason};
-        {continue,?EMPTY,Reader} ->
-            {keep_state,D#data{reader=Reader}};
         {continue,Bin2,Reader} ->
-            http_pipe:send(D#data.active, {body,Bin2}),
-            {keep_state,D#data{reader=Reader}};
+            %% Keep the 'body' state but reset the timer.
+            case Bin2 of
+                ?EMPTY -> ok;
+                _ -> http_pipe:send(D#data.active, {body,Bin2})
+            end,
+            {keep_state,D#data{reader=Reader},
+             {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,Bin2,Rest} ->
             Req = D#data.active,
             case Bin2 of
@@ -118,7 +139,7 @@ handle_event(info, {A,_,Bin1}, body, D)
                    end,
             ?TRACE(Req, Host, ">", "EOF"),
             http_pipe:send(Req, eof),
-            {next_state, head, D#data{reader=pimsg:head_reader()},
+            {next_state, idle, D#data{reader=undefined},
              {next_event,info,{A,null,Rest}}}
     end;
 
@@ -133,6 +154,21 @@ handle_event(info, {A,_,Reason}, _, _)
 %%%
 %%% messages from http_pipe/piserver
 %%%
+
+handle_event(info, {http_pipe,_Res,#head{}}, upgrade, _) ->
+    {stop,head_after_upgrade};
+
+%% Wait for the eof event from http_pipe, after receiving an upgrade
+%% notification.
+handle_event(info, {http_pipe,_Res,eof}, upgrade, D) ->
+    %% Hands off the socket to a new module/process and shuts down the HTTP
+    %% state machine.
+    {M,Args} = D#data.upgrade,
+    M:start(D#data.socket, Args),
+    {stop,shutdown};
+
+handle_event(info, {http_pipe,_Res,_Body}, upgrade, _) ->
+    {stop,body_after_upgrade};
 
 handle_event(info, {http_pipe,Res,#head{}=Head}, _, D) ->
     %% pipeline the next request ASAP
@@ -150,10 +186,15 @@ handle_event(info, {http_pipe,Res,eof}, _, D) ->
     ?TRACE(Res, Host, "<", "EOF"),
     {keep_state, D#data{queue=Q}};
 
-handle_event(info, {http_pipe,Res,{upgrade,M,Args}}, _, D) ->
+handle_event(info, {http_pipe,_Res,{upgrade,M,Args}}, idle, D) ->
     %% Transfers the socket to the new process and shuts down.
-    M:start(D#data.socket, Args),
-    {stop, shutdown};
+    {next_state, upgrade, D#data{upgrade={M,Args}}};
+
+handle_event(info, {http_pipe,_Res,{upgrade,_M,_Args}}, head, _D) ->
+    {stop,upgrade_inside_head};
+
+handle_event(info, {http_pipe,_Res,{upgrade,_M,_Args}}, body, _D) ->
+    {stop,upgrade_inside_body};
 
 handle_event(info, {http_pipe,Res,Term}, _, D) ->
     case Term of
@@ -191,8 +232,8 @@ handle_event(cast, {connect,HI}, tunnel, D) ->
             {_,{_H,M,S}} = calendar:local_time(),
             io:format("~2..0B~2..0B [0] (~s) inbound ~p started tunnel~n",
                       [M,S,Host,self()]),
-            {next_state, head, D#data{target=HI,
-                                      reader=pimsg:head_reader(),
+            {next_state, idle, D#data{target=HI,
+                                      reader=undefined,
                                       socket={ssl,TlsSock}}};
         {error,closed} ->
             {stop,shutdown};
@@ -314,7 +355,7 @@ recv_head(#head{method=options}, self, Bin, D) ->
     %% OPTIONS * refers to the proxy itself. Create a fake response..
     %% TODO: not yet implemented
     send(D#data.socket, {status,http_ok}),
-    {next_state, head, D#data{reader=pimsg:head_reader()},
+    {next_state, idle, D#data{reader=undefined},
      {next_event, info, {tcp,null,Bin}}};
 
 recv_head(H, relative, Bin, D) ->
@@ -336,17 +377,26 @@ relay_head(H, HI, Bin, D) ->
     request_manager:connect(Req, http, HI),
     http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
-    {State, Reader} = case H#head.bodylen of
-                          0 ->
-                              ?TRACE(Req, Host, ">", "EOF"),
-                              http_pipe:send(Req, eof),
-                              {head, pimsg:head_reader()};
-                          _ ->
-                              {body, pimsg:body_reader(H#head.bodylen)}
-                      end,
+    {State,Reader,Active} = case H#head.bodylen of
+                                0 ->
+                                    %% Skip ahead to the idle state when we do not expect
+                                    %% to receive any body data.
+                                    ?TRACE(Req, Host, ">", "EOF"),
+                                    http_pipe:send(Req, eof),
+                                    {idle,undefined,undefined};
+                                _ ->
+                                    {body,pimsg:body_reader(H#head.bodylen),Req}
+                            end,
+    %% Avoid sending an event for a 0-length empty binary.
+    NextEvent = case Bin of
+                    ?EMPTY ->
+                        [];
+                    _ ->
+                        {next_event, info, {tcp,null,Bin}}
+                end,
     {next_state, State,
-     D#data{reader=Reader, target=HI, queue=Q, active=Req},
-     {next_event, info, {tcp,null,Bin}}}.
+     D#data{reader=Reader, target=HI, queue=Q, active=Active},
+     NextEvent}.
 
 relativize(H) ->
     UriBin = head_uri(H),
