@@ -140,6 +140,14 @@ handle_event(info, {A,_,Bin}, head, D0)
                                       {_,true} -> close_on_eof;
                                       {_,false} -> open
                                   end,
+                    case CloseStatus of
+                        eof_on_close ->
+                            ?TRACE(Req, Host, "<<", eof_on_close);
+                        close_on_eof ->
+                            ?TRACE(Req, Host, "<<", close_on_eof);
+                        open ->
+                            ok
+                    end,
                     D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen),
                                 closed=CloseStatus},
                     {next_state,body,D,{next_event,info,{A,null,Rest}}}
