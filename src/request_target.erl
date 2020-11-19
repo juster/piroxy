@@ -160,7 +160,7 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
                     case L0 of
                         [] ->
                             %% We should have at least a single sent request.
-                            error(internal);
+                            error(Reason);
                         [{_,Req1}|L1] ->
                             fail(Req1, Reason),
                             S2 = resend(Pid, [Req || {_,Req} <- L1], S1#state{sent=Lsent}),
@@ -172,6 +172,7 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
             end
     end.
 
+failure_type(normal) -> soft;
 failure_type(shutdown) -> soft;
 failure_type({shutdown,timeout}) -> hard;
 failure_type({ssl_error,_}) -> hard;
