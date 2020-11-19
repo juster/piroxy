@@ -96,7 +96,12 @@ loop(Pid, Id, Sock) ->
                         {error,Rsn} ->
                             error(Rsn)
                     end
-            end
+            end;
+        {http_pipe,_,_} ->
+            error(trailing_http_pipe);
+        Any ->
+            io:format("*DBG* received unexpected messages: ~p~n", [Any]),
+            loop(Pid, Id, Sock)
     end.
 
 send({tcp,Sock}, Data) ->
