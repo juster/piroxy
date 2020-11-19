@@ -52,7 +52,7 @@ init([]) ->
     {ok, {MsgTab, [], 1}}.
 
 handle_call(new, {Pid,_Ref}, {MsgTab,Sessions0,I}) ->
-    %%link(Pid),
+    link(Pid),
     Sessions = Sessions0 ++ [{I,Pid,null}],
     {reply, I, {MsgTab, Sessions, I+1}};
 
@@ -243,12 +243,25 @@ close_recv(Id, MsgTab, Sessions0) ->
             Sessions2
     end.
 
-cleanup(Id, MsgTab, Sessions) ->
+cleanup(Id, MsgTab, Sessions0) ->
     ets:delete(MsgTab, {Id,send}),
     ets:delete(MsgTab, {Id,recv}),
-    lists:keydelete(Id, 1, Sessions).
+    case lists:keytake(Id, 1, Sessions0) of
+        false ->
+            %% should not happen
+            error(internal);
+        {value, {_,Pid1,_}, Sessions} ->
+            case lists:keyfind(Pid1, 2, Sessions) of
+                false ->
+                    %% Unlink send proc if there are no more sessions involving it.
+                    unlink(Pid1);
+                _ ->
+                    ok
+            end,
+            Sessions
+    end.
 
-exit_send({Id,Pid1,_Pid2}, MsgTab, Sessions0) ->
+exit_send({Id,Pid1,_}, MsgTab, Sessions0) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
     exit_send(lists:keyfind(Pid1, 2, Sessions), MsgTab, Sessions);
 
