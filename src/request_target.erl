@@ -247,7 +247,9 @@ relay(Pid, Reqs) ->
                        ok ->
                            true;
                        {error,unknown_session} ->
-                           false
+                           false;
+                       {error,Reason} ->
+                           error(Reason)
                    end
            end, Reqs).
 
