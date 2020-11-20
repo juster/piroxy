@@ -172,5 +172,5 @@ trace(Sess, Host, Arrow, Term) ->
               _ ->
                   Term
           end,
-    io:format("~2..0B~2..0B [~B] (~s) ~s ~s~n",
-              [M,S,Sess,Host,Arrow,Str]).
+    io:format("~2..0B~2..0B ~p [~B] (~s) ~s ~s~n",
+              [M,S,self(),Sess,Host,Arrow,Str]).
