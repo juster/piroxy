@@ -52,7 +52,7 @@ init([]) ->
     {ok, {MsgTab, [], 1}}.
 
 handle_call(new, {Pid,_Ref}, {MsgTab,Sessions0,I}) ->
-    link(Pid),
+    %%link(Pid),
     Sessions = Sessions0 ++ [{I,Pid,null}],
     {reply, I, {MsgTab, Sessions, I+1}};
 
@@ -138,15 +138,16 @@ handle_call({reset,Id}, _From, {MsgTab,Sessions0,I}=State) ->
 handle_cast({send, Id, Term}, {MsgTab,Sessions0,I}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
-            {noreply,State};
+            %% http_req_sock should not send to sessions that no longer exist.
+            {stop,unknown_session,State};
         {_,_,null} ->
             ets:insert(MsgTab, {{Id,send}, Term}),
             {noreply,State};
-        {_,Pid1,Pid2} ->
+        {_,Pid1,Pid2} = T ->
             ets:insert(MsgTab, {{Id,send}, Term}),
             case lists:keyfind(Pid2, 3, Sessions0) of
-                {Id,_,_} ->
-                    %% If this is the first session in the pipeline then we do
+                T ->
+                    %% If this is the first session in Pid2's pipeline then we do
                     %% not have to wait before we send it!
                     Pid2 ! {http_pipe,Id,Term},
                     case endterm(Term) of
@@ -156,8 +157,7 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions0,I}=State) ->
                             Sessions = close_send(Id, MsgTab, Sessions0),
                             {noreply, {MsgTab,Sessions,I}};
                         false ->
-                            Sessions = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,Pid2}),
-                            {noreply,{MsgTab,Sessions,I}}
+                            {noreply,{MsgTab,Sessions0,I}}
                     end;
                 _ ->
                     {noreply,State}
@@ -226,8 +226,7 @@ close_send(Id, MsgTab, Sessions0) ->
             %% Send end of the pipe may NOT ignore missing sessions.
             error(unknown_session);
         {_,Pid1,Pid2} ->
-            Sessions1 = lists:keyreplace(Id, 1, Sessions0,
-                                         {Id,Pid1,null}),
+            Sessions1 = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,null}),
             Sessions2 = flush_send(Pid2, MsgTab, Sessions1),
             Sessions2
     end.
@@ -243,23 +242,10 @@ close_recv(Id, MsgTab, Sessions0) ->
             Sessions2
     end.
 
-cleanup(Id, MsgTab, Sessions0) ->
+cleanup(Id, MsgTab, Sessions) ->
     ets:delete(MsgTab, {Id,send}),
     ets:delete(MsgTab, {Id,recv}),
-    case lists:keytake(Id, 1, Sessions0) of
-        false ->
-            %% should not happen
-            error(internal);
-        {value, {_,Pid1,_}, Sessions} ->
-            case lists:keyfind(Pid1, 2, Sessions) of
-                false ->
-                    %% Unlink send proc if there are no more sessions involving it.
-                    unlink(Pid1);
-                _ ->
-                    ok
-            end,
-            Sessions
-    end.
+    lists:keydelete(Id, 1, Sessions).
 
 exit_send({Id,Pid1,_}, MsgTab, Sessions0) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
@@ -267,6 +253,9 @@ exit_send({Id,Pid1,_}, MsgTab, Sessions0) ->
 
 exit_send(false, _MsgTab, Sessions) ->
     Sessions.
+
+%%% Flushing sends *all* the messages that were stored in the ETS table for a
+%%% specific pid.
 
 flush_send(Pid2, MsgTab, Sessions0) ->
     case lists:keyfind(Pid2, 3, Sessions0) of
