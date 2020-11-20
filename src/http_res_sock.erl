@@ -184,10 +184,13 @@ handle_event(info, {A,_,Bin1}, body, D)
                     error(internal);
                 close_on_eof ->
                     %% If the response had "Connection: close" then we are supposed to
-                    %% disconnect the socket after receiving a response.
+                    %% disconnect the socket after receiving a response. We shutdown
+                    %% so that we can *guarantee* that the pipeline is stopped.
                     ?DBG("body", closing),
                     {stop,shutdown};
                 open ->
+                    %% Pop the request off the queue after we receive a
+                    %% *complete* response.
                     case Rest of
                         ?EMPTY ->
                             {next_state,eof, D#data{reader=undefined, queue=tl(Q)}};
@@ -225,18 +228,30 @@ handle_event(info, {http_pipe,_,_}, _, #data{closed=close_on_eof}) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
-    %% pipeline the next request ASAP
+    %% Push a new request on the queue when we receive a message head from the
+    %% pipeline.
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Req, Host, ">>", Head),
     send(D#data.socket, Head),
     Q = D#data.queue ++ [{Req,Head}],
     {keep_state, D#data{queue=Q}};
 
-handle_event(info, {http_pipe,Req,eof}, _, D) ->
+%% The request may have been popped off the queue already! This
+%% happens when the response EOF is parsed *before* the request
+%% EOF is received from the pipe.
+%%
+%%  http_pipe_req                            http_pipe_res
+%%  =============                            =============
+%%
+%%  1. ->HEAD                ==>                  HEAD->
+%%  2. ->EOF                 ==>
+%%  3. <-HEAD               <==                   HEAD<-
+%%  4. <-EOF                <==                   EOF<-
+%%  5.                    (from #2)               EOF->
+
+handle_event(info, {http_pipe,Req,eof}, _, _) ->
     %% Avoid trying to encode the 'eof' atom.
-    {Req,H} = lists:last(D#data.queue),
-    Host = fieldlist:get_value(<<"host">>, H#head.headers),
-    ?TRACE(Req, Host, ">>", "EOF"),
+    ?TRACE(Req, '?', ">>", "EOF"),
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_Req,Term}, _, D) ->
