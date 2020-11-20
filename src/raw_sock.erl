@@ -1,7 +1,7 @@
 -module(raw_sock).
 -include_lib("kernel/include/logger.hrl").
 
--export([start_mitm/0, middleman/0, start/2, loop/0]).
+-export([start_mitm/0, middleman/0, start/2, start/3, loop/0]).
 
 start_mitm() ->
     spawn(?MODULE, middleman, []).
@@ -16,7 +16,10 @@ middleman() ->
             end
     end.
 
-start(Socket, [Id, MitmPid]) ->
+start(Socket, Args) ->
+    start(Socket, Args, <<>>).
+
+start(Socket, [Id, MitmPid], Bin) ->
     Pid = spawn(?MODULE, loop, []),
     MitmPid ! {hello,Pid},
     Ret = case Socket of
@@ -29,7 +32,7 @@ start(Socket, [Id, MitmPid]) ->
           end,
     case Ret of
         ok ->
-            Pid ! {upgrade,Id,Socket};
+            Pid ! {upgrade,Id,Socket,Bin};
         {error,Rsn} ->
             error(Rsn)
     end,
@@ -44,14 +47,16 @@ loop() ->
 
 loop(Pid) ->
     receive
-        {upgrade,Id2,Sock2} ->
-            case Sock2 of
+        {upgrade,Id2,Sock,Bin} ->
+            %% Ensure that the fake binary message is received first.
+            self() ! {tcp,null,Bin},
+            case Sock of
                 {tcp,TcpSock} ->
                     inet:setopts(TcpSock, [{active,true}]);
                 {ssl,SslSock} ->
                     ssl:setopts(SslSock, [{active,true}])
             end,
-            loop(Pid, Id2, Sock2)
+            loop(Pid, Id2, Sock)
     end.
 
 loop(Pid, Id, Sock) ->

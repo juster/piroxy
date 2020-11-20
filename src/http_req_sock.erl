@@ -163,8 +163,8 @@ handle_event(info, {http_pipe,_Res,#head{}}, upgrade, _) ->
 handle_event(info, {http_pipe,_Res,eof}, upgrade, D) ->
     %% Hands off the socket to a new module/process and shuts down the HTTP
     %% state machine.
-    {M,Args} = D#data.upgrade,
-    M:start(D#data.socket, Args),
+    {M,Args,Bin} = D#data.upgrade,
+    M:start(D#data.socket, Args, Bin),
     {stop,shutdown};
 
 handle_event(info, {http_pipe,_Res,_Body}, upgrade, _) ->
@@ -188,10 +188,11 @@ handle_event(info, {http_pipe,Res,eof}, _, D) ->
 
 handle_event(info, {http_pipe,_Res,{upgrade,M,Args}}, idle, D) ->
     %% Transfers the socket to the new process and shuts down.
-    {next_state, upgrade, D#data{upgrade={M,Args}}};
+    {next_state, upgrade, D#data{upgrade={M,Args,<<>>}}};
 
-handle_event(info, {http_pipe,_Res,{upgrade,_M,_Args}}, head, _D) ->
-    {stop,upgrade_inside_head};
+handle_event(info, {http_pipe,_Res,{upgrade,M,Args}}, head, D) ->
+    Bin = iolist_to_binary(pimsg:head_buffer(D#data.reader)),
+    {next_state, upgrade, D#data{upgrade={M,Args,Bin}}};
 
 handle_event(info, {http_pipe,_Res,{upgrade,_M,_Args}}, body, _D) ->
     {stop,upgrade_inside_body};

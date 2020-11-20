@@ -6,7 +6,7 @@
 
 -module(pimsg).
 
--export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
+-export([head_reader/0, head_reader/2, head_buffer/1, body_reader/1, body_reader/2]).
 -export([body_length/1]).
 
 -import(lists, [reverse/1]).
@@ -58,6 +58,12 @@ head_reader({headers,N0,StatusLine,Headers0,Buf0}, Bin0) ->
                     head_reader({headers,N,StatusLine,Headers,linebuf()}, Bin)
             end
     end.
+
+head_buffer({start,_,Buf}) ->
+    bufbin(Buf);
+
+head_buffer({headers,_,StatusLn,Headers,Buf}) ->
+    [StatusLn,fieldlist:to_iolist(Headers),bufbin(Buf)].
 
 fixed({I,N}, Bin) when I >= N -> {done, ?EMPTY, Bin};
 fixed(S, ?EMPTY) -> {continue, ?EMPTY, S};
@@ -241,6 +247,8 @@ buflen({?EMPTY,?EMPTY}) -> 0;
 buflen({?EMPTY,Bin2}) -> byte_size(Bin2);
 buflen({Bin1,?EMPTY}) -> byte_size(Bin1);
 buflen({Bin1,Bin2}) -> byte_size(Bin1) + byte_size(Bin2).
+
+bufbin({Bin1,Bin2}) -> concat(Bin1, Bin2).
 
 bufpop({Bin1,_}) -> Bin1.
 
