@@ -4,7 +4,7 @@
 -import(lists, [reverse/1, reverse/2]).
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
--export([get_value/2, get_value/3, get_value_split/2]).
+-export([get_value/2, get_value/3, get_value_split/2, has_value/3]).
 -export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
 -export([trimows/1, binary_lcase/1]).
 
@@ -105,6 +105,16 @@ get_value(Field, [{Len,Line}|FL], Default) ->
             trimows(binary_lcase(Value0));
         _ ->
             get_value(Field, FL, Default)
+    end.
+
+has_value(Field, Val1, FL) ->
+    case get_value(Field, FL) of
+        not_found ->
+            false;
+        Val2 ->
+            L = [trimows(Bin) || Bin <- binary:split(Val2, <<",">>, [global,trim_all])],
+            lists:any(fun (V) when V =:= Val1 -> true; (_) -> false end,
+                      [binary_lcase(Bin) || Bin <- L])
     end.
 
 get_value_split(Field, FL) ->

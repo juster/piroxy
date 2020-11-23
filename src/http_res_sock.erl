@@ -126,7 +126,7 @@ handle_event(info, {A,_,Bin}, head, D0)
                     %%        piroxy_events:recv(Req, http, {upgrade,raw});
                     %%;
                     %% TODO: create a separate session ID generator?
-                    ?DBG(body, "101 Upgrade"),
+                    ?DBG(head, "101 Upgrade"),
                     MitmPid = raw_sock:start_mitm(),
                     Args = [null,MitmPid],
                     raw_sock:start(D0#data.socket, Args),
