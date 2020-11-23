@@ -3,7 +3,7 @@
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--export([start_link/0, start_shell/0, new/0, dump/0, sessions/0,
+-export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,
          send/2, listen/2, recv/2, reset/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -20,8 +20,8 @@ start_shell() ->
             Err
     end.
 
-new() ->
-    gen_server:call(?MODULE, new).
+new(Id) ->
+    gen_server:call(?MODULE, {new,Id}).
 
 sessions() ->
     gen_server:call(?MODULE, sessions).
@@ -49,21 +49,21 @@ recv(Id, Term) ->
 init([]) ->
     process_flag(trap_exit, true),
     MsgTab = ets:new(?MODULE, [duplicate_bag,private]),
-    {ok, {MsgTab, [], 1}}.
+    {ok, {MsgTab, []}}.
 
-handle_call(new, {Pid,_Ref}, {MsgTab,Sessions0,I}) ->
+handle_call({new,I}, {Pid,_Ref}, {MsgTab,Sessions0}) ->
     %%link(Pid),
     Sessions = Sessions0 ++ [{I,Pid,null}],
-    {reply, I, {MsgTab, Sessions, I+1}};
+    {reply, ok, {MsgTab, Sessions}};
 
-handle_call(sessions, _From, {_,Sessions,_}=State) ->
+handle_call(sessions, _From, {_,Sessions}=State) ->
     {reply, Sessions, State};
 
-handle_call(dump, _From, {MsgTab,_,_}=State) ->
+handle_call(dump, _From, {MsgTab,_}=State) ->
     {reply, ets:tab2list(MsgTab), State};
 
 %% The receive end of the pipe starts to 'listen' for send messages.
-handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,I}=State) ->
+handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
             {reply,{error,unknown_session},State};
@@ -88,7 +88,7 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,I}=State) ->
                             %% receiving Pid2 in the keylist entry.
                             Sessions = lists:keyreplace(Id, 1, Sessions0,
                                                         {Id,Pid1,Pid2}),
-                            {reply,ok,{MsgTab,Sessions,I}}
+                            {reply,ok,{MsgTab,Sessions}}
                     end;
                 _ ->
                     %% This is not the first session for Pid2 and so we wait
@@ -101,7 +101,7 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,I}=State) ->
 
 %% reset the recv side of the pipe involves forgetting the receiving pid and
 %% preparing for it to be replaced by a new one
-handle_call({reset,Id}, _From, {MsgTab,Sessions0,I}=State) ->
+handle_call({reset,Id}, _From, {MsgTab,Sessions0}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
             %% Do not be strict on recv endpoints about whether a sessions
@@ -126,16 +126,16 @@ handle_call({reset,Id}, _From, {MsgTab,Sessions0,I}=State) ->
                     ?DBG("reset", [{shutdown,Pid1}]),
                     exit(Pid1, shutdown),
                     Sessions = cleanup(Id, MsgTab, Sessions0),
-                    {reply,cancel,{MsgTab,Sessions,I}};
+                    {reply,cancel,{MsgTab,Sessions}};
                 false ->
                     %% Pid1 has not received data from Pid2, so we should be okay...
                     ets:delete(MsgTab, {recv,Id}),
                     Sessions = lists:keyreplace(Id, 1, Sessions0, {Id,Pid1,null}),
-                    {reply,ok,{MsgTab,Sessions,I}}
+                    {reply,ok,{MsgTab,Sessions}}
             end
     end.
 
-handle_cast({send, Id, Term}, {MsgTab,Sessions0,I}=State) ->
+handle_cast({send, Id, Term}, {MsgTab,Sessions0}=State) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
             %% http_req_sock should not send to sessions that no longer exist.
@@ -155,20 +155,20 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions0,I}=State) ->
                             %% We also close the send end of the pipe when an
                             %% 'eof' is received.
                             Sessions = close_send(Id, MsgTab, Sessions0),
-                            {noreply, {MsgTab,Sessions,I}};
+                            {noreply, {MsgTab,Sessions}};
                         false ->
-                            {noreply,{MsgTab,Sessions0,I}}
+                            {noreply,{MsgTab,Sessions0}}
                     end;
                 _ ->
                     {noreply,State}
             end
     end;
 
-handle_cast({cancel,Id}, {MsgTab,Sessions0,I}) ->
+handle_cast({cancel,Id}, {MsgTab,Sessions0}) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
-    {noreply, {MsgTab,Sessions,I}};
+    {noreply, {MsgTab,Sessions}};
 
-handle_cast({recv,Id,Term}, {MsgTab,Sessions0,I}=State) ->
+handle_cast({recv,Id,Term}, {MsgTab,Sessions0}=State) ->
     case Term of
         {error,_} = Err ->
             io:format("*DBG* ~p~n", [[{id,Id},Err]]);
@@ -190,7 +190,7 @@ handle_cast({recv,Id,Term}, {MsgTab,Sessions0,I}=State) ->
                             %% Avoid inserting into ETS table if we are going to
                             %% cleanup immediately aftwards.
                             Sessions = close_recv(Id, MsgTab, Sessions0),
-                            {noreply,{MsgTab,Sessions,I}};
+                            {noreply,{MsgTab,Sessions}};
                         false ->
                             ets:insert(MsgTab, {{Id,recv}, Term}),
                             {noreply,State}
@@ -201,10 +201,10 @@ handle_cast({recv,Id,Term}, {MsgTab,Sessions0,I}=State) ->
             end
     end.
 
-handle_info({'EXIT',Pid1,_Reason}, {MsgTab,Sessions0,I}) ->
+handle_info({'EXIT',Pid1,_Reason}, {MsgTab,Sessions0}) ->
     Sessions = exit_send(lists:keyfind(Pid1, 2, Sessions0),
                          MsgTab, Sessions0),
-    {noreply, {MsgTab,Sessions,I}}.
+    {noreply, {MsgTab,Sessions}}.
 
 endterm(eof) ->
     true;

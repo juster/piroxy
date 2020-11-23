@@ -58,10 +58,7 @@ terminate(Reason, #state{sent=Lsent}) ->
     ok.
 
 handle_call(pending, _From, S) ->
-    {reply, [Req || {_,Req} <- S#state.sent], S};
-
-handle_call(_, _, S) ->
-    {reply, ok, S}.
+    {reply, [Req || {_,Req} <- S#state.sent], S}.
 
 %%%
 %%% from request_manager

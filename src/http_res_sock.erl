@@ -143,9 +143,16 @@ handle_event(info, {A,_,Bin}, head, D0)
                     %% TODO: create a separate session ID generator?
                     ?DBG(head, "101 Upgrade"),
                     MitmPid = raw_sock:start_mitm(),
-                    Args = [null,MitmPid],
-                    raw_sock:start(D0#data.socket, Args),
-                    http_pipe:recv(Req, {upgrade,raw_sock,Args}),
+                    Id = request_manager:nextid(),
+                    Args = [Id,MitmPid],
+                    M = case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
+                            true ->
+                                ws_sock;
+                            false ->
+                                raw_sock
+                        end,
+                    M:start_server(D0#data.socket, Args, []),
+                    http_pipe:recv(Req, {upgrade,M,Args}),
                     http_pipe:recv(Req, eof),
                     request_target:finish(D0#data.target, Req),
                     {stop,shutdown};
@@ -247,7 +254,7 @@ handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
     %% pipeline.
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Req, Host, ">>", Head),
-    send(D#data.socket, Head),
+    pisock:send(D#data.socket, phttp:encode(Head)),
     Q = D#data.queue ++ [{Req,Head}],
     {keep_state, D#data{queue=Q}};
 
@@ -270,18 +277,13 @@ handle_event(info, {http_pipe,Req,eof}, _, _) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_Req,Term}, _, D) ->
-    send(D#data.socket, Term),
+    pisock:send(D#data.socket, phttp:encode(Term)),
     keep_state_and_data.
 
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
 
-send({tcp,Sock}, Term) ->
-    gen_tcp:send(Sock, phttp:encode(Term));
-
-send({ssl,Sock}, Term) ->
-    ssl:send(Sock, phttp:encode(Term)).
 
 head(ReqMethod, Code, Headers, Closed, StatusLn) ->
     case body_length(ReqMethod, Code, Headers) of
