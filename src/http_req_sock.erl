@@ -14,7 +14,7 @@
 
 -record(data, {target, socket, reader, queue=[], active}).
 -export([start/0, stop/1, control/2]).
--export([init/1, terminate/2, callback_mode/0, handle_event/4]).
+-export([init/1, terminate/3, callback_mode/0, handle_event/4]).
 
 %%%
 %%% EXTERNAL INTERFACE
@@ -42,11 +42,10 @@ callback_mode() -> [handle_event_function, state_enter].
 init([]) ->
     {ok, connect, #data{}}.
 
-terminate(_, D) ->
+terminate(Reason, _, D) ->
     Req = case D#data.active of undefined -> 0; _ -> D#data.active end,
     Host = case D#data.target of undefined -> "???"; _ -> element(2,D#data.target) end,
-    Sock = element(1,D#data.socket),
-    io:format("[~B] (~s) < inbound ~s socket closed~n", [Req, Host, Sock]),
+    ?TRACE(Req, Host, "<", io_lib:format("inbound closed: ~p", [Reason])),
     lists:foreach(fun ({X,_}) ->
                           request_manager:cancel(X),
                           http_pipe:cancel(X)
@@ -257,7 +256,6 @@ handle_event(cast, {connect,HI}, tunnel, D) ->
     [] = D#data.queue,
     case forger:mitm(TcpSock, Host) of
         {ok,TlsSock} ->
-            {_,{_H,M,S}} = calendar:local_time(),
             ?TRACE(0, Host, ">", started_tunnel),
             %%io:format("~2..0B~2..0B [0] (~s) inbound ~p started tunnel~n",
             %%          [M,S,Host,self()]),
