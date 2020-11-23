@@ -72,6 +72,8 @@ handle_event(cast, {connect,{http,Host,Port}}, disconnected, D) ->
                          ?CONNECT_TIMEOUT) of
         {error,timeout} ->
             {stop,{shutdown,timeout}};
+        {error,nxdomain} ->
+            {next_state,nxdomain,Host};
         {error,Reason} ->
             {stop,Reason};
         {ok,Socket} ->
@@ -85,12 +87,25 @@ handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
                      ?CONNECT_TIMEOUT) of
         {error,timeout} ->
             {stop,{shutdown,timeout}};
+        {error,nxdomain} ->
+            {next_state,nxdomain,Host};
         {error,Reason} ->
             {stop,Reason};
         {ok,Socket} ->
             ssl:setopts(Socket, [{active,true}]),
             {next_state,eof,D#data{socket={ssl,Socket}}}
     end;
+
+%%%
+%%% Error message generator
+%%%
+
+handle_event(info, {http_pipe,Res,eof}, nxdomain, Host) ->
+    send_text(Res, "Unknown domain name: "++Host),
+    {stop,shutdown};
+
+handle_event(info, {http_pipe,_,_}, nxdomain, _) ->
+    keep_state_and_data;
 
 %%%
 %%% TCP/SSL messages
@@ -311,3 +326,15 @@ connection_close(Headers) ->
         _ ->
             false
     end.
+
+send_text(Res, Text) ->
+    Len = length(Text),
+    L = [{"content-type", "text/plain"},
+         {"content-length", integer_to_list(Len)}],
+    Headers = fieldlist:from_proplist(L),
+    H = #head{line = <<"HTTP/1.1 503 Bad Gateway">>,
+              headers = Headers,
+              bodylen = Len},
+    http_pipe:recv(Res, H),
+    http_pipe:recv(Res, {body,Text}),
+    http_pipe:recv(Res, eof).
