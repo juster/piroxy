@@ -5,8 +5,8 @@
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).
 -export([get_value/2, get_value/3, get_value_split/2, has_value/3]).
--export([to_proplist/1, to_iolist/1, to_binary/1, from_proplist/1]).
--export([trimows/1, binary_lcase/1]).
+-export([get_lcase/2, to_proplist/1, to_iolist/1, to_binary/1]).
+-export([from_proplist/1, trimows/1, binary_lcase/1]).
 
 trimows(?EMPTY) ->
     ?EMPTY;
@@ -107,6 +107,14 @@ get_value(Field, [{Len,Line}|FL], Default) ->
             get_value(Field, FL, Default)
     end.
 
+get_lcase(Field, FL) ->
+    case get_value(Field, FL) of
+        not_found ->
+            not_found;
+        Bin ->
+            binary_lcase(Bin)
+    end.
+
 has_value(Field, Val1, FL) ->
     case get_value(Field, FL) of
         not_found ->
@@ -150,6 +158,7 @@ from_proplist(PL) ->
     lists:foldl(fun ({K,V}, FL) ->
                         fieldlist:add_value(K, V, FL)
                 end, [], PL).
+
 
 binary_lcase(?EMPTY) ->
     ?EMPTY;

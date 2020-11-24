@@ -140,22 +140,8 @@ handle_event(info, {A,_,Bin}, head, D0)
                     %%    _ ->
                     %%        piroxy_events:recv(Req, http, {upgrade,raw});
                     %%;
-                    %% TODO: create a separate session ID generator?
                     ?DBG(head, "101 Upgrade"),
-                    MitmPid = raw_sock:start_mitm(),
-                    Id = request_manager:nextid(),
-                    Args = [Id,MitmPid],
-                    M = case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
-                            true ->
-                                ws_sock;
-                            false ->
-                                raw_sock
-                        end,
-                    M:start_server(D0#data.socket, Args, []),
-                    http_pipe:recv(Req, {upgrade,M,Args}),
-                    http_pipe:recv(Req, eof),
-                    request_target:finish(D0#data.target, Req),
-                    {stop,shutdown};
+                    upgrade(Req, Hres, Rest, D0);
                 _ ->
                     CloseStatus = case {Hres#head.bodylen, ConnClosed} of
                                       {until_closed,_} -> eof_on_close;
@@ -340,3 +326,39 @@ send_text(Res, Text) ->
     http_pipe:recv(Res, H),
     http_pipe:recv(Res, {body,Text}),
     http_pipe:recv(Res, eof).
+
+upgrade(Req, H, Rest, D) ->
+    Headers = H#head.headers,
+    io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
+    try
+        case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
+            true ->
+                MitmPid = ws_sock:start_mitm(Req),
+                Exts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
+                           <<"permessage-deflate">> ->
+                               %% TODO: handle deflate extension parameters
+                               [{deflate,true}];
+                           not_found ->
+                               [];
+                           _ ->
+                               %% unknown extension(s), cannot be parsed
+                               throw(raw_sock)
+                       end,
+                Opts = [MitmPid,Exts],
+                case ws_sock:start_server(D#data.socket, Rest, Opts) of
+                    {ok,_} ->
+                        http_pipe:recv(Req, {upgrade,ws_sock,start_client,Opts}),
+                        http_pipe:recv(Req, eof), % to make http_pipe cleanup
+                        request_target:finish(D#data.target, Req),
+                        {stop,shutdown};
+                    {error,Rsn} ->
+                        error(Rsn)
+                end;
+            false ->
+                throw(raw_sock)
+        end
+    catch
+        raw_sock ->
+            %% Fall back to using raw_sock
+            error(unimplemented)
+    end.

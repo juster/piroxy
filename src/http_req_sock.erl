@@ -185,16 +185,21 @@ handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
              {next_event, info, {tcp,null,Bin}}}
     end;
 
-handle_event(info, {http_pipe,Res,{upgrade,M,Args}}, upgrade, D) ->
+handle_event(info, {http_pipe,Res,{upgrade,M,F,Opts}}, upgrade, D) ->
     case D#data.queue of
         [] ->
             error(request_underrun);
         [{Res,false}|_] ->
             error(unexpected_upgrade);
-        [{Res,Opts}] ->
+        [{Res,_}] ->
             %% Transfers the socket to the new process and shuts down.
-            M:start_client(D#data.socket, Args, Opts, reverse(D#data.reader)),
-            {stop,shutdown};
+            Bin = iolist_to_binary(reverse(D#data.reader)),
+            case M:F(D#data.socket, Bin, Opts) of
+                {ok,_} ->
+                    {stop,shutdown};
+                {error,Rsn} ->
+                    error(Rsn)
+            end;
         _ ->
             error(request_overrun)
     end;
@@ -247,8 +252,12 @@ handle_event(info, {http_pipe,Res,Term}, _, D) ->
 %%% TLS TUNNEL
 %%%
 
-handle_event(cast, {connect,HI}, tunnel, D) ->
-    {https,Host,443} = HI,
+
+handle_event(cast, {connect,{http,_,80}=HI}, tunnel, D) ->
+    send(D#data.socket, {status,http_ok}),
+    {next_state, idle, D#data{target=HI, reader=undefined}};
+
+handle_event(cast, {connect,{https,Host,443}=HI}, tunnel, D) ->
     {tcp,TcpSock} = D#data.socket,
     [] = D#data.queue,
     case forger:mitm(TcpSock, Host) of
@@ -266,7 +275,11 @@ handle_event(cast, {connect,HI}, tunnel, D) ->
         {error,Rsn} ->
             ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(), Host, Rsn]),
             {stop,Rsn}
-    end.
+    end;
+
+handle_event(cast, {connect,_}, tunnel, D) ->
+    send(D#data.socket, {status,http_bad_gateway}),
+    {next_state, idle, D}.
 
 %%%
 %%% INTERNAL FUNCTIONS

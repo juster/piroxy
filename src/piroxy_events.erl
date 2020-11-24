@@ -6,17 +6,17 @@ start_link() ->
 
 %%% called by the inbound process
 
-connect(Req, Proto, Target) ->
-    gen_event:notify(?MODULE, {connect,Req,Proto,Target}).
+connect(Id, Proto, Target) ->
+    gen_event:notify(?MODULE, {connect,Id,Proto,Target}).
 
-send(Req, Proto, Term) ->
-    gen_event:notify(?MODULE, {send,Req,Proto,Term}).
+send(Id, Proto, Term) ->
+    gen_event:notify(?MODULE, {send,Id,Proto,Term}).
 
-recv(Req, Proto, Term) ->
-    gen_event:notify(?MODULE, {recv,Req,Proto,Term}).
+recv(Id, Proto, Term) ->
+    gen_event:notify(?MODULE, {recv,Id,Proto,Term}).
 
-cancel(Req, Proto) ->
-    gen_event:notify(?MODULE, {fail,Req,Proto,cancelled}).
+cancel(Id, Proto) ->
+    gen_event:notify(?MODULE, {fail,Id,Proto,cancelled}).
 
-fail(Req, Proto, Reason) ->
-    gen_event:notify(?MODULE, {fail,Req,Proto,Reason}).
+fail(Id, Proto, Reason) ->
+    gen_event:notify(?MODULE, {fail,Id,Proto,Reason}).
