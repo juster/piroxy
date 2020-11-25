@@ -41,10 +41,21 @@ callback_mode() -> [handle_event_function, state_enter].
 init([Pid,T]) ->
     {ok, disconnected, #data{target=Pid}, {next_event,cast,{connect,T}}}.
 
-%% use enter events to choose between the idle timeout and active timeout
-handle_event(enter, _, eof, _) ->
+%% Use enter events to choose between the idle timeout and active timeout.
+%% Remember that we are idle only when we are not in the middle of receiving
+%% a response AND we are not waiting to receive a response to a request
+%% we have previously sent.
+
+%% In the eof state we are not in the middle of receiving a response.
+%% Ensure that we should not be receiving a response before enabling
+%% the idle timeout.
+handle_event(enter, _, eof, #data{queue=[]}) ->
     {keep_state_and_data,
      {state_timeout,?IDLE_TIMEOUT,idle}};
+
+handle_event(enter, _, eof, _) ->
+    {keep_state_and_data,
+     {state_timeout,?ACTIVE_TIMEOUT,active}};
 
 handle_event(enter, _, HttpState, _)
   when HttpState == head; HttpState == body ->
