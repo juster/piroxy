@@ -248,12 +248,13 @@ handle_event(info, {http_pipe,_Req,cancel}, _, D)
     keep_state_and_data;
 
 handle_event(info, {http_pipe,Req,cancel}, _, D) ->
-    case lists:last(D#data.queue) of
-        {Req,_} ->
+    case lists:any(fun ({Req2,_}) when Req =:= Req2 -> true; (_) -> false end,
+                   D#data.queue) of
+        true ->
             %% The pipeline was broken! We have to cancel the request
             %% except for we have already sent some of it!
             {stop,{shutdown,cancel}};
-        _ ->
+        false ->
             keep_state_and_data
     end;
 
