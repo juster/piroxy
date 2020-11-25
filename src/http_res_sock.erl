@@ -231,6 +231,21 @@ handle_event(info, {A,_,Reason}, _, _)
 handle_event(info, {http_pipe,_,_}, disconnected, _) ->
     {keep_state_and_data, postpone};
 
+handle_event(info, {http_pipe,_Req,cancel}, _, D)
+  when D#data.queue =:= [] ->
+    %% Special case: Avoid breaking lists:last/1 with empty list.
+    keep_state_and_data;
+
+handle_event(info, {http_pipe,Req,cancel}, _, D) ->
+    case lists:last(D#data.queue) of
+        {Req,_} ->
+            %% The pipeline was broken! We have to cancel the request
+            %% except for we have already sent some of it!
+            {stop,{shutdown,cancel}};
+        _ ->
+            keep_state_and_data
+    end;
+
 handle_event(info, {http_pipe,_,_}, _, #data{closed=close_on_eof}) ->
     %% discard http_pipe events after the socket has been remotely closed
     keep_state_and_data;

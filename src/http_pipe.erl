@@ -143,7 +143,7 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions0}=State) ->
         {_,_,null} ->
             ets:insert(MsgTab, {{Id,send}, Term}),
             {noreply,State};
-        {_,Pid1,Pid2} = T ->
+        {_,_Pid1,Pid2} = T ->
             ets:insert(MsgTab, {{Id,send}, Term}),
             case lists:keyfind(Pid2, 3, Sessions0) of
                 T ->
@@ -166,7 +166,15 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions0}=State) ->
 
 handle_cast({cancel,Id}, {MsgTab,Sessions0}) ->
     Sessions = cleanup(Id, MsgTab, Sessions0),
-    {noreply, {MsgTab,Sessions}};
+    case blocked_pid(Id, 3, Sessions0) of % Sessions0 is not a typo!
+        false ->
+            {noreply, {MsgTab,Sessions}};
+        Pid2 ->
+            %% Pid2 is waiting for the session that was just deleted!
+            Pid2 ! {http_pipe,Id,cancel},
+            %% http_res_sock MAY exit at this point, but we don't know that
+            {noreply, flush_send(Pid2, MsgTab, Sessions)}
+    end;
 
 handle_cast({recv,Id,Term}, {MsgTab,Sessions0}=State) ->
     case Term of
@@ -211,6 +219,21 @@ endterm(eof) ->
 
 endterm(_) ->
     false.
+
+blocked_pid(Id, PidI, Sessions) ->
+    case lists:keyfind(Id, 1, Sessions) of
+        false ->
+            false;
+        T ->
+            case element(PidI,T) of
+                null -> false;
+                Pid ->
+                    case lists:keyfind(Pid, PidI, Sessions) of
+                        T -> Pid;
+                        _ -> false
+                    end
+            end
+    end.
 
 close_send(Id, MsgTab, Sessions0) ->
     %%{_,{_H,M,S}} = calendar:local_time(),
