@@ -253,7 +253,7 @@ handle_event(info, {http_pipe,Req,cancel}, _, D) ->
         true ->
             %% The pipeline was broken! We have to cancel the request
             %% except for we have already sent some of it!
-            {stop,{shutdown,cancel}};
+            {stop,{shutdown,reset}};
         false ->
             keep_state_and_data
     end;

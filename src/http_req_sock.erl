@@ -225,6 +225,16 @@ handle_event(info, {http_pipe,Res,#head{}=Head}, _, D) ->
     ?TRACE(Res, Host, "<", Head),
     send(D#data.socket, Head);
 
+handle_event(info, {http_pipe,Req,reset}, _, D) ->
+    case D#data.queue of
+        [Req|_] ->
+            %% Unfortunately we do not know if we have already
+            %% sent any responses with send/2.
+            {stop,shutdown};
+        Q ->
+            {keep_state, D#data{queue=lists:delete(Req, Q)}}
+    end;
+
 handle_event(info, {http_pipe,Res,Term}, _, D) ->
     case Term of
         {error,Rsn} ->

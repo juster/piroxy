@@ -96,18 +96,8 @@ handle_cast({connect,Req}, S) ->
     end;
 
 handle_cast({cancel,Id}, S0) ->
-    case keytake(Id, 2, S0#state.sent) of
-        false ->
-            %% Ignore requests we are not responsible for.
-            {noreply, S0};
-        {value,{Pid,_},Lsent} ->
-            %% We must restart the process because the cancelled request has
-            %% corrupted the pipeline. We cannot be sure where in the
-            %% request/response pipeline the request currently is.
-            ?DBG("cancel", [{session,Id},{stopping,Pid}]),
-            http_res_sock:stop(Pid),
-            {noreply, S0#state{sent=Lsent}}
-    end;
+    Lsent = lists:keydelete(Id, 2, S0#state.sent),
+    {noreply, S0#state{sent=Lsent}};
 
 %%%
 %%% from http_res_sock
@@ -171,10 +161,10 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
 
 failure_type(normal) -> soft;
 failure_type(shutdown) -> soft;
+failure_type({shutdown,reset}) -> soft;
 failure_type({shutdown,timeout}) -> hard;
 failure_type({ssl_error,_}) -> hard;
 failure_type({tcp_error,_}) -> hard;
-failure_type({shutdown,cancelled}) -> hard;
 failure_type(_) -> fatal.
 
 fail(Id, Reason) ->
