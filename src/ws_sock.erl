@@ -6,7 +6,7 @@
 -record(data, {pid,role,socket,buffer=(<<>>),queue=[],z=null}).
 
 -export([start_mitm/1, mitm_loop/1, start_client/3, start_server/3, ready/1]).
--export([init/1, callback_mode/0, startup/3, connected/3, ready/3, frames/3,
+-export([init/1, callback_mode/0, startup/3, connected/3, frames/3,
          cleanup/3]).
 
 %%%
@@ -34,27 +34,31 @@ mitm_loop(Id) ->
 mitm_loop(Pid1, Pid2, Id, I) ->
     receive
         {ws_pipe,Pid1,Bin} ->
-            Pid2 ! {ws_pipe,Bin},
+            gen_statem:cast(Pid2, {ws_pipe,Bin}),
             mitm_loop(Pid1, Pid2, Id, I);
         {ws_pipe,Pid2,Bin} ->
-            Pid1 ! {ws_pipe,Bin},
+            gen_statem:cast(Pid1, {ws_pipe,Bin}),
             mitm_loop(Pid1, Pid2, Id, I);
         {ws_log,Pid1,Term} ->
             %% receive from the sending proc
+            io:format("*DBG* ws_sock send: ~p~n", [Term]),
             piroxy_events:send([I|Id], ws, Term),
             mitm_loop(Pid1, Pid2, Id, I+1);
         {ws_log,Pid2,Term} ->
             %% receive from the receiving proc
+            io:format("*DBG* ws_sock recv: ~p~n", [Term]),
             piroxy_events:recv([I|Id], ws, Term),
             mitm_loop(Pid1, Pid2, Id, I+1);
         {ws_close,Pid1} ->
-            Pid2 ! ws_close,
+            io:format("*DBG* ws_sock send ws_close~n"),
+            gen_statem:cast(Pid2, ws_close),
             mitm_loop(Pid1, Pid2, Id, I);
         {ws_close,Pid2} ->
-            Pid1 ! ws_close,
+            io:format("*DBG* ws_sock recv ws_close~n"),
+            gen_statem:cast(Pid1, ws_close),
             mitm_loop(Pid1, Pid2, Id, I);
         Any ->
-            io:format("*DBG* ws:mitm_loop received unknown msg: ~p~n", [Any]),
+            io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
             mitm_loop(Pid1, Pid2, Id, I)
     end.
 
@@ -106,26 +110,25 @@ init([Pid,Role,Exts]) ->
             {stop,nproc}
     end.
 
-startup(cast, ready, #data{socket=undefined}=D) ->
-    {next_state, ready, D};
-
 startup(cast, {upgrade,Sock,Bin}, D) ->
-    {next_state, connected, D#data{socket=Sock, buffer=Bin}}.
+    {next_state, connected,
+     D#data{socket=Sock, buffer=Bin}};
 
-connected(cast, ready, #data{socket=Sock}=D) ->
-    pisock:setopts(Sock, [{active,true}]),
-    {next_state, frames, parse(D#data.buffer, D#data{buffer=(<<>>)})}.
+startup(_, _, _D) ->
+    {keep_state_and_data, postpone}.
 
-ready(cast, {upgrade,Sock,Bin}, D) ->
-    %% identical to receiving the ready cast when connected
-    pisock:setopts(Sock, [{active,true}]),
-    {next_state, frames, parse(Bin, D#data{socket=Sock})}.
+connected(cast, ready, D) ->
+    pisock:setopts(D#data.socket, [{active,true}]),
+    {next_state, frames, D, {next_event,info,{tcp,null,<<>>}}};
 
-frames(info, ws_close, D) ->
+connected(_, _, _D) ->
+    {keep_state_and_data, postpone}.
+
+frames(cast, ws_close, D) ->
     pisock:shutdown(D#data.socket, write),
     {next_state, cleanup, D};
 
-frames(info, {ws_pipe,Bin}, D) ->
+frames(cast, {ws_pipe,Bin}, D) ->
     pisock:send(D#data.socket, Bin),
     keep_state_and_data;
 
@@ -134,32 +137,44 @@ frames(info, {A,_,Bin}, D)
     D#data.pid ! {ws_pipe,self(),Bin}, % relay bytes to the middleman
     {keep_state, parse(Bin, D)};
 
-frames(info, {A,_}, _D)
+frames(info, {A,_}, D)
   when A =:= tcp_closed; A =:= ssl_closed ->
-    %% It is too late to close gracefully. Shutdown and it will be sent to
-    %% linked procs.
-    {stop, {shutdown,closed}};
+    D#data.pid ! {ws_close,self()},
+    {stop,shutdown};
 
 frames(info, {A,_,Reason}, _D)
   when A =:= tcp_error; A =:= ssl_error ->
-    {stop,Reason}.
+    {stop,{A,Reason}}.
 
-cleanup(info, {ws_pipe,_Bin}, _D) ->
-    %% ignore any received data in the cleanup state
+%%%
+%%% In cleanup state we wait for the other end to send ws_close
+%%% OR we send ws_close ourselves when the socket has closed.
+%%%
+
+cleanup(cast, ws_close, D) ->
+    pisock:close(D#data.socket),
+    io:format("*DBG* ws_close, closing ~p~n", [self()]),
+    {stop,shutdown};
+
+cleanup(cast, {ws_pipe,_}, _D) ->
+    %% ignore any ws_pipe messages other than exit
     keep_state_and_data;
 
 cleanup(info, {A,_,Reason}, _D)
   when A =:= tcp_error; A =:= ssl_error ->
-    {stop,Reason};
+    {stop,{A,Reason}};
 
 cleanup(info, {A,_}, _D)
   when A =:= tcp_closed; A =:= ssl_closed ->
-    {stop, {shutdown,closed}};
+    io:format("*DBG* ~s, closing ~p~n", [A,self()]),
+    {stop,shutdown};
 
+%%% The reason we are in cleanup state is to make sure we receive all of the
+%%% data before we shutdown.
 cleanup(info, {A,_,Bin}, D)
   when A =:= tcp; A =:= ssl ->
     D#data.pid ! {ws_pipe,self(),Bin},
-    keep_state_and_data.
+    {keep_state, parse(Bin, D)}.
 
 %%%
 %%% INTERNAL FUNCTIONS
@@ -167,9 +182,6 @@ cleanup(info, {A,_,Bin}, D)
 
 upgrade(Pid, Sock, Bin) ->
     gen_statem:cast(Pid, {upgrade,Sock,Bin}).
-
-parse(<<>>, D) ->
-    D;
 
 parse(Bin2, D) when size(Bin2) + size(D#data.buffer) < 2 ->
     Bin1 = D#data.buffer,
@@ -190,10 +202,13 @@ parse(Bin2, D) ->
                                   0 -> Payload0;
                                   1 -> unmask(Payload0, Mask)
                               end,
-                    parse(Rest3, frame(Fin, Pmz, operation(Opcode), Payload, D));
+                    parse(Rest3, frame(Fin, Pmz, operation(Opcode), Payload,
+                                       D#data{buffer=(<<>>)}));
                 true ->
-                    D#data{buffer=Bin}
-            end
+                    D#data{buffer=Rest2}
+            end;
+        _ ->
+            D#data{buffer=Rest1}
     end.
 
 unmask(Bin, Mask) ->

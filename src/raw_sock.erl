@@ -1,101 +1,163 @@
 -module(raw_sock).
 -include_lib("kernel/include/logger.hrl").
 
--export([start_mitm/0, middleman/0, start_server/3, start_client/4, loop/0]).
+-export([start_mitm/1, mitm_loop/1, start_server/3, start_client/3, loop/1]).
 
-start_mitm() ->
-    spawn(?MODULE, middleman, []).
+%%%
+%%% Middleman process between two raw_sock processes.
+%%% Handles the message counter and event generation.
+%%%
 
-middleman() ->
+start_mitm(Id) ->
+    spawn(?MODULE, mitm_loop, [Id]).
+
+mitm_loop(Id) ->
     receive
-        {hello,Pid1} ->
+        {hello,client,Pid1} ->
             receive
-                {hello,Pid2} ->
-                    Pid2 ! {hello,Pid1},
-                    Pid1 ! {hello,Pid2}
+                {hello,server,Pid2} ->
+                    Pid2 ! ready,
+                    Pid1 ! ready,
+                    mitm_loop(Pid1, Pid2, Id)
             end
     end.
 
-start_server(Socket, Args, Opts) ->
-    start(Socket, Args, Opts, <<>>).
+mitm_loop(Pid1, Pid2, Id) ->
+    mitm_loop(Pid1, Pid2, Id, 1).
 
-start_client(Socket, Args, Opts, Bin) ->
-    start(Socket, Args, Opts, Bin).
+mitm_loop(Pid1, Pid2, Id, I) ->
+    receive
+        {raw_pipe,Pid1,Bin} ->
+            pievents:send([I|Id], raw, Bin),
+            Pid2 ! {raw_pipe,Bin},
+            mitm_loop(Pid1, Pid2, Id, I+1);
+        {raw_pipe,Pid2,Bin} ->
+            pievents:send([I|Id], raw, Bin),
+            Pid1 ! {raw_pipe,Bin},
+            mitm_loop(Pid1, Pid2, Id, I+1)
+    end.
 
-start(Socket, [Id, MitmPid], _Opts, Bin) ->
-    Pid = spawn(?MODULE, loop, []),
-    MitmPid ! {hello,Pid},
+%%%
+%%% raw_sock socket handler process
+%%%
+
+start_server(Socket, Bin, Opts) ->
+    start(Socket, Bin, Opts, server).
+
+start_client(Socket, Bin, Opts) ->
+    start(Socket, Bin, Opts, client).
+
+start(Socket, Bin, [MitmPid], Role) ->
+    Pid = spawn(?MODULE, loop, [[MitmPid,Role]]),
     pisock:setopts(Socket, [{active,false}]),
     case pisock:control(Socket, Pid) of
         ok ->
-            Pid ! {upgrade,Id,Socket,Bin};
-        {error,Rsn} ->
-            error(Rsn)
-    end,
-    Pid.
-
-loop() ->
-    receive
-        {hello,Pid} ->
-            link(Pid),
-            loop(Pid)
+            Pid ! {upgrade,Socket,Bin},
+            {ok,Pid};
+        {error,_} = Err ->
+            exit(Pid, kill),
+            Err
     end.
 
-loop(Pid) ->
+loop([Pid, Role]) ->
+    link(Pid),
+    Pid ! {hello,Role,self()},
     receive
-        {upgrade,Id2,Sock,Bin} ->
+        {upgrade,Sock,Bin} ->
+            loop(Pid, Sock, Bin)
+    end.
+
+loop(Pid,Sock,Bin) ->
+    receive
+        ready ->
             %% Ensure that the fake binary message is received first.
             self() ! {tcp,null,Bin},
             pisock:setopts(Sock, [{active,true}]),
-            loop(Pid, Id2, Sock)
+            loop(Pid, Sock)
     end.
 
-loop(Pid, Id, Sock) ->
+loop(Pid,Sock) ->
     receive
         {tcp,_,Bin} ->
-            Pid ! {raw_pipe, Bin},
-            loop(Pid, Id, Sock);
+            Pid ! {raw_pipe,self(),Bin},
+            loop(Pid, Sock);
         {ssl,_,Bin} ->
-            Pid ! {raw_pipe, Bin},
-            loop(Pid, Id, Sock);
+            Pid ! {raw_pipe,self(),Bin},
+            loop(Pid, Sock);
         {tcp_error,Sock,Rsn} ->
-            Pid ! {raw_pipe,{error,Rsn}},
-            Pid ! {raw_pipe,eof};
+            Pid ! {raw_pipe,self(),{error,Rsn}},
+            shutdown(Pid,Sock);
         {ssl_error,Sock,Rsn} ->
-            Pid ! {raw_pipe,{error,Rsn}},
-            Pid ! {raw_pipe,eof};
+            Pid ! {raw_pipe,self(),{error,Rsn}},
+            shutdown(Pid,Sock);
         {tcp_closed,_} ->
-            Pid ! {raw_pipe,eof};
+            Pid ! {raw_pipe,self(),eof},
+            shutdown(Pid,Sock);
         {ssl_closed,_} ->
-            Pid ! {raw_pipe,eof};
+            Pid ! {raw_pipe,self(),eof},
+            shutdown(Pid,Sock);
         {raw_pipe,eof} ->
-            case pisock:shutdown(Sock, write) of
-                ok ->
-                    loop(Pid, Id, Sock);
-                {error,Rsn} ->
-                    ?LOG_ERROR("shutdown error: ~p", [Rsn]),
-                    ok
-            end;
+            shutdown(Pid,Sock);
         {raw_pipe,{error,_}} ->
-            pisock:shutdown(Sock, read_write),
-            loop(Pid, Id, Sock);
-        {raw_pipe,Bin} ->
-            case pisock:send(Sock, Bin) of
+            shutdown(Pid,Sock);
+        {raw_pipe,exit} ->
+            ?LOG_WARNING("raw_sock ~p received {raw_pipe,exit} inside main loop",
+                         [self()]),
+            pisock:close(Sock),
+            ok;
+        {raw_pipe,Bin} when is_binary(Bin) ->
+            case pisock:send(Sock,Bin) of
                 ok ->
-                    loop(Pid, Id, Sock);
+                    loop(Pid,Sock);
                 {error,_} = Err ->
-                    Pid ! {raw_pipe,Err},
-                    Pid ! {raw_pipe,eof},
-                    case pisock:shutdown(Sock, write) of
-                        ok ->
-                            loop(Pid, Id, Sock);
-                        {error,Rsn} ->
-                            error(Rsn)
-                    end
+                    Pid ! {raw_pipe,Err}
             end;
-        {http_pipe,_,_} ->
+        {http_pipe,_,_} = Msg ->
+            ?LOG_ERROR("trailing http_pipe message to raw_sock (~p): ~p~n",
+                       [self(),Msg]),
             error(trailing_http_pipe);
         Any ->
             io:format("*DBG* received unexpected messages: ~p~n", [Any]),
-            loop(Pid, Id, Sock)
+            loop(Pid, Sock)
+    end.
+
+shutdown(Pid,Sock) ->
+    case pisock:shutdown(Sock, write) of
+        ok ->
+            cleanup(Pid,Sock);
+        {error,closed} ->
+            Pid ! {raw_pipe,exit},
+            exit(closed);
+        {error,Rsn} ->
+            exit(Rsn)
+    end.
+
+cleanup(Pid,Sock) ->
+    receive
+        {tcp,_,Bin} ->
+            Pid ! {raw_pipe,Bin},
+            cleanup(Pid,Sock);
+        {ssl,_,Bin} ->
+            Pid ! {raw_pipe,Bin},
+            cleanup(Pid,Sock);
+        {tcp_closed,_} ->
+            Pid ! {raw_pipe,exit},
+            ok;
+        {ssl_closed,_} ->
+            Pid ! {raw_pipe,exit},
+            ok;
+        {raw_pipe,exit} ->
+            pisock:close(Sock),
+            ok;
+        {raw_pipe,_} ->
+            cleanup(Pid,Sock);
+        {A,_,Rsn} when A == tcp_error; A == ssl_error ->
+            ?LOG_ERROR("raw_sock ~s: ~p", [A, Rsn]),
+            exit(Rsn);
+        {A,_} when A == tcp_closed; A == ssl_closed ->
+            Pid ! {raw_pipe,exit},
+            ok;
+        Any ->
+            ?LOG_ERROR("raw_sock received unknown message: ~p", [Any]),
+            error(internal)
     end.

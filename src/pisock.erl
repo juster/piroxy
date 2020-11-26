@@ -1,5 +1,5 @@
 -module(pisock).
--export([send/2, shutdown/2, setopts/2, control/2]).
+-export([send/2, shutdown/2, setopts/2, control/2, close/1]).
 
 send({tcp,Sock}, Data) ->
     gen_tcp:send(Sock, Data);
@@ -25,3 +25,8 @@ control({tcp,Sock}, Pid) ->
 control({ssl,Sock}, Pid) ->
     ssl:controlling_process(Sock, Pid).
 
+close({tcp,Sock}) ->
+    gen_tcp:close(Sock);
+
+close({ssl,Sock}) ->
+    ssl:close(Sock).

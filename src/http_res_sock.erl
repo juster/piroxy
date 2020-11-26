@@ -152,7 +152,7 @@ handle_event(info, {A,_,Bin}, head, D0)
                     %%        piroxy_events:recv(Req, http, {upgrade,raw});
                     %%;
                     ?DBG(head, "101 Upgrade"),
-                    upgrade(Req, Hres, Rest, D0);
+                    upgrade(Req, Headers, Rest, D0);
                 _ ->
                     CloseStatus = case {Hres#head.bodylen, ConnClosed} of
                                       {until_closed,_} -> eof_on_close;
@@ -354,38 +354,61 @@ send_text(Res, Text) ->
     http_pipe:recv(Res, {body,Text}),
     http_pipe:recv(Res, eof).
 
-upgrade(Req, H, Rest, D) ->
-    Headers = H#head.headers,
+upgrade(Req, Headers, Rest, D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
-    try
-        case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
-            true ->
-                MitmPid = ws_sock:start_mitm(Req),
-                Exts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
-                           <<"permessage-deflate">> ->
-                               %% TODO: handle deflate extension parameters
-                               [{deflate,true}];
-                           not_found ->
-                               [];
-                           _ ->
-                               %% unknown extension(s), cannot be parsed
-                               throw(raw_sock)
-                       end,
-                Opts = [MitmPid,Exts],
-                case ws_sock:start_server(D#data.socket, Rest, Opts) of
-                    {ok,_} ->
-                        http_pipe:recv(Req, {upgrade,ws_sock,start_client,Opts}),
-                        http_pipe:recv(Req, eof), % to make http_pipe cleanup
-                        request_target:finish(D#data.target, Req),
-                        {stop,shutdown};
-                    {error,Rsn} ->
-                        error(Rsn)
-                end;
-            false ->
-                throw(raw_sock)
-        end
-    catch
-        raw_sock ->
-            %% Fall back to using raw_sock
-            error(unimplemented)
+    T = try
+            case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
+                true ->
+                    %% upgrade_ws might also throw(raw_sock)
+                    upgrade_ws(Req, Headers, D#data.socket, Rest);
+                false ->
+                    throw(raw_sock)
+            end
+        catch
+            raw_sock ->
+                %% Fall back to using raw_sock
+                upgrade_raw(Req, D#data.socket, Rest)
+        end,
+    case T of
+        {ok,Msg} ->
+            http_pipe:recv(Req, Msg),
+            http_pipe:recv(Req, eof), % to make http_pipe cleanup
+            request_target:finish(D#data.target, Req), % avoid request retry
+            unlink(D#data.target),
+            request_target:retire_self(D#data.target),
+            {stop,shutdown};
+        {error,Rsn} ->
+            {stop,Rsn}
+    end.
+
+upgrade_ws(Req, Headers, Sock, Rest) ->
+    io:format("*DBG* ~p upgrade_ws~n", [self()]),
+    MitmPid = ws_sock:start_mitm(Req),
+    Exts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
+               <<"permessage-deflate">> ->
+                   %% TODO: handle deflate extension parameters
+                   [{deflate,true}];
+               not_found ->
+                   [];
+               _ ->
+                   %% unknown extension(s), cannot be parsed
+                   throw(raw_sock)
+           end,
+    Opts = [MitmPid,Exts],
+    case ws_sock:start_server(Sock, Rest, Opts) of
+        {ok,_} ->
+            {ok,{upgrade,ws_sock,start_client,Opts}};
+        {error,_} = Err ->
+            Err
+    end.
+
+upgrade_raw(Req, Sock, Rest) ->
+    io:format("*DBG* ~p upgrade_raw~n", [self()]),
+    MitmPid = raw_sock:start_mitm(Req),
+    Opts = [MitmPid],
+    case raw_sock:start_server(Sock, Rest, Opts) of
+        {ok,_} ->
+            {upgrade,raw_sock,start_client,Opts};
+        {error,_} = Err ->
+            Err
     end.
