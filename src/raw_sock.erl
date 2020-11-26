@@ -12,12 +12,14 @@ start_mitm(Id) ->
     spawn(?MODULE, mitm_loop, [Id]).
 
 mitm_loop(Id) ->
+    io:format("spawned mitm_loop ~p~n", [self()]),
+    process_flag(trap_exit, true),
     receive
         {hello,client,Pid1} ->
             receive
                 {hello,server,Pid2} ->
-                    Pid2 ! ready,
                     Pid1 ! ready,
+                    Pid2 ! ready,
                     mitm_loop(Pid1, Pid2, Id)
             end
     end.
@@ -28,13 +30,29 @@ mitm_loop(Pid1, Pid2, Id) ->
 mitm_loop(Pid1, Pid2, Id, I) ->
     receive
         {raw_pipe,Pid1,Bin} ->
-            pievents:send([I|Id], raw, Bin),
+            piroxy_events:send([I|Id], raw, Bin),
             Pid2 ! {raw_pipe,Bin},
             mitm_loop(Pid1, Pid2, Id, I+1);
         {raw_pipe,Pid2,Bin} ->
-            pievents:send([I|Id], raw, Bin),
+            piroxy_events:send([I|Id], raw, Bin),
             Pid1 ! {raw_pipe,Bin},
-            mitm_loop(Pid1, Pid2, Id, I+1)
+            mitm_loop(Pid1, Pid2, Id, I+1);
+        {'EXIT',Pid1,normal} ->
+            mitm_teardown(Pid2, Id, I);
+        {'EXIT',Pid2,normal} ->
+            mitm_teardown(Pid1, Id, I);
+        {'EXIT',_,Rsn} ->
+            exit(Rsn)
+    end.
+
+mitm_teardown(Pid, Id, I) ->
+    io:format("*DBG* raw_sock mitm_teardown~n"),
+    receive
+        {raw_pipe,Pid,Bin} ->
+            piroxy_events:send([I|Id], raw, Bin),
+            mitm_teardown(Pid, Id, I+1);
+        {'EXIT',_,Rsn} ->
+            exit(Rsn)
     end.
 
 %%%
@@ -60,11 +78,12 @@ start(Socket, Bin, [MitmPid], Role) ->
     end.
 
 loop([Pid, Role]) ->
+    io:format("*DBG* spawned raw_sock ~p~n", [self()]),
     link(Pid),
     Pid ! {hello,Role,self()},
     receive
         {upgrade,Sock,Bin} ->
-            loop(Pid, Sock, Bin)
+            loop(Pid,Sock,Bin)
     end.
 
 loop(Pid,Sock,Bin) ->
@@ -78,33 +97,18 @@ loop(Pid,Sock,Bin) ->
 
 loop(Pid,Sock) ->
     receive
-        {tcp,_,Bin} ->
+        {A,_,Bin} when A == tcp; A == ssl ->
             Pid ! {raw_pipe,self(),Bin},
             loop(Pid, Sock);
-        {ssl,_,Bin} ->
-            Pid ! {raw_pipe,self(),Bin},
-            loop(Pid, Sock);
-        {tcp_error,Sock,Rsn} ->
-            Pid ! {raw_pipe,self(),{error,Rsn}},
+        {A,_,Rsn} when A == tcp_error; A == ssl_error ->
+            ?LOG_ERROR("raw_sock ~s: ~p", [A,Rsn]),
+            Pid ! {raw_pipe,self(),exit},
             shutdown(Pid,Sock);
-        {ssl_error,Sock,Rsn} ->
-            Pid ! {raw_pipe,self(),{error,Rsn}},
-            shutdown(Pid,Sock);
-        {tcp_closed,_} ->
-            Pid ! {raw_pipe,self(),eof},
-            shutdown(Pid,Sock);
-        {ssl_closed,_} ->
-            Pid ! {raw_pipe,self(),eof},
-            shutdown(Pid,Sock);
-        {raw_pipe,eof} ->
-            shutdown(Pid,Sock);
-        {raw_pipe,{error,_}} ->
+        {A,_} when A == tcp_closed; A == ssl_closed ->
+            Pid ! {raw_pipe,self(),exit},
             shutdown(Pid,Sock);
         {raw_pipe,exit} ->
-            ?LOG_WARNING("raw_sock ~p received {raw_pipe,exit} inside main loop",
-                         [self()]),
-            pisock:close(Sock),
-            ok;
+            shutdown(Pid,Sock);
         {raw_pipe,Bin} when is_binary(Bin) ->
             case pisock:send(Sock,Bin) of
                 ok ->
@@ -118,7 +122,7 @@ loop(Pid,Sock) ->
             error(trailing_http_pipe);
         Any ->
             io:format("*DBG* received unexpected messages: ~p~n", [Any]),
-            loop(Pid, Sock)
+            error(internal)
     end.
 
 shutdown(Pid,Sock) ->
@@ -133,6 +137,7 @@ shutdown(Pid,Sock) ->
     end.
 
 cleanup(Pid,Sock) ->
+    io:format("*DBG* raw_sock:cleanup~n"),
     receive
         {tcp,_,Bin} ->
             Pid ! {raw_pipe,Bin},
@@ -141,14 +146,12 @@ cleanup(Pid,Sock) ->
             Pid ! {raw_pipe,Bin},
             cleanup(Pid,Sock);
         {tcp_closed,_} ->
-            Pid ! {raw_pipe,exit},
-            ok;
+            exit(shutdown);
         {ssl_closed,_} ->
-            Pid ! {raw_pipe,exit},
-            ok;
+            exit(shutdown);
         {raw_pipe,exit} ->
             pisock:close(Sock),
-            ok;
+            exit(shutdown);
         {raw_pipe,_} ->
             cleanup(Pid,Sock);
         {A,_,Rsn} when A == tcp_error; A == ssl_error ->
@@ -156,7 +159,7 @@ cleanup(Pid,Sock) ->
             exit(Rsn);
         {A,_} when A == tcp_closed; A == ssl_closed ->
             Pid ! {raw_pipe,exit},
-            ok;
+            exit(shutdown);
         Any ->
             ?LOG_ERROR("raw_sock received unknown message: ~p", [Any]),
             error(internal)

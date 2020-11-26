@@ -374,8 +374,6 @@ upgrade(Req, Headers, Rest, D) ->
             http_pipe:recv(Req, Msg),
             http_pipe:recv(Req, eof), % to make http_pipe cleanup
             request_target:finish(D#data.target, Req), % avoid request retry
-            unlink(D#data.target),
-            request_target:retire_self(D#data.target),
             {stop,shutdown};
         {error,Rsn} ->
             {stop,Rsn}
@@ -408,7 +406,7 @@ upgrade_raw(Req, Sock, Rest) ->
     Opts = [MitmPid],
     case raw_sock:start_server(Sock, Rest, Opts) of
         {ok,_} ->
-            {upgrade,raw_sock,start_client,Opts};
+            {ok,{upgrade,raw_sock,start_client,Opts}};
         {error,_} = Err ->
             Err
     end.

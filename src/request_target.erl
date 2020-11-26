@@ -14,7 +14,7 @@
 %%-define(DEC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field-1}}).
 -define(INC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field+1}}).
 
--export([start_link/1, connect/2, cancel/2, finish/2, pending/1, retire_self/1]).
+-export([start_link/1, connect/2, cancel/2, finish/2, pending/1]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
 %%% called by request_manager
@@ -32,9 +32,6 @@ cancel(Pid, Id) ->
 
 finish(Pid, Res) ->
     gen_server:cast(Pid, {finish,Res}).
-
-retire_self(Pid) ->
-    gen_server:cast(Pid, {retire_self,self()}).
 
 %%% used during debugging
 
