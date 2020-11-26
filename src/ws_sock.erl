@@ -223,7 +223,7 @@ unmask(<<X:8,A/binary>>, Mask, I, B) ->
 
 %%% Args: Fin, OpAtom, Payload, #data{}
 
-frame(1, _Pmz, continuation, Payload, D) ->
+frame(1, _, continuation, Payload, D) ->
     %% frame is at the end of fragments
     case D#data.queue of
         %% if frame is the end there must be previous fragments in the queue
@@ -232,42 +232,14 @@ frame(1, _Pmz, continuation, Payload, D) ->
         [L0|Q] ->
             %% pop fragments off the queue
             [{Op,Pmz}|L] = reverse([Payload|L0]),
-            Bin = case {Pmz,D#data.z} of 
-                      {1,null} ->
-                          %% rsv1 bit signals compression but it was not negotiated
-                          iolist_to_binary(L);
-                      {1,Z} ->
-                          %% decompress the re-assembled fragments
-                          inflate(Z, iolist_to_binary(L));
-                      {0,_} ->
-                          iolist_to_binary(L)
-                  end,
-            D#data.pid ! {ws_log, self(), {Op,Bin}},
-            D#data{queue=Q}
+            log(Pmz, Op, iolist_to_binary(L), D#data{queue=Q})
     end;
 
-frame(1, Pmz, Op, Payload0, D) ->
+frame(1, Pmz, Op, Payload, D) ->
     %% frame is both the alpha and the 0MEGA!
-    Payload = case {Pmz,D#data.z} of
-                  {1,null} ->
-                      %% compression used but not negotiated!
-                      Payload0;
-                  {1,Z} ->
-                      inflate(Z, Payload0);
-                  {0,_} ->
-                      Payload0
-              end,
-    D#data.pid ! {ws_log, self(), {Op,Payload}},
-    case Op of
-        close ->
-            D#data.pid ! {ws_close,self()},
-            pisock:shutdown(D#data.socket, write),
-            throw({next_state, cleanup, D});
-        _ ->
-            D
-    end;
+    log(Pmz, Op, Payload, D);
 
-frame(0, _Pmz, continuation, Payload, D) ->
+frame(0, _, continuation, Payload, D) ->
     %% frame is in the middle of a stream of fragments
     case D#data.queue of
         %% if frame is in the middle there must be previous fragments in the
@@ -292,6 +264,26 @@ operation(2) -> binary;
 operation(8) -> close;
 operation(9) -> ping;
 operation(10) -> pong.
+
+log(Pmz, Op, Payload0, D) ->
+    Payload = case {Pmz,D#data.z} of
+                  {1,null} ->
+                      %% compression used but not negotiated!
+                      Payload0;
+                  {1,Z} ->
+                      inflate(Z, Payload0);
+                  {0,_} ->
+                      Payload0
+              end,
+    D#data.pid ! {ws_log, self(), {Op,Payload}},
+    case Op of
+        close ->
+            D#data.pid ! {ws_close,self()},
+            pisock:shutdown(D#data.socket, write),
+            throw({next_state, cleanup, D});
+        _ ->
+            D
+    end.
 
 inflate(Z, Bin0) ->
     %% These extra octets are always the same and so removed/appended.
