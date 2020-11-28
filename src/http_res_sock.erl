@@ -354,6 +354,10 @@ send_text(Res, Text) ->
     http_pipe:recv(Res, {body,Text}),
     http_pipe:recv(Res, eof).
 
+%%%
+%%% WebSocket and raw binary (unparsed) sockets.
+%%%
+
 upgrade(Req, Headers, Rest, D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
     T = try

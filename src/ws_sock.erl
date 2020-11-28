@@ -194,7 +194,7 @@ parse(Bin2, D) when size(Bin2) + size(D#data.buffer) < 2 ->
 
 parse(Bin2, D) ->
     Bin = <<(D#data.buffer)/binary,Bin2/binary>>,
-    <<Fin:1,Pmz:1,_Rsv:2,Opcode:4,Masked:1,Len1:7,Rest1/binary>> = Bin,
+    <<Fin:1,Rsv1:1,_Rsv:2,Opcode:4,Masked:1,Len1:7,Rest1/binary>> = Bin,
     LenSize = case Len1 of 127 -> 64; 126 -> 16; _ -> 0 end,
     MaskSize = 4*Masked,
     case Rest1 of
@@ -203,11 +203,15 @@ parse(Bin2, D) ->
             if
                 size(Rest2) >= Len3 ->
                     {Payload0,Rest3} = split_binary(Rest2, Len3),
+                    %%io:format("*DBG* parse: ~p~n",
+                    %%          [[{fin,Fin},{rsv1,Rsv1},{opcode,Opcode},
+                    %%            {len1,Len1},{lensize,LenSize},{len2,Len2},{len3,Len3},
+                    %%            {masked,Masked},{mask,Mask}]]),
                     Payload = case Masked of
                                   0 -> Payload0;
                                   1 -> unmask(Payload0, Mask)
                               end,
-                    parse(Rest3, frame(Fin, Pmz, operation(Opcode), Payload,
+                    parse(Rest3, frame(Fin, Rsv1, operation(Opcode), Payload,
                                        D#data{buffer=(<<>>)}));
                 true ->
                     D#data{buffer=Rest2}
@@ -224,7 +228,7 @@ unmask(<<>>, _Mask, _I, Y) ->
 
 unmask(<<X:8,A/binary>>, Mask, I, B) ->
     Y = X bxor binary:at(Mask, I rem 4),
-    unmask(A, Mask, I+1, <<B/binary,Y:8/integer>>).
+    unmask(A, Mask, I+1, <<B/binary,Y:8>>).
 
 %%% Args: Fin, OpAtom, Payload, #data{}
 
@@ -236,13 +240,13 @@ frame(1, _, continuation, Payload, D) ->
         [[]|_] -> error(badstate);
         [L0|Q] ->
             %% pop fragments off the queue
-            [{Op,Pmz}|L] = reverse([Payload|L0]),
-            log(Pmz, Op, iolist_to_binary(L), D#data{queue=Q})
+            [{Op,Rsv1}|L] = reverse([Payload|L0]),
+            log(Rsv1, Op, iolist_to_binary(L), D#data{queue=Q})
     end;
 
-frame(1, Pmz, Op, Payload, D) ->
+frame(1, Rsv1, Op, Payload, D) ->
     %% frame is both the alpha and the 0MEGA!
-    log(Pmz, Op, Payload, D);
+    log(Rsv1, Op, Payload, D);
 
 frame(0, _, continuation, Payload, D) ->
     %% frame is in the middle of a stream of fragments
@@ -256,11 +260,11 @@ frame(0, _, continuation, Payload, D) ->
             D#data{queue=[L|Q]}
     end;
 
-frame(0, Pmz, Op, Payload, #data{queue=Q}=D) ->
+frame(0, Rsv1, Op, Payload, #data{queue=Q}=D) ->
     %% this frame is the beginning of fragments
     %% push a new list to the front of the list queue
     %% the list is in reverse, so op atom goes last
-    L = [Payload,{Op,Pmz}],
+    L = [Payload,{Op,Rsv1}],
     D#data{queue=[L|Q]}.
 
 operation(0) -> continuation;
@@ -270,8 +274,8 @@ operation(8) -> close;
 operation(9) -> ping;
 operation(10) -> pong.
 
-log(Pmz, Op, Payload0, D) ->
-    Payload = case {Pmz,D#data.z} of
+log(Rsv1, Op, Payload0, D) ->
+    Payload = case {Rsv1,D#data.z} of
                   {1,null} ->
                       %% compression used but not negotiated!
                       Payload0;
