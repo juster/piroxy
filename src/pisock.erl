@@ -20,7 +20,7 @@ setopts({ssl,Sock}, Opts) ->
     ssl:setopts(Sock, Opts).
 
 control({tcp,Sock}, Pid) ->
-    inet:controlling_process(Sock, Pid);
+    gen_tcp:controlling_process(Sock, Pid);
 
 control({ssl,Sock}, Pid) ->
     ssl:controlling_process(Sock, Pid).
