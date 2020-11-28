@@ -99,7 +99,12 @@ init([Pid,Role,Exts]) ->
         Pid ! {hello,Role,self()},
         Z = case proplists:get_value(deflate, Exts, false) of
                 true ->
-                    zlib:inflateInit(zlib:open());
+                    X = zlib:open(),
+                    %% XXX: An important (undocumented) feature of zlib is that
+                    %% a negative window size tells it to NOT look for the zlib
+                    %% header and CRC32 suffix!
+                    zlib:inflateInit(X, -15),
+                    X;
                 false ->
                     null
             end,
@@ -287,14 +292,8 @@ log(Pmz, Op, Payload0, D) ->
 
 inflate(Z, Bin0) ->
     %% These extra octets are always the same and so removed/appended.
-    Bin = <<Bin0/binary,0,0,127,127>>,
-    case zlib:inflate(Z, Bin, [{exception_on_need_dict,false}]) of
-        {need_dictionary,_,_} ->
-            %% TODO: figure out what to do here
-            error(need_dictionary);
-        X ->
-            %% I think all data should be retrieved from stream
-            %% after each individual message is decompressed.
-            zlib:inflateEnd(Z),
-            X
-    end.
+    Bin = <<Bin0/binary,0,0,255,255>>,
+    %% TODO: idk what to do if it "needs" some "dict"
+    zlib:inflate(Z, Bin, [{exception_on_need_dict,true}]).
+    %% I believe future messages depend on previous message state.
+    %%zlib:inflateReset(Z).
