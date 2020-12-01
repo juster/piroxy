@@ -61,35 +61,23 @@ handle_call(pending, _From, S) ->
 %%% from request_manager
 %%%
 
-handle_cast({connect,Req}, S) ->
-    %% Use a circular buffer for assigning requests to each proc.
-    I = S#state.i+1,
-    J = I rem ?MAX_SOCKETS,
-    case element(I, S#state.pids) of
-        null ->
-            %% Empty slot, spawn a new proc.
-            case http_res_sock:start_link(S#state.hostinfo) of
-                {ok,Pid} ->
-                    case http_pipe:listen(Req, Pid) of
-                        ok ->
-                            Pids = setelement(I, S#state.pids, Pid),
-                            Lsent = S#state.sent ++ [{Pid,Req}],
-                            {noreply, S#state{i=J, pids=Pids, sent=Lsent}};
-                        {error,unknown_session} ->
-                            {noreply, S}
-                    end;
-                {error,Rsn} ->
-                    exit(Rsn)
-            end;
-        Pid ->
-            %% Reuse an existing slot.
-            case http_pipe:listen(Req, Pid) of
-                ok ->
-                    Lsent = S#state.sent ++ [{Pid,Req}],
-                    {noreply, S#state{i=J, sent=Lsent}};
-                {error,unknown_session} ->
-                    {noreply, S}
-            end
+handle_cast({connect,Req}, S0) ->
+    {Pid,I,S} = next_sock_proc(S0),
+    case http_pipe:listen(Req, Pid) of
+        ok ->
+            %% Advance the counter, so that we use the next slot for the next
+            %% request.
+            Lsent = S#state.sent ++ [{Pid,Req}],
+            {noreply, S#state{i=I, sent=Lsent}};
+        {error,unknown_session} ->
+            %% Does not advance the counter so that the next time connect is
+            %% called, we reuse the last process.
+            io:format("*DBG* [request_target] (~s) unknown_session~n",
+                      [element(2,S#state.hostinfo)]),
+            {noreply, S};
+        {error,Rsn} ->
+            %% There should be no other error reasons.
+            error(Rsn)
     end;
 
 handle_cast({cancel,Id}, S0) ->
@@ -156,6 +144,26 @@ handle_info({'EXIT',Pid,Reason}, S0) ->
             end
     end.
 
+%% Use a circular buffer for assigning requests to each proc in round-robin
+%% fashion.
+next_sock_proc(S) ->
+    I = S#state.i+1, % I is 1-indexed [1..maxpid]
+    J = I rem ?MAX_SOCKETS, % J is 0-indexed [0..maxpid-1]
+    case element(I, S#state.pids) of
+        null ->
+            %% Empty slot, spawn a new proc.
+            case http_res_sock:start_link(S#state.hostinfo) of
+                {ok,Pid} ->
+                    Pids = setelement(I, S#state.pids, Pid),
+                    {Pid,J,S#state{pids=Pids}};
+                {error,Rsn} ->
+                    error(Rsn)
+            end;
+        Pid ->
+            %% Reuse an existing slot.
+            {Pid,J,S}
+    end.
+
 failure_type(normal) -> soft;
 failure_type(shutdown) -> soft;
 failure_type({shutdown,reset}) -> soft;
@@ -210,15 +218,9 @@ resend2(Pid0, L0, S) ->
     case http_res_sock:start_link(S#state.hostinfo) of
         {ok,Pid} ->
             foreach(fun (Req) -> http_pipe:reset(Req) end, L0),
-            L = relay(Pid, L0),
+            L = relay(Pid, L0), % L may be empty!
             I = tfind(Pid0, S#state.pids),
-            Tpids = case L of
-                        [] ->
-                            http_res_sock:stop(Pid),
-                            setelement(I, S#state.pids, null);
-                        L ->
-                            setelement(I, S#state.pids, Pid)
-                    end,
+            Tpids = setelement(I, S#state.pids, Pid),
             Lsent = S#state.sent ++ [{Pid,Req} || Req <- L],
             S#state{pids=Tpids, sent=Lsent};
         {error,Rsn} ->
