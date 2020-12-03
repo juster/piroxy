@@ -111,7 +111,7 @@ handle_event(info, {A,_,Bin}, head, D)
              {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
             H = head(StatusLn, Headers),
-            recv_head(H, target(H), Rest, D)
+            handle_head(H, target(H), Rest, D)
     end;
 
 handle_event(info, {A,_,Bin1}, body, D)
@@ -380,7 +380,7 @@ head_uri(H) ->
     {ok,[_,UriBin,_]} = phttp:nsplit(3, H#head.line, <<" ">>),
     UriBin.
 
-recv_head(#head{method=connect}, {authority,HI}, Bin, D) ->
+handle_head(#head{method=connect}, {authority,HI}, Bin, D) ->
     %% CONNECT uses the "authority" form of URIs and so
     %% cannot be used with relativize/2.
     send(D#data.socket, {status,http_ok}),
@@ -390,21 +390,21 @@ recv_head(#head{method=connect}, {authority,HI}, Bin, D) ->
     end,
     {next_state, tunnel, D, {next_event, cast, {connect,HI}}};
 
-recv_head(#head{method=options}, self, Bin, D) ->
+handle_head(#head{method=options}, self, Bin, D) ->
     %% OPTIONS * refers to the proxy itself. Create a fake response..
     %% TODO: not yet implemented
     send(D#data.socket, {status,http_ok}),
     {next_state, idle, D#data{reader=undefined},
      {next_event, info, {tcp,null,Bin}}};
 
-recv_head(H, relative, Bin, D) ->
+handle_head(H, relative, Bin, D) ->
     %% HTTP header is for a relative URL. Hopefully this is inside of a
     %% CONNECT tunnel!
     HI = D#data.target,
     case HI of undefined -> exit(host_missing); _ -> ok end,
     relay_head(H, HI, Bin, D);
 
-recv_head(H, {absolute,HI2}, Bin, D) ->
+handle_head(H, {absolute,HI2}, Bin, D) ->
     %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
     H2 = relativize(H),
     relay_head(H2, HI2, Bin, D).
