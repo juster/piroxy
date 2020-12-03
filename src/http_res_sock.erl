@@ -134,43 +134,8 @@ handle_event(info, {A,_,Bin}, head, D0)
         {continue,Reader} ->
             {keep_state,D0#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            {Req,Hreq} = hd(D0#data.queue),
             {ok, [_HttpVer, Code, _]} = phttp:nsplit(3, StatusLn, <<" ">>),
-            ConnClosed = connection_close(Headers),
-            Hres = head(Hreq#head.method, Code, Headers, ConnClosed, StatusLn),
-            Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
-            ?TRACE(Req, Host, "<<", Hres),
-            http_pipe:recv(Req, Hres),
-            case Code of
-                <<"101">> ->
-                    %%Proto = fieldlist:get_value(<<"upgrade">>, Hres#head.headers),
-                    %%if
-                    %%    is_binary(Proto),
-                    %%    fieldlist:binary_lcase(Proto) == <<"websocket">> ->
-                    %%        piroxy_events:recv(Req, http, {upgrade,raw});
-                    %%    _ ->
-                    %%        piroxy_events:recv(Req, http, {upgrade,raw});
-                    %%;
-                    ?DBG(head, "101 Upgrade"),
-                    upgrade(Req, Headers, Rest, D0);
-                _ ->
-                    CloseStatus = case {Hres#head.bodylen, ConnClosed} of
-                                      {until_closed,_} -> eof_on_close;
-                                      {_,true} -> close_on_eof;
-                                      {_,false} -> open
-                                  end,
-                    case CloseStatus of
-                        eof_on_close ->
-                            ?TRACE(Req, Host, "<<", eof_on_close);
-                        close_on_eof ->
-                            ?TRACE(Req, Host, "<<", close_on_eof);
-                        open ->
-                            ok
-                    end,
-                    D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen),
-                                closed=CloseStatus},
-                    {next_state,body,D,{next_event,info,{A,null,Rest}}}
-            end
+            handle_head(Code, StatusLn, Headers, Rest, D0)
     end;
 
 handle_event(info, {A,_,Bin1}, body, D)
@@ -297,6 +262,41 @@ handle_event(info, {http_pipe,_Req,Term}, _, D) ->
 %%% INTERNAL FUNCTIONS
 %%%
 
+handle_head(<<"408">>, _StatusLn, _Headers, _Rest, _D0) ->
+    %% 408 Request Timeout means that the server probably timed out before we
+    %% sent a request. We shutdown and if we had any pending responses then
+    %% they will be resent.
+    {stop,{shutdown,reset}};
+
+handle_head(Code, StatusLn, Headers, Rest, D0) ->
+    ConnClosed = connection_close(Headers),
+    {Req,Hreq} = hd(D0#data.queue),
+    Hres = head(Hreq#head.method, Code, Headers, ConnClosed, StatusLn),
+    Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
+    ?TRACE(Req, Host, "<<", Hres),
+    http_pipe:recv(Req, Hres),
+    case Code of
+        <<"101">> ->
+            ?DBG(head, "101 Upgrade"),
+            upgrade(Req, Headers, Rest, D0);
+        _ ->
+            CloseStatus = case {Hres#head.bodylen, ConnClosed} of
+                              {until_closed,_} -> eof_on_close;
+                              {_,true} -> close_on_eof;
+                              {_,false} -> open
+                          end,
+            case CloseStatus of
+                eof_on_close ->
+                    ?TRACE(Req, Host, "<<", eof_on_close);
+                close_on_eof ->
+                    ?TRACE(Req, Host, "<<", close_on_eof);
+                open ->
+                    ok
+            end,
+            D = D0#data{reader=pimsg:body_reader(Hres#head.bodylen),
+                        closed=CloseStatus},
+            {next_state,body,D,{next_event,info,{tcp,null,Rest}}}
+    end.
 
 head(ReqMethod, Code, Headers, Closed, StatusLn) ->
     case body_length(ReqMethod, Code, Headers) of
