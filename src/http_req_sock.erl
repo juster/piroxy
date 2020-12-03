@@ -308,32 +308,36 @@ head(StatusLn, Headers) ->
     {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
     case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
         {unknown,_} ->
-            ?DBG("head", {unknown_method,MethodBin}),
-            exit({unknown_method,MethodBin});
+            ?DBG("head", {bad_http_method,MethodBin}),
+            exit({bad_http_method,MethodBin});
         {_,unknown} ->
-            ?DBG("head", {unknown_version,VerBin}),
-            exit({unknown_version,VerBin});
+            ?DBG("head", {bad_http_version,VerBin}),
+            exit({bad_http_version,VerBin});
         {Method,Ver} ->
             #head{line=StatusLn, method=Method, version=Ver,
                   headers=Headers, bodylen=Len}
     end.
 
 body_length(StatusLn, Headers) ->
-    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    case phttp:version_atom(VerBin) of
-        http11 ->
-            ok;
-        _ ->
-            exit({unknown_version,VerBin})
-    end,
-    case phttp:method_atom(MethodBin) of
-        unknown ->
-            exit({unknown_method,MethodBin});
-        Method ->
-            case request_length(Method, Headers) of
-                {error,Rsn} -> exit(Rsn);
-                {ok,BodyLen} -> BodyLen
-            end
+    case phttp:nsplit(3, StatusLn, <<" ">>) of
+        {ok,[MethodBin,_UriBin,VerBin]} ->
+            case phttp:version_atom(VerBin) of
+                http11 ->
+                    ok;
+                _ ->
+                    exit({bad_http_version,VerBin})
+            end,
+            case phttp:method_atom(MethodBin) of
+                unknown ->
+                    exit({bad_http_method,MethodBin});
+                Method ->
+                    case request_length(Method, Headers) of
+                        {error,Rsn} -> exit(Rsn);
+                        {ok,BodyLen} -> BodyLen
+                    end
+            end;
+        {error,badarg} ->
+            exit(http_bad_request)
     end.
 
 request_length(connect, _) -> {ok,0};

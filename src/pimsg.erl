@@ -6,7 +6,7 @@
 
 -module(pimsg).
 
--export([head_reader/0, head_reader/2, head_buffer/1, body_reader/1, body_reader/2]).
+-export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
 -export([body_length/1]).
 
 -import(lists, [reverse/1]).
@@ -58,12 +58,6 @@ head_reader({headers,N0,StatusLine,Headers0,Buf0}, Bin0) ->
                     head_reader({headers,N,StatusLine,Headers,linebuf()}, Bin)
             end
     end.
-
-head_buffer({start,_,Buf}) ->
-    bufbin(Buf);
-
-head_buffer({headers,_,StatusLn,Headers,Buf}) ->
-    [StatusLn,fieldlist:to_iolist(Headers),bufbin(Buf)].
 
 fixed({I,N}, Bin) when I >= N -> {done, ?EMPTY, Bin};
 fixed(S, ?EMPTY) -> {continue, ?EMPTY, S};
@@ -211,22 +205,19 @@ body_reader({fixed,State0}, Bin) ->
 
 body_length(Headers) ->
     %%io:format("DBG body_length_by_headers: Headers=~p~n", [Headers]),
-    TransferEncoding = fieldlist:get_value(<<"transfer-encoding">>,
-                                           Headers, ?EMPTY),
+    Chunked = fieldlist:has_value(<<"transfer-encoding">>,
+                                  <<"chunked">>,
+                                  Headers),
     ContentLength = fieldlist:get_value(<<"content-length">>,
                                         Headers, ?EMPTY),
-    case {ContentLength, TransferEncoding} of
-        {?EMPTY, ?EMPTY} ->
+    case {ContentLength, Chunked} of
+        {?EMPTY, false} ->
             {error,{missing_length,Headers}};
-        {?EMPTY, Bin} ->
-            %% XXX: not precise, potentially buggy/insecure. needs a rewrite.
-            %%io:format("*DBG* transfer-encoding: ~s~n", [Bin]),
-            case binary:match(Bin, <<"chunked">>) of
-                nomatch ->
-                    {error,{missing_length,Headers}};
-                _ ->
-                    {ok, chunked}
-            end;
+        {?EMPTY, true} ->
+            {ok, chunked};
+        {_Bin, true} ->
+            %% if both are present, chunked takes precedence
+            {ok, chunked};
         {Bin, _} ->
             {ok, binary_to_integer(Bin)}
     end.

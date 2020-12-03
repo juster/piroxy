@@ -24,7 +24,7 @@ nsplit(1, Subject, _, L) ->
 nsplit(N, Subject, Pattern, L) ->
     case binary:split(Subject, Pattern) of
         [_] ->
-            {error, not_enough_fields};
+            {error,badarg};
         [Bin1,Bin2] ->
             nsplit(N-1, Bin2, Pattern, [Bin1|L])
     end.
