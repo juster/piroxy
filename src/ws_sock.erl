@@ -93,7 +93,7 @@ ready(Pid) ->
 callback_mode() -> [state_functions].
 
 init([Pid,Role,Exts]) ->
-    io:format("*DBG* ws_sock: self=~p Exts=~p~n", [self(),Exts]),
+    io:format("*DBG* ws_sock: self=~p Role=~s Exts=~p~n", [self(),Role,Exts]),
     try
         link(Pid),
         Pid ! {hello,Role,self()},
@@ -124,7 +124,8 @@ startup(_, _, _D) ->
 
 connected(cast, ready, D) ->
     pisock:setopts(D#data.socket, [{active,true}]),
-    {next_state, frames, D, {next_event,info,{tcp,null,<<>>}}};
+    {next_state, frames, D#data{buffer=(<<>>)},
+     {next_event,info,{tcp,null,D#data.buffer}}};
 
 connected(_, _, _D) ->
     {keep_state_and_data, postpone}.
