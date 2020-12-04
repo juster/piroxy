@@ -413,10 +413,21 @@ handle_head(H, {absolute,HI2}, Bin, D) ->
     H2 = relativize(H),
     relay_head(H2, HI2, Bin, D).
 
+connect_request(HI) ->
+    case piroxy_hijack:target(HI) of
+        true ->
+            Req = request_manager:nextid(),
+            piroxy_hijack:connect(Req),
+            Req;
+        false ->
+            Req = request_manager:nextid(),
+            request_manager:connect(Req, http, HI),
+            Req
+    end.
+
 relay_head(H, HI, Bin, D) ->
     {_,Host,_} = HI,
-    Req = request_manager:nextid(),
-    request_manager:connect(Req, http, HI),
+    Req = connect_request(HI),
     ok = http_pipe:new(Req),
     http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
