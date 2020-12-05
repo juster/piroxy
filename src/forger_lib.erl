@@ -1,7 +1,11 @@
 %%% forger_lib
+%%%
 %%% Forges certificates from other hosts so that we can place a
 %%% man-in-the-middle to eavesdrop on TLS streams. This requires
 %%% that we also create our own self-signed certificate.
+%%%
+%%% Author: Justin Davis <jrcd83@gmail.com>
+%%%
 
 -module(forger_lib).
 -include_lib("public_key/include/public_key.hrl").
@@ -64,7 +68,8 @@ forge(FQDNs, {CACert,CAPriKey}) ->
 %%%
 
 timefmt({Y,Mo,D},{H,Mi,S}) ->
-    io_lib:format("~2..0B~2..0B~2..0B~2..0B~2..0B~2..0BZ", [Y rem 100,Mo,D,H,Mi,S]).
+    io_lib:format("~2..0B~2..0B~2..0B~2..0B~2..0B~2..0BZ",
+                  [Y rem 100,Mo,D,H,Mi,S]).
 
 validity() ->
     {{Y,M,D},Time} = calendar:universal_time(),
@@ -96,7 +101,7 @@ issuer() ->
     [{?'id-at-commonName',<<?PIROXYCA_CN>>},
      {?'id-at-organizationName',<<?PIROXYCA_ORG>>},
      {?'id-at-countryName',?PIROXYCA_CO} % use a string (list) NOT a binary
-    ].  
+    ].
 
 %% all extensions are critical
 extension_recs(L) ->

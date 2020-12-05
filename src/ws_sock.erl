@@ -41,24 +41,24 @@ mitm_loop(Pid1, Pid2, Id, I) ->
             mitm_loop(Pid1, Pid2, Id, I);
         {ws_log,Pid1,Term} ->
             %% receive from the sending proc
-            io:format("*DBG* ws_sock send: ~p~n", [Term]),
+            %%io:format("*DBG* ws_sock send: ~p~n", [Term]),
             piroxy_events:send([I|Id], ws, Term),
             mitm_loop(Pid1, Pid2, Id, I+1);
         {ws_log,Pid2,Term} ->
             %% receive from the receiving proc
-            io:format("*DBG* ws_sock recv: ~p~n", [Term]),
+            %%io:format("*DBG* ws_sock recv: ~p~n", [Term]),
             piroxy_events:recv([I|Id], ws, Term),
             mitm_loop(Pid1, Pid2, Id, I+1);
         {ws_close,Pid1} ->
-            io:format("*DBG* ws_sock send ws_close~n"),
+            %%io:format("*DBG* ws_sock send ws_close~n"),
             gen_statem:cast(Pid2, ws_close),
             mitm_loop(Pid1, Pid2, Id, I);
         {ws_close,Pid2} ->
-            io:format("*DBG* ws_sock recv ws_close~n"),
+            %%io:format("*DBG* ws_sock recv ws_close~n"),
             gen_statem:cast(Pid1, ws_close),
             mitm_loop(Pid1, Pid2, Id, I);
         Any ->
-            io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
+            %%io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
             mitm_loop(Pid1, Pid2, Id, I)
     end.
 
@@ -159,7 +159,7 @@ frames(info, {A,_,Reason}, _D)
 
 cleanup(cast, ws_close, D) ->
     pisock:close(D#data.socket),
-    io:format("*DBG* ws_close, closing ~p~n", [self()]),
+    %%io:format("*DBG* ws_close, closing ~p~n", [self()]),
     {stop,shutdown};
 
 cleanup(cast, {ws_pipe,_}, _D) ->
@@ -172,7 +172,7 @@ cleanup(info, {A,_,Reason}, _D)
 
 cleanup(info, {A,_}, _D)
   when A =:= tcp_closed; A =:= ssl_closed ->
-    io:format("*DBG* ~s, closing ~p~n", [A,self()]),
+    %%io:format("*DBG* ~s, closing ~p~n", [A,self()]),
     {stop,shutdown};
 
 %%% The reason we are in cleanup state is to make sure we receive all of the
