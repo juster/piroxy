@@ -112,7 +112,7 @@ handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
 %%%
 
 handle_event(info, {http_pipe,Res,eof}, nxdomain, Host) ->
-    send_text(Res, "Unknown domain name: "++Host),
+    send_error(Res, "Unknown domain name: "++Host),
     {stop,shutdown};
 
 handle_event(info, {http_pipe,_,_}, nxdomain, _) ->
@@ -342,7 +342,7 @@ connection_close(Headers) ->
             false
     end.
 
-send_text(Res, Text) ->
+send_error(Res, Text) ->
     Len = length(Text),
     L = [{"content-type", "text/plain"},
          {"content-length", integer_to_list(Len)}],

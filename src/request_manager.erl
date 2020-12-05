@@ -38,11 +38,13 @@ init([]) ->
 handle_cast({connect,Req,http,Target}, {I,L}=S) ->
     case keyfind(Target, 1, L) of
         {_,Pid} ->
+            piroxy_events:connect(Req, http, Target),
             request_target:connect(Pid, Req),
             {noreply, S};
         false ->
             case request_target:start_link(Target) of
                 {ok,Pid} ->
+                    piroxy_events:connect(Req, http, Target),
                     request_target:connect(Pid, Req),
                     {noreply, {I,[{Target,Pid}|L]}};
                 ignore ->

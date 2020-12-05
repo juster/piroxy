@@ -30,18 +30,22 @@ dump() ->
     gen_server:call(?MODULE, dump).
 
 send(Id, Term) ->
+    piroxy_events:send(Id, http, Term),
     gen_server:cast(?MODULE, {send,Id,Term}).
 
 listen(Id, Pid) ->
     gen_server:call(?MODULE, {listen,Id,Pid}).
 
 reset(Id) ->
+    piroxy_events:fail(Id, http, reset),
     gen_server:call(?MODULE, {reset,Id}).
 
 cancel(Id) ->
+    piroxy_events:fail(Id, http, cancel),
     gen_server:cast(?MODULE, {cancel,Id}).
 
 recv(Id, Term) ->
+    piroxy_events:recv(Id, http, Term),
     gen_server:cast(?MODULE, {recv,Id,Term}).
 
 %%% BEHAVIOR CALLBACKS
