@@ -23,7 +23,7 @@ mitm_loop(Id) ->
                 {hello,server,Pid2} ->
                     ready(Pid1),
                     ready(Pid2),
-                    mitm_loop(Pid1, Pid2, Id, 1)
+                    mitm_loop(Pid1, Pid2, Id)
             after 5000 ->
                       exit(timeout)
             end
@@ -31,35 +31,35 @@ mitm_loop(Id) ->
               exit(timeout)
     end.
 
-mitm_loop(Pid1, Pid2, Id, I) ->
+mitm_loop(Pid1, Pid2, Id) ->
     receive
         {ws_pipe,Pid1,Bin} ->
             gen_statem:cast(Pid2, {ws_pipe,Bin}),
-            mitm_loop(Pid1, Pid2, Id, I);
+            mitm_loop(Pid1, Pid2, Id);
         {ws_pipe,Pid2,Bin} ->
             gen_statem:cast(Pid1, {ws_pipe,Bin}),
-            mitm_loop(Pid1, Pid2, Id, I);
+            mitm_loop(Pid1, Pid2, Id);
         {ws_log,Pid1,Term} ->
             %% receive from the sending proc
             %%io:format("*DBG* ws_sock send: ~p~n", [Term]),
-            piroxy_events:send([I|Id], ws, Term),
-            mitm_loop(Pid1, Pid2, Id, I+1);
+            piroxy_events:send(Id, ws, Term),
+            mitm_loop(Pid1, Pid2, Id);
         {ws_log,Pid2,Term} ->
             %% receive from the receiving proc
             %%io:format("*DBG* ws_sock recv: ~p~n", [Term]),
-            piroxy_events:recv([I|Id], ws, Term),
-            mitm_loop(Pid1, Pid2, Id, I+1);
+            piroxy_events:recv(Id, ws, Term),
+            mitm_loop(Pid1, Pid2, Id);
         {ws_close,Pid1} ->
             %%io:format("*DBG* ws_sock send ws_close~n"),
             gen_statem:cast(Pid2, ws_close),
-            mitm_loop(Pid1, Pid2, Id, I);
+            mitm_loop(Pid1, Pid2, Id);
         {ws_close,Pid2} ->
             %%io:format("*DBG* ws_sock recv ws_close~n"),
             gen_statem:cast(Pid1, ws_close),
-            mitm_loop(Pid1, Pid2, Id, I);
+            mitm_loop(Pid1, Pid2, Id);
         Any ->
-            %%io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
-            mitm_loop(Pid1, Pid2, Id, I)
+            io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
+            mitm_loop(Pid1, Pid2, Id)
     end.
 
 %%%
