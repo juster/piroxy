@@ -7,19 +7,19 @@ start_link() ->
 %%% called by the inbound process
 
 connect(Id, Proto, Target) ->
-    gen_event:notify(?MODULE, {connect,tstamp(),Id,Proto,Target}).
+    gen_event:notify(?MODULE, {Id,connect,tstamp(),Proto,Target}).
 
 send(Id, Proto, Term) ->
-    gen_event:notify(?MODULE, {send,tstamp(),Id,Proto,Term}).
+    gen_event:notify(?MODULE, {Id,send,tstamp(),Proto,Term}).
 
 recv(Id, Proto, Term) ->
-    gen_event:notify(?MODULE, {recv,tstamp(),Id,Proto,Term}).
+    gen_event:notify(?MODULE, {Id,recv,tstamp(),Proto,Term}).
 
 cancel(Id, Proto) ->
-    gen_event:notify(?MODULE, {fail,tstamp(),Id,Proto,cancelled}).
+    gen_event:notify(?MODULE, {Id,fail,tstamp(),Proto,cancelled}).
 
 fail(Id, Proto, Reason) ->
-    gen_event:notify(?MODULE, {fail,tstamp(),Id,Proto,Reason}).
+    gen_event:notify(?MODULE, {Id,fail,tstamp(),Proto,Reason}).
 
 tstamp() ->
     DT = calendar:universal_time(),
