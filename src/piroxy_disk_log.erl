@@ -1,8 +1,8 @@
 -module(piroxy_disk_log).
 -behavior(gen_event).
 
--export([start_link/0, read/0, read/1, truncate/0]).
--export([watch/0]).
+-export([start_link/0, enable/0, disable/0, watcher/0]).
+-export([read/0, read/1, truncate/0]).
 -export([init/1, handle_event/2, handle_call/2]).
 
 %%%
@@ -10,13 +10,29 @@
 %%%
 
 start_link() ->
-    try
-        Pid = spawn_link(?MODULE, watch, []),
-        {ok,Pid}
-    catch
-        exit:Rsn ->
-            {error,Rsn}
+    case whereis(?MODULE) of
+        undefined ->
+            try
+                Pid = spawn_link(?MODULE, watcher, []),
+                register(?MODULE, Pid),
+                {ok,Pid}
+            catch
+                exit:Rsn -> {error,Rsn}
+            end;
+        _ ->
+            {error,already_started}
     end.
+
+watcher() ->
+    loop(off).
+
+enable() ->
+    ?MODULE ! enable,
+    ok.
+
+disable() ->
+    ?MODULE ! disable,
+    ok.
 
 read() ->
     gen_event:call(piroxy_events, ?MODULE, {read,start}).
@@ -27,10 +43,6 @@ read(Continuation) ->
 truncate() ->
     gen_event:call(piroxy_events, ?MODULE, truncate).
 
-watch() ->
-    gen_event:add_sup_handler(piroxy_events, ?MODULE, []),
-    loop().
-
 %%%
 %%% BEHAVIOR CALLBACKS
 %%%
@@ -38,10 +50,11 @@ watch() ->
 init([]) ->
     Path = code:lib_dir(piroxy)++"/priv/log/events.log",
     case disk_log:open([{name,piroxy}, {file,Path}]) of
-        {ok,Log} ->
-            {ok,Log};
+        {ok,_Log} = T ->
+            io:format("*DBG* opened log: ~p~n", [Path]),
+            T;
         {error,Rsn} ->
-            {stop,Rsn}
+            exit(Rsn)
     end.
 
 handle_event(Event, Log) ->
@@ -69,10 +82,53 @@ handle_call(truncate, Log) ->
 %%% INTERNALS
 %%%
 
-loop() ->
+loop(off) ->
     receive
-        {gen_event_EXIT,_,{swapped,_,_}} ->
-            loop();
+        enable ->
+            case gen_event:add_sup_handler(piroxy_events, ?MODULE, []) of
+                ok ->
+                    loop(on);
+                {error,Rsn} ->
+                    exit(Rsn);
+                {'EXIT',Rsn} ->
+                    exit(Rsn)
+            end;
+        disable ->
+            loop(off);
         {gen_event_EXIT,_,Rsn} ->
-            exit(Rsn)
+            handler_exit(off, Rsn)
+    end;
+
+loop(on) ->
+    receive
+        enable ->
+            %% the logger was already enabled
+            io:format("*DBG* logged already enabled~n"),
+            loop(on);
+        disable ->
+            case gen_event:delete_handler(piroxy_events, ?MODULE, []) of
+                ok ->
+                    loop(off);
+                {error,Reason} ->
+                    exit(Reason);
+                {'EXIT',Reason} ->
+                    exit(Reason)
+            end;
+        {gen_event_EXIT,_,Rsn} ->
+            handler_exit(on, Rsn)
     end.
+
+handler_exit(State, normal) ->
+    %% gen_event:delete_handler/3 was called
+    loop(State);
+
+handler_exit(_State, shutdown) ->
+    %% XXX: should we exit or let the handler exit alone?
+    ok;
+
+handler_exit(State, {swapped,_,_}) ->
+    loop(State);
+
+handler_exit(_State, Rsn) ->
+    exit(Rsn).
+
