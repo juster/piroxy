@@ -1,7 +1,8 @@
 -module(piroxy_disk_log).
 -behavior(gen_event).
 
--export([start_link/0, read/0, read/1, watch/0]).
+-export([start_link/0, read/0, read/1, truncate/0]).
+-export([watch/0]).
 -export([init/1, handle_event/2, handle_call/2]).
 
 %%%
@@ -22,6 +23,9 @@ read() ->
 
 read(Continuation) ->
     gen_event:call(piroxy_events, ?MODULE, {read,Continuation}).
+
+truncate() ->
+    gen_event:call(piroxy_events, ?MODULE, truncate).
 
 watch() ->
     gen_event:add_sup_handler(piroxy_events, ?MODULE, []),
@@ -51,12 +55,15 @@ handle_event(Event, Log) ->
 handle_call({read,Etc}, Log) ->
     case disk_log:chunk(Log, Etc) of
         eof ->
-            {reply, {ok,eof}, Log};
+            {ok, {ok,eof}, Log};
         {error,_} = Err ->
-            {reply, Err, Log};
+            {ok, Err, Log};
         {Etc2, Terms} ->
-            {reply, {ok,{Terms,Etc2}}, Log}
-    end.
+            {ok, {ok,{Terms,Etc2}}, Log}
+    end;
+
+handle_call(truncate, Log) ->
+    {ok,disk_log:truncate(Log),Log}.
 
 %%%
 %%% INTERNALS
