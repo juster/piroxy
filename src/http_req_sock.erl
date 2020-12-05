@@ -123,7 +123,8 @@ handle_event(info, {A,_,Bin1}, body, D)
             %% Keep the 'body' state but reset the timer.
             case Bin2 of
                 ?EMPTY -> ok;
-                _ -> http_pipe:send(D#data.active, {body,Bin2})
+                _ ->
+                    http_pipe:send(D#data.active, {body,Bin2})
             end,
             {keep_state,D#data{reader=Reader},
              {state_timeout,?ACTIVE_TIMEOUT,active}};
@@ -421,7 +422,7 @@ connect_request(HI) ->
             Req;
         false ->
             Req = request_manager:nextid(),
-            request_manager:connect(Req, http, HI),
+            request_manager:connect(Req, HI),
             Req
     end.
 

@@ -5,7 +5,7 @@
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
--export([nextid/0, connect/3, cancel/1, pending/0, targets/0]). % calls
+-export([nextid/0, connect/2, cancel/1, pending/0, targets/0]). % calls
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2]).
 
 %%%
@@ -15,8 +15,8 @@
 nextid() ->
     gen_server:call(?MODULE, nextid).
 
-connect(Req, Proto, Target) ->
-    gen_server:cast(?MODULE, {connect,Req,Proto,Target}).
+connect(Req, Target) ->
+    gen_server:cast(?MODULE, {connect,Req,Target}).
 
 cancel(Req) ->
     gen_server:cast(?MODULE, {cancel,Req}).
@@ -35,7 +35,7 @@ init([]) ->
     process_flag(trap_exit, true),
     {ok, {1,[]}}.
 
-handle_cast({connect,Req,http,Target}, {I,L}=S) ->
+handle_cast({connect,Req,Target}, {I,L}=S) ->
     case keyfind(Target, 1, L) of
         {_,Pid} ->
             piroxy_events:connect(Req, http, Target),
