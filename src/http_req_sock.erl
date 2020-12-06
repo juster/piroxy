@@ -186,7 +186,7 @@ handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
              {next_event, info, {tcp,null,Bin}}}
     end;
 
-handle_event(info, {http_pipe,Res,{upgrade,M,F,Opts}}, upgrade, D) ->
+handle_event(info, {http_pipe,Res,{upgrade,MFA}}, upgrade, D) ->
     case D#data.queue of
         [] ->
             error(request_underrun);
@@ -195,6 +195,7 @@ handle_event(info, {http_pipe,Res,{upgrade,M,F,Opts}}, upgrade, D) ->
         [{Res,_}] ->
             %% Transfers the socket to the new process and shuts down.
             Bin = iolist_to_binary(reverse(D#data.reader)),
+            {M,F,Opts} = MFA,
             case M:F(D#data.socket, Bin, Opts) of
                 {ok,_} ->
                     {stop,shutdown};
@@ -344,6 +345,7 @@ body_length(StatusLn, Headers) ->
 request_length(connect, _) -> {ok,0};
 request_length(get, _) -> {ok,0};
 request_length(options, _) -> {ok,0};
+request_length(head, _) -> {ok,0};
 request_length(_, Headers) -> pimsg:body_length(Headers).
 
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.

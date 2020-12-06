@@ -3,88 +3,34 @@
 -include_lib("kernel/include/logger.hrl").
 -import(lists, [reverse/1]).
 
--record(data, {pid,role,socket,buffer=(<<>>),queue=[],z=null}).
+-record(data, {id,mfa,role,socket,buffer=(<<>>),queue=[],z=null}).
 
--export([start_mitm/1, mitm_loop/1, start_client/3, start_server/3, ready/1]).
--export([init/1, callback_mode/0, startup/3, connected/3, frames/3,
-         cleanup/3]).
-
-%%%
-%%% MIDDLEMAN PROCESS
-%%%
-
-start_mitm(Id) ->
-    spawn(?MODULE, mitm_loop, [Id]).
-
-mitm_loop(Id) ->
-    receive
-        {hello,client,Pid1} ->
-            receive
-                {hello,server,Pid2} ->
-                    ready(Pid1),
-                    ready(Pid2),
-                    mitm_loop(Pid1, Pid2, Id)
-            after 5000 ->
-                      exit(timeout)
-            end
-    after 5000 ->
-              exit(timeout)
-    end.
-
-mitm_loop(Pid1, Pid2, Id) ->
-    receive
-        {ws_pipe,Pid1,Bin} ->
-            gen_statem:cast(Pid2, {ws_pipe,Bin}),
-            mitm_loop(Pid1, Pid2, Id);
-        {ws_pipe,Pid2,Bin} ->
-            gen_statem:cast(Pid1, {ws_pipe,Bin}),
-            mitm_loop(Pid1, Pid2, Id);
-        {ws_log,Pid1,Term} ->
-            %% receive from the sending proc
-            %%io:format("*DBG* ws_sock send: ~p~n", [Term]),
-            piroxy_events:send(Id, ws, Term),
-            mitm_loop(Pid1, Pid2, Id);
-        {ws_log,Pid2,Term} ->
-            %% receive from the receiving proc
-            %%io:format("*DBG* ws_sock recv: ~p~n", [Term]),
-            piroxy_events:recv(Id, ws, Term),
-            mitm_loop(Pid1, Pid2, Id);
-        {ws_close,Pid1} ->
-            %%io:format("*DBG* ws_sock send ws_close~n"),
-            gen_statem:cast(Pid2, ws_close),
-            mitm_loop(Pid1, Pid2, Id);
-        {ws_close,Pid2} ->
-            %%io:format("*DBG* ws_sock recv ws_close~n"),
-            gen_statem:cast(Pid1, ws_close),
-            mitm_loop(Pid1, Pid2, Id);
-        Any ->
-            io:format("*DBG* ws_sock:mitm_loop received unknown msg: ~p~n", [Any]),
-            mitm_loop(Pid1, Pid2, Id)
-    end.
+-export([start/3, handshake/2, websocket/2]).
+-export([init/1, callback_mode/0]).
+-export([intro/3, take_socket/3, frames/3, cleanup/3]).
 
 %%%
-%%% STATEMACHINE EXPORTS
+%%% EXPORTS
 %%%
 
-start_client(Socket, Bin, Opts) ->
-    start(Socket, Bin, Opts, client).
-
-start_server(Socket, Bin, Opts) ->
-    start(Socket, Bin, Opts, server).
-
-start(Socket, Bin, [MitmPid,Exts], Role) ->
-    case gen_statem:start(?MODULE, [MitmPid,Role,Exts], []) of
+start(Sock, Bin, Opts) ->
+    case gen_statem:start(?MODULE, Opts, []) of
         {ok,Pid}=T ->
-            pisock:setopts(Socket, [{active,false}]),
-            pisock:control(Socket, Pid),
-            upgrade(Pid, Socket, Bin),
+            pisock:setopts(Sock, [{active,false}]),
+            pisock:control(Sock, Pid),
+            gen_statem:cast(Pid, {upgrade,Sock,Bin}),
             T;
         {error,_}=Err ->
             Err
     end.
 
-ready(Pid) ->
-    gen_statem:cast(Pid, ready).
+handshake(Pid, {M,F}) ->
+    %% Append the caller's pid to form an MFA for the callback!
+    MFA = {M,F,[self()]},
+    gen_statem:call(Pid, {handshake,MFA}).
+
+websocket(Pid, Term) ->
+    gen_statem:cast(Pid, {websocket,Term}).
 
 %%%
 %%% BEHAVIOR CALLBACKS
@@ -92,60 +38,80 @@ ready(Pid) ->
 
 callback_mode() -> [state_functions].
 
-init([Pid,Role,Exts]) ->
-    io:format("*DBG* ws_sock: self=~p Role=~s Exts=~p~n", [self(),Role,Exts]),
-    try
-        link(Pid),
-        Pid ! {hello,Role,self()},
-        Z = case proplists:get_value(deflate, Exts, false) of
-                true ->
-                    X = zlib:open(),
-                    %% XXX: An important (undocumented) feature of zlib is that
-                    %% a negative window size tells it to NOT look for the zlib
-                    %% header and CRC32 suffix!
-                    zlib:inflateInit(X, -15),
-                    X;
-                false ->
-                    null
-            end,
-        {ok, startup, #data{pid=Pid,role=Role,z=Z}}
-    catch
-        error:noproc:_ ->
-            io:format("*DBG* failed to link to ~p~n", [Pid]),
-            {stop,nproc}
+init(Opts) ->
+    io:format("*DBG* ws_sock: Opts=~p~n", [Opts]),
+    Z = case proplists:get_value(deflate, Opts, false) of
+            true ->
+                X = zlib:open(),
+                %% An important (undocumented) feature of zlib is that a
+                %% negative window size tells it to NOT look for the zlib
+                %% header and CRC32 suffix!
+                zlib:inflateInit(X, -15),
+                X;
+            false ->
+                null
+        end,
+    Id = proplists:get_value(id, Opts),
+    case Id of
+        undefined -> exit(badarg);
+        _ -> ok
+    end,
+    Server = proplists:get_value(server, Opts, false),
+    Client = proplists:get_value(client, Opts, false),
+    Role = if
+               Server -> server;
+               Client -> client;
+               true -> exit(badarg)
+           end,
+    case proplists:get_value(handshake, Opts) of
+        undefined ->
+            {ok, intro, #data{id=Id,role=Role,z=Z}};
+        {M,F,A} ->
+            MFA = apply(M,F,A),
+            {ok, take_socket, #data{mfa=MFA,id=Id,role=Role,z=Z}}
     end.
 
-startup(cast, {upgrade,Sock,Bin}, D) ->
-    {next_state, connected,
-     D#data{socket=Sock, buffer=Bin}};
+intro({call,{Pid,_}=From}, {handshake,MFA}, D) ->
+    %% Receive the MFA the caller wants us to apply, for sending websocket
+    %% messages. Return the MFA we want the caller to apply for relaying
+    %% websocket messages to ourselves.
+    link(Pid),
+    {next_state, take_socket, D#data{mfa=MFA},
+     {reply, From, {?MODULE,websocket,[self()]}}};
 
-startup(_, _, _D) ->
+intro(_, _, _) ->
     {keep_state_and_data, postpone}.
 
-connected(cast, ready, D) ->
-    pisock:setopts(D#data.socket, [{active,true}]),
-    {next_state, frames, D#data{buffer=(<<>>)},
-     {next_event,info,{tcp,null,D#data.buffer}}};
+take_socket(cast, {upgrade,Sock,Bin}, D) ->
+    pisock:setopts(Sock, [{active,true}]),
+    {next_state, frames, D#data{socket=Sock},
+     {next_event,info,{tcp,null,Bin}}};
 
-connected(_, _, _D) ->
+take_socket(_, _, _) ->
     {keep_state_and_data, postpone}.
 
-frames(cast, ws_close, D) ->
+frames(cast, {websocket,close}, D) ->
     pisock:shutdown(D#data.socket, write),
     {next_state, cleanup, D};
 
-frames(cast, {ws_pipe,Bin}, D) ->
+frames(cast, {websocket,{binary,Bin}}, D) ->
+    %% raw binary is sent in order to be relayed across the opposite socket
     pisock:send(D#data.socket, Bin),
+    keep_state_and_data;
+
+frames(cast, {websocket,{frame,_}}, _) ->
+    %% ignore frames received from the other socket, these are for other types
+    %% of receivers
     keep_state_and_data;
 
 frames(info, {A,_,Bin}, D)
   when A =:= tcp; A =:= ssl ->
-    D#data.pid ! {ws_pipe,self(),Bin}, % relay bytes to the middleman
+    relay({binary,Bin}, D), % relay binaries to the opposite socket-controller
     {keep_state, parse(Bin, D)};
 
 frames(info, {A,_}, D)
   when A =:= tcp_closed; A =:= ssl_closed ->
-    D#data.pid ! {ws_close,self()},
+    relay(close, D),
     {stop,shutdown};
 
 frames(info, {A,_,Reason}, _D)
@@ -157,13 +123,13 @@ frames(info, {A,_,Reason}, _D)
 %%% OR we send ws_close ourselves when the socket has closed.
 %%%
 
-cleanup(cast, ws_close, D) ->
+cleanup(cast, {websocket,close}, D) ->
     pisock:close(D#data.socket),
     %%io:format("*DBG* ws_close, closing ~p~n", [self()]),
     {stop,shutdown};
 
-cleanup(cast, {ws_pipe,_}, _D) ->
-    %% ignore any ws_pipe messages other than exit
+cleanup(cast, {websocket,_}, _D) ->
+    %% ignore any websocket messages other than close
     keep_state_and_data;
 
 cleanup(info, {A,_,Reason}, _D)
@@ -179,15 +145,29 @@ cleanup(info, {A,_}, _D)
 %%% data before we shutdown.
 cleanup(info, {A,_,Bin}, D)
   when A =:= tcp; A =:= ssl ->
-    D#data.pid ! {ws_pipe,self(),Bin},
+    relay({binary,Bin}, D),
     {keep_state, parse(Bin, D)}.
 
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
 
-upgrade(Pid, Sock, Bin) ->
-    gen_statem:cast(Pid, {upgrade,Sock,Bin}).
+relay({frame,Frame} = T, D) ->
+    Id = D#data.id,
+    case D#data.role of
+        client ->
+            piroxy_events:send(Id, ws, Frame);
+        server ->
+            piroxy_events:recv(Id, ws, Frame)
+    end,
+    relay_(T, D);
+
+relay(T, D) ->
+    relay_(T, D).
+
+relay_(T, D) ->
+    {M,F,A} = D#data.mfa,
+    apply(M, F, A++[T]).
 
 parse(Bin2, D) when size(Bin2) + size(D#data.buffer) < 2 ->
     Bin1 = D#data.buffer,
@@ -285,10 +265,10 @@ log(Rsv1, Op, Payload0, D) ->
                   {0,_} ->
                       Payload0
               end,
-    D#data.pid ! {ws_log, self(), {Op,Payload}},
+    relay({frame, {Op,Payload}}, D),
     case Op of
         close ->
-            D#data.pid ! {ws_close,self()},
+            relay(close, D),
             pisock:shutdown(D#data.socket, write),
             throw({next_state, cleanup, D});
         _ ->

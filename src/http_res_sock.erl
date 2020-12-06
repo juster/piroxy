@@ -385,21 +385,21 @@ upgrade(Req, Headers, Rest, D) ->
 
 upgrade_ws(Req, Headers, Sock, Rest) ->
     io:format("*DBG* ~p upgrade_ws~n", [self()]),
-    MitmPid = ws_sock:start_mitm(Req),
-    Exts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
+    Opts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
                <<"permessage-deflate">> ->
                    %% TODO: handle deflate extension parameters
-                   [{deflate,true}];
+                   [{id,Req},{deflate,true}];
                not_found ->
-                   [];
+                   [{id,Req}];
                _ ->
                    %% unknown extension(s), cannot be parsed
                    throw(raw_sock)
            end,
-    Opts = [MitmPid,Exts],
-    case ws_sock:start_server(Sock, Rest, Opts) of
-        {ok,_} ->
-            {ok,{upgrade,ws_sock,start_client,Opts}};
+    case ws_sock:start(Sock, Rest, [server|Opts]) of
+        {ok,Pid} ->
+            %% gets a little confusing...
+            MFA = {ws_sock,handshake,[Pid,{ws_sock,websocket}]},
+            {ok,{upgrade,{ws_sock,start,[client,{handshake,MFA}|Opts]}}};
         {error,_} = Err ->
             Err
     end.
