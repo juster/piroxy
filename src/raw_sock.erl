@@ -1,72 +1,26 @@
 -module(raw_sock).
 -include_lib("kernel/include/logger.hrl").
 
--export([start_mitm/1, mitm_loop/1, start_server/3, start_client/3, loop/1]).
+-export([start/3, loop/1, handshake/2, relay/2]).
 
-%%%
-%%% Middleman process between two raw_sock processes.
-%%% Handles the message counter and event generation.
-%%%
-
-start_mitm(Id) ->
-    spawn(?MODULE, mitm_loop, [Id]).
-
-mitm_loop(Id) ->
-    io:format("spawned mitm_loop ~p~n", [self()]),
-    process_flag(trap_exit, true),
+handshake(Pid, MFA) ->
+    link(Pid),
+    Pid ! {handshake,self(),MFA},
     receive
-        {hello,client,Pid1} ->
-            receive
-                {hello,server,Pid2} ->
-                    Pid1 ! ready,
-                    Pid2 ! ready,
-                    mitm_loop(Pid1, Pid2, Id)
-            end
+        {handshake,Pid,MFA2} ->
+            MFA2
     end.
 
-mitm_loop(Pid1, Pid2, Id) ->
-    mitm_loop(Pid1, Pid2, Id, 1).
-
-mitm_loop(Pid1, Pid2, Id, I) ->
-    receive
-        {raw_pipe,Pid1,Bin} ->
-            piroxy_events:send([I|Id], raw, Bin),
-            Pid2 ! {raw_pipe,Bin},
-            mitm_loop(Pid1, Pid2, Id, I+1);
-        {raw_pipe,Pid2,Bin} ->
-            piroxy_events:send([I|Id], raw, Bin),
-            Pid1 ! {raw_pipe,Bin},
-            mitm_loop(Pid1, Pid2, Id, I+1);
-        {'EXIT',Pid1,normal} ->
-            mitm_teardown(Pid2, Id, I);
-        {'EXIT',Pid2,normal} ->
-            mitm_teardown(Pid1, Id, I);
-        {'EXIT',_,Rsn} ->
-            exit(Rsn)
-    end.
-
-mitm_teardown(Pid, Id, I) ->
-    io:format("*DBG* raw_sock mitm_teardown~n"),
-    receive
-        {raw_pipe,Pid,Bin} ->
-            piroxy_events:send([I|Id], raw, Bin),
-            mitm_teardown(Pid, Id, I+1);
-        {'EXIT',_,Rsn} ->
-            exit(Rsn)
-    end.
+relay(Pid, Term) ->
+    Pid ! {raw_sock,Term},
+    ok.
 
 %%%
 %%% raw_sock socket handler process
 %%%
 
-start_server(Socket, Bin, Opts) ->
-    start(Socket, Bin, Opts, server).
-
-start_client(Socket, Bin, Opts) ->
-    start(Socket, Bin, Opts, client).
-
-start(Socket, Bin, [MitmPid], Role) ->
-    Pid = spawn(?MODULE, loop, [[MitmPid,Role]]),
+start(Socket, Bin, Opts) ->
+    Pid = spawn(?MODULE, loop, [Opts]),
     pisock:setopts(Socket, [{active,false}]),
     case pisock:control(Socket, Pid) of
         ok ->
@@ -77,44 +31,60 @@ start(Socket, Bin, [MitmPid], Role) ->
             Err
     end.
 
-loop([Pid, Role]) ->
+loop(Opts) ->
     io:format("*DBG* spawned raw_sock ~p~n", [self()]),
-    link(Pid),
-    Pid ! {hello,Role,self()},
+    Client = proplists:get_bool(client, Opts),
+    Server = proplists:get_bool(server, Opts),
+    Role = if
+               Client -> client;
+               Server -> server;
+               true -> exit(badarg)
+           end,
+    MFA = {?MODULE,relay,[self()]}, % the MFA used to send us messages
+    case proplists:get_value(handshake, Opts) of
+        {M,F,A} ->
+            %% Start the handshake ourselves.
+            loop(Role, apply(M,F,A++[MFA]));
+        undefined ->
+            %% Wait to receive the handshake. This is send via the handshake/2
+            %% exported fun
+            receive
+                {handshake,Pid2,MFA2} ->
+                    Pid2 ! {handshake,self(),MFA},
+                    loop(Role, MFA2)
+            end
+    end.
+
+loop(Role,{M,F,A}=MFA) ->
     receive
         {upgrade,Sock,Bin} ->
-            loop(Pid,Sock,Bin)
-    end.
-
-loop(Pid,Sock,Bin) ->
-    receive
-        ready ->
-            %% Ensure that the fake binary message is received first.
-            self() ! {tcp,null,Bin},
+            %% Ensure that the leftover binary is relayed
+            apply(M, F, A++[Bin]),
             pisock:setopts(Sock, [{active,true}]),
-            loop(Pid, Sock)
+            loop(Role,MFA,Sock)
     end.
 
-loop(Pid,Sock) ->
+loop(Role,{M,F,A}=MFA,Sock) ->
     receive
-        {A,_,Bin} when A == tcp; A == ssl ->
-            Pid ! {raw_pipe,self(),Bin},
-            loop(Pid, Sock);
-        {A,_,Rsn} when A == tcp_error; A == ssl_error ->
+        {X,_,Bin} when X == tcp; X == ssl ->
+            apply(M, F, A++[Bin]),
+            loop(Role,MFA,Sock);
+        {X,_,Rsn} when X == tcp_error; X == ssl_error ->
             ?LOG_ERROR("raw_sock ~s: ~p", [A,Rsn]),
-            Pid ! {raw_pipe,self(),exit},
-            shutdown(Pid,Sock);
-        {A,_} when A == tcp_closed; A == ssl_closed ->
-            Pid ! {raw_pipe,self(),exit},
-            shutdown(Pid,Sock);
-        {raw_pipe,exit} ->
-            shutdown(Pid,Sock);
-        {raw_pipe,Bin} when is_binary(Bin) ->
+            apply(M, F, A++[exit]),
+            shutdown(Role,MFA,Sock);
+        {X,_} when X == tcp_closed; X == ssl_closed ->
+            apply(M, F, A++[exit]),
+            shutdown(Role,MFA,Sock);
+        %% messages sent from relay/2
+        {raw_sock,exit} ->
+            shutdown(Role,MFA,Sock);
+        {raw_sock,Bin} when is_binary(Bin) ->
             case pisock:send(Sock,Bin) of
                 ok ->
-                    loop(Pid,Sock);
-                {error,_} = Err ->
-                    Pid ! {raw_pipe,Err}
+                    loop(Role,MFA,Sock);
+                {error,Rsn} ->
+                    exit(Rsn)
             end;
         {http_pipe,_,_} = Msg ->
             ?LOG_ERROR("trailing http_pipe message to raw_sock (~p): ~p~n",
@@ -125,40 +95,37 @@ loop(Pid,Sock) ->
             error(internal)
     end.
 
-shutdown(Pid,Sock) ->
+shutdown(Role,{M,F,A}=MFA,Sock) ->
     case pisock:shutdown(Sock, write) of
         ok ->
-            cleanup(Pid,Sock);
+            cleanup(Role,MFA,Sock);
         {error,closed} ->
-            Pid ! {raw_pipe,exit},
+            apply(M, F, A++[exit]),
             exit(closed);
         {error,Rsn} ->
             exit(Rsn)
     end.
 
-cleanup(Pid,Sock) ->
+cleanup(Role,{M,F,A}=MFA,Sock) ->
     io:format("*DBG* raw_sock:cleanup~n"),
     receive
-        {tcp,_,Bin} ->
-            Pid ! {raw_pipe,Bin},
-            cleanup(Pid,Sock);
-        {ssl,_,Bin} ->
-            Pid ! {raw_pipe,Bin},
-            cleanup(Pid,Sock);
+        {X,_,Bin} when X == tcp; X == ssl ->
+            apply(M, F, A++[Bin]),
+            cleanup(Role,MFA,Sock);
         {tcp_closed,_} ->
             exit(shutdown);
         {ssl_closed,_} ->
             exit(shutdown);
-        {raw_pipe,exit} ->
+        {raw_sock,exit} ->
             pisock:close(Sock),
             exit(shutdown);
-        {raw_pipe,_} ->
-            cleanup(Pid,Sock);
-        {A,_,Rsn} when A == tcp_error; A == ssl_error ->
-            ?LOG_ERROR("raw_sock ~s: ~p", [A, Rsn]),
+        {raw_sock,_} ->
+            cleanup(Role,MFA,Sock);
+        {X,_,Rsn} when X == tcp_error; X == ssl_error ->
+            ?LOG_ERROR("raw_sock ~s: ~p", [X, Rsn]),
             exit(Rsn);
-        {A,_} when A == tcp_closed; A == ssl_closed ->
-            Pid ! {raw_pipe,exit},
+        {X,_} when X == tcp_closed; X == ssl_closed ->
+            apply(M, F, A++[exit]),
             exit(shutdown);
         Any ->
             ?LOG_ERROR("raw_sock received unknown message: ~p", [Any]),

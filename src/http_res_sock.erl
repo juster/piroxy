@@ -398,19 +398,22 @@ upgrade_ws(Req, Headers, Sock, Rest) ->
     case ws_sock:start(Sock, Rest, [server|Opts]) of
         {ok,Pid} ->
             %% gets a little confusing...
-            MFA = {ws_sock,handshake,[Pid,{ws_sock,websocket}]},
-            {ok,{upgrade,{ws_sock,start,[client,{handshake,MFA}|Opts]}}};
+            %%MF = {ws_sock,websocket}, % client message relay fun
+            MFA1 = {ws_sock,handshake,[Pid]}, % server handshake fun
+            MFA2 = {ws_sock,start,[client,{handshake,MFA1}|Opts]},
+            {ok,{upgrade_socket,MFA2}};
         {error,_} = Err ->
             Err
     end.
 
 upgrade_raw(Req, Sock, Rest) ->
     io:format("*DBG* ~p upgrade_raw~n", [self()]),
-    MitmPid = raw_sock:start_mitm(Req),
-    Opts = [MitmPid],
-    case raw_sock:start_server(Sock, Rest, Opts) of
-        {ok,_} ->
-            {ok,{upgrade,raw_sock,start_client,Opts}};
+    case raw_sock:start(Sock, Rest, [server]) of
+        {ok,Pid} ->
+            %%MF = {raw_sock,relay}, % client message relay fun
+            MFA1 = {raw_sock,handshake,[Pid]}, % server handshake fun
+            MFA2 = {raw_sock,start,[client,{handshake,MFA1}]},
+            {ok,{upgrade_socket,MFA2}};
         {error,_} = Err ->
             Err
     end.

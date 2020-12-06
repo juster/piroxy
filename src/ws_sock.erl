@@ -6,8 +6,7 @@
 -record(data, {id,mfa,role,socket,buffer=(<<>>),queue=[],z=null}).
 
 -export([start/3, handshake/2, websocket/2]).
--export([init/1, callback_mode/0]).
--export([intro/3, take_socket/3, frames/3, cleanup/3]).
+-export([init/1, callback_mode/0, handle_event/4]).
 
 %%%
 %%% EXPORTS
@@ -24,9 +23,9 @@ start(Sock, Bin, Opts) ->
             Err
     end.
 
-handshake(Pid, {M,F}) ->
+handshake(Pid, MFA) ->
     %% Append the caller's pid to form an MFA for the callback!
-    MFA = {M,F,[self()]},
+    link(Pid),
     gen_statem:call(Pid, {handshake,MFA}).
 
 websocket(Pid, Term) ->
@@ -36,11 +35,11 @@ websocket(Pid, Term) ->
 %%% BEHAVIOR CALLBACKS
 %%%
 
-callback_mode() -> [state_functions].
+callback_mode() -> [handle_event_function].
 
 init(Opts) ->
     io:format("*DBG* ws_sock: Opts=~p~n", [Opts]),
-    Z = case proplists:get_value(deflate, Opts, false) of
+    Z = case proplists:get_bool(deflate, Opts) of
             true ->
                 X = zlib:open(),
                 %% An important (undocumented) feature of zlib is that a
@@ -56,8 +55,8 @@ init(Opts) ->
         undefined -> exit(badarg);
         _ -> ok
     end,
-    Server = proplists:get_value(server, Opts, false),
-    Client = proplists:get_value(client, Opts, false),
+    Server = proplists:get_bool(server, Opts),
+    Client = proplists:get_bool(client, Opts),
     Role = if
                Server -> server;
                Client -> client;
@@ -67,86 +66,52 @@ init(Opts) ->
         undefined ->
             {ok, intro, #data{id=Id,role=Role,z=Z}};
         {M,F,A} ->
-            MFA = apply(M,F,A),
-            {ok, take_socket, #data{mfa=MFA,id=Id,role=Role,z=Z}}
+            MFA1 = {?MODULE,websocket,[self()]}, % callback MFA
+            MFA2 = apply(M,F,A++[MFA1]), % send it to the handshake MFA
+            % it returns it's own callback MFA, store it for later
+            {ok, take_socket, #data{mfa=MFA2,id=Id,role=Role,z=Z}}
     end.
 
-intro({call,{Pid,_}=From}, {handshake,MFA}, D) ->
+handle_event({call,From}, {handshake,MFA}, intro, D) ->
     %% Receive the MFA the caller wants us to apply, for sending websocket
     %% messages. Return the MFA we want the caller to apply for relaying
     %% websocket messages to ourselves.
-    link(Pid),
     {next_state, take_socket, D#data{mfa=MFA},
      {reply, From, {?MODULE,websocket,[self()]}}};
 
-intro(_, _, _) ->
-    {keep_state_and_data, postpone}.
-
-take_socket(cast, {upgrade,Sock,Bin}, D) ->
+handle_event(cast, {upgrade,Sock,Bin}, take_socket, D) ->
     pisock:setopts(Sock, [{active,true}]),
-    {next_state, frames, D#data{socket=Sock},
+    {next_state, active, D#data{socket=Sock},
      {next_event,info,{tcp,null,Bin}}};
 
-take_socket(_, _, _) ->
-    {keep_state_and_data, postpone}.
+handle_event(_, _, A, _)
+  when A == intro; A == take_socket ->
+    {keep_state_and_data, postpone};
 
-frames(cast, {websocket,close}, D) ->
-    pisock:shutdown(D#data.socket, write),
-    {next_state, cleanup, D};
-
-frames(cast, {websocket,{binary,Bin}}, D) ->
+handle_event(cast, {websocket,{binary,Bin}}, active, D) ->
     %% raw binary is sent in order to be relayed across the opposite socket
     pisock:send(D#data.socket, Bin),
     keep_state_and_data;
 
-frames(cast, {websocket,{frame,_}}, _) ->
+handle_event(cast, {websocket,{frame,_}}, active, _) ->
     %% ignore frames received from the other socket, these are for other types
     %% of receivers
     keep_state_and_data;
 
-frames(info, {A,_,Bin}, D)
+handle_event(info, {A,_,Bin}, active, D0)
   when A =:= tcp; A =:= ssl ->
-    relay({binary,Bin}, D), % relay binaries to the opposite socket-controller
-    {keep_state, parse(Bin, D)};
+    %% relay binaries to the opposite socket owner
+    relay({binary,Bin}, D0),
+    D = parse(Bin, D0),
+    {keep_state,D};
 
-frames(info, {A,_}, D)
+handle_event(info, {A,_}, active, _D)
   when A =:= tcp_closed; A =:= ssl_closed ->
-    relay(close, D),
     {stop,shutdown};
 
-frames(info, {A,_,Reason}, _D)
+handle_event(info, {A,_,Reason}, active, _D)
   when A =:= tcp_error; A =:= ssl_error ->
-    {stop,{A,Reason}}.
-
-%%%
-%%% In cleanup state we wait for the other end to send ws_close
-%%% OR we send ws_close ourselves when the socket has closed.
-%%%
-
-cleanup(cast, {websocket,close}, D) ->
-    pisock:close(D#data.socket),
-    %%io:format("*DBG* ws_close, closing ~p~n", [self()]),
-    {stop,shutdown};
-
-cleanup(cast, {websocket,_}, _D) ->
-    %% ignore any websocket messages other than close
-    keep_state_and_data;
-
-cleanup(info, {A,_,Reason}, _D)
-  when A =:= tcp_error; A =:= ssl_error ->
-    {stop,{A,Reason}};
-
-cleanup(info, {A,_}, _D)
-  when A =:= tcp_closed; A =:= ssl_closed ->
-    %%io:format("*DBG* ~s, closing ~p~n", [A,self()]),
-    {stop,shutdown};
-
-%%% The reason we are in cleanup state is to make sure we receive all of the
-%%% data before we shutdown.
-cleanup(info, {A,_,Bin}, D)
-  when A =:= tcp; A =:= ssl ->
-    relay({binary,Bin}, D),
-    {keep_state, parse(Bin, D)}.
+    exit(Reason).
 
 %%%
 %%% INTERNAL FUNCTIONS
@@ -192,8 +157,9 @@ parse(Bin2, D) ->
                                   0 -> Payload0;
                                   1 -> unmask(Payload0, Mask)
                               end,
-                    parse(Rest3, frame(Fin, Rsv1, operation(Opcode), Payload,
-                                       D#data{buffer=(<<>>)}));
+                    D2 = reframe(Fin, Rsv1, operation(Opcode), Payload,
+                                 D#data{buffer=(<<>>)}),
+                    parse(Rest3, D2); % keep parsing
                 true ->
                     D#data{buffer=Rest2}
             end;
@@ -213,7 +179,7 @@ unmask(<<X:8,A/binary>>, Mask, I, B) ->
 
 %%% Args: Fin, OpAtom, Payload, #data{}
 
-frame(1, _, continuation, Payload, D) ->
+reframe(1, _, continuation, Payload, D) ->
     %% frame is at the end of fragments
     case D#data.queue of
         %% if frame is the end there must be previous fragments in the queue
@@ -222,14 +188,14 @@ frame(1, _, continuation, Payload, D) ->
         [L0|Q] ->
             %% pop fragments off the queue
             [{Op,Rsv1}|L] = reverse([Payload|L0]),
-            log(Rsv1, Op, iolist_to_binary(L), D#data{queue=Q})
+            relay_frame(Rsv1, Op, iolist_to_binary(L), D#data{queue=Q})
     end;
 
-frame(1, Rsv1, Op, Payload, D) ->
+reframe(1, Rsv1, Op, Payload, D) ->
     %% frame is both the alpha and the 0MEGA!
-    log(Rsv1, Op, Payload, D);
+    relay_frame(Rsv1, Op, Payload, D);
 
-frame(0, _, continuation, Payload, D) ->
+reframe(0, _, continuation, Payload, D) ->
     %% frame is in the middle of a stream of fragments
     case D#data.queue of
         %% if frame is in the middle there must be previous fragments in the
@@ -241,7 +207,7 @@ frame(0, _, continuation, Payload, D) ->
             D#data{queue=[L|Q]}
     end;
 
-frame(0, Rsv1, Op, Payload, #data{queue=Q}=D) ->
+reframe(0, Rsv1, Op, Payload, #data{queue=Q}=D) ->
     %% this frame is the beginning of fragments
     %% push a new list to the front of the list queue
     %% the list is in reverse, so op atom goes last
@@ -255,7 +221,7 @@ operation(8) -> close;
 operation(9) -> ping;
 operation(10) -> pong.
 
-log(Rsv1, Op, Payload0, D) ->
+relay_frame(Rsv1, Op, Payload0, D) ->
     Payload = case {Rsv1,D#data.z} of
                   {1,null} ->
                       %% compression used but not negotiated!
@@ -265,15 +231,21 @@ log(Rsv1, Op, Payload0, D) ->
                   {0,_} ->
                       Payload0
               end,
-    relay({frame, {Op,Payload}}, D),
     case Op of
         close ->
-            relay(close, D),
-            pisock:shutdown(D#data.socket, write),
-            throw({next_state, cleanup, D});
+            L = case Payload of
+                    <<>> ->
+                        [];
+                    <<Code:16>> ->
+                        [Code];
+                    <<Code:16,Reason/utf8>> ->
+                        [Code,Reason]
+                end,
+            relay({frame, {Op,L}}, D);
         _ ->
-            D
-    end.
+            relay({frame, {Op,Payload}}, D)
+    end,
+    D.
 
 inflate(Z, Bin0) ->
     %% These extra octets are always the same and so removed/appended.

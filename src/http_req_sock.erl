@@ -186,7 +186,7 @@ handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
              {next_event, info, {tcp,null,Bin}}}
     end;
 
-handle_event(info, {http_pipe,Res,{upgrade,MFA}}, upgrade, D) ->
+handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, upgrade, D) ->
     case D#data.queue of
         [] ->
             error(request_underrun);
@@ -217,7 +217,7 @@ handle_event(info, {http_pipe,Res,eof}, _, D) ->
     ?TRACE(Res, Host, "<", "EOF"),
     {keep_state, D#data{queue=Q}};
 
-handle_event(info, {http_pipe,_,{upgrade,_,_}}, _, _) ->
+handle_event(info, {http_pipe,_,{upgrade_socket,_,_}}, _, _) ->
     %% Ignore upgrade messages if we are not in the upgrade state.
     keep_state_and_data;
 
