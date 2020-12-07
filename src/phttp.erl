@@ -114,6 +114,7 @@ version_atom(_) -> unknown.
 
 status_bin(http_ok) -> <<"200 OK">>;
 status_bin(http_bad_request) -> <<"400 Bad Request">>;
+status_bin(http_not_found) -> <<"404 Not Found">>;
 status_bin(http_uri_too_long) -> <<"414 URI Too Long">>;
 status_bin(http_server_error) -> <<"500 Server Error">>;
 status_bin(http_not_implemented) -> <<"501 Not Implemented">>;

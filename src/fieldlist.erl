@@ -57,7 +57,14 @@ add(F, FL) ->
 
 add_value(Name, Value, FL) ->
     BinName = list_to_binary(Name),
-    BinValue = list_to_binary(Value),
+    BinValue = if
+                   is_list(Value) ->
+                       list_to_binary(Value);
+                   is_binary(Value) ->
+                       Value;
+                   true ->
+                       exit(badarg)
+               end,
     [{length(Name),<<BinName/binary,?COLON,BinValue/binary>>}|FL].
 
 find(Name, FL) ->

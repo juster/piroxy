@@ -116,7 +116,12 @@ log_event({Id,Dir,Time,http,Term}=T, S)
           when Reason == cancelled; Reason == reset ->
             {ok, store_body(Id, Dir, S)};
         eof ->
-            {ok, store_body(Id, Dir, S)}
+            {ok, store_body(Id, Dir, S)};
+        {error,Reason} ->
+            ets:insert(S#state.logtab, T),
+            {ok, store_body(Id, Dir, S)};
+        _ ->
+            ets:insert(S#state.logtab, T)
     end;
 
 log_event(T, S) ->
