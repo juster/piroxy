@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,
-         send/2, listen/2, recv/2, reset/1, cancel/1]).
+         send/2, listen/2, recv/2, rewind/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%% EXPORTS
@@ -36,9 +36,9 @@ send(Id, Term) ->
 listen(Id, Pid) ->
     gen_server:call(?MODULE, {listen,Id,Pid}).
 
-reset(Id) ->
-    piroxy_events:fail(Id, http, reset),
-    gen_server:call(?MODULE, {reset,Id}).
+rewind(Id) ->
+    piroxy_events:fail(Id, http, rewind),
+    gen_server:call(?MODULE, {rewind,Id}).
 
 cancel(Id) ->
     piroxy_events:fail(Id, http, cancel),
@@ -95,10 +95,11 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,Dict0}=State) ->
             end
     end;
 
-%% Reset the server-side of the pipe. This is hard, because we must
-%% shutdown the http_req_sock proc if we can find evidence that we have
-%% sent messages to http_req_sock for the purpose of relaying them.
-handle_call({reset,Id}, _From, {MsgTab,Sessions0,Dict0}=State0) ->
+%% Erase all the recv messages from the server-side of the pipe.
+%% This is hard, because we must shutdown the http_req_sock proc if we can find
+%% evidence that we have sent messages to http_req_sock for the purpose of
+%% relaying them.
+handle_call({rewind,Id}, _From, {MsgTab,Sessions0,Dict0}=State0) ->
     case lists:keyfind(Id, 1, Sessions0) of
         false ->
             %% Do not be strict on recv endpoints about whether a sessions

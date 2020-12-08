@@ -173,7 +173,7 @@ failure_type({tcp_error,_}) -> hard;
 failure_type(_) -> fatal.
 
 fail(Id, Reason) ->
-    http_pipe:reset(Id),
+    http_pipe:rewind(Id),
     http_pipe:recv(Id, {error,Reason}),
     http_pipe:recv(Id, eof).
 
@@ -217,7 +217,7 @@ resend2(Pid0, L0, S) ->
     %% since ceased to exist.
     case http_res_sock:start_link(S#state.hostinfo) of
         {ok,Pid} ->
-            foreach(fun (Req) -> http_pipe:reset(Req) end, L0),
+            foreach(fun (Req) -> http_pipe:rewind(Req) end, L0),
             L = relay(Pid, L0), % L may be empty!
             I = tfind(Pid0, S#state.pids),
             Tpids = setelement(I, S#state.pids, Pid),
