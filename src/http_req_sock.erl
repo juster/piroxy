@@ -47,7 +47,7 @@ terminate(Reason, _, D) ->
     Req = case D#data.active of undefined -> 0; _ -> D#data.active end,
     Host = case D#data.target of undefined -> "???"; _ -> element(2,D#data.target) end,
     ?TRACE(Req, Host, "<", io_lib:format("inbound closed: ~p", [Reason])),
-    lists:foreach(fun ({X,_}) ->
+    lists:foreach(fun (X) ->
                           request_manager:cancel(X),
                           http_pipe:cancel(X)
                   end, D#data.queue).
@@ -146,7 +146,7 @@ handle_event(info, {A,_,Bin1}, body, D)
 
 %% Stall the pipeline while we are waiting for a response regarding the
 %% upgrade.
-handle_event(info, {A,_,Bin}, upgrade, D)
+handle_event(info, {A,_,Bin}, paused, D)
   when A == tcp; A == ssl ->
     L = D#data.reader,
     {keep_state, D#data{reader=[Bin|L]}};
@@ -163,7 +163,27 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
+handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, paused, D) ->
+    case D#data.queue of
+        [] ->
+            error(underrun);
+        [Res] ->
+            %% Transfers the socket to the new process and shuts down.
+            Bin = iolist_to_binary(reverse(D#data.reader)),
+            {M,F,Opts} = MFA,
+            case apply(M, F, [D#data.socket, Bin, Opts]) of
+                {ok,_} ->
+                    {stop,shutdown};
+                {error,Rsn} ->
+                    error(Rsn)
+            end;
+        [Res|_] ->
+            error(outoforder);
+        _ ->
+            error(overrun)
+    end;
+
+handle_event(info, {http_pipe,Res,eof}, paused, D) ->
     Host = case D#data.target of
                undefined -> "???";
                _ -> element(2,D#data.target)
@@ -171,14 +191,12 @@ handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
     case D#data.queue of
         [] ->
             error(request_underrun);
-        [{Res,false}|Q] ->
+        [Res|Q] ->
             ?TRACE(Res, Host, "<", "EOF"),
             {keep_state, D#data{queue=Q}};
-        [{Res,_UpState}] ->
-            %% A successful upgrade will shutdown this statem before the eof
-            %% message is received. If we get this far, an upgrade request did
-            %% not result in a successful upgrade response (101). Restart the
-            %% pipeline.
+        [Res] ->
+            %% If we get this far, an upgrade request did not result in a
+            %% successful upgrade response (101). Restart the pipeline.
             ?TRACE(Res, Host, "<", "EOF"),
             Bin = iolist_to_binary(reverse(D#data.reader)),
             {next_state, idle,
@@ -186,30 +204,11 @@ handle_event(info, {http_pipe,Res,eof}, upgrade, D) ->
              {next_event, info, {tcp,null,Bin}}}
     end;
 
-handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, upgrade, D) ->
-    case D#data.queue of
-        [] ->
-            error(request_underrun);
-        [{Res,false}|_] ->
-            error(unexpected_upgrade);
-        [{Res,_}] ->
-            %% Transfers the socket to the new process and shuts down.
-            Bin = iolist_to_binary(reverse(D#data.reader)),
-            {M,F,Opts} = MFA,
-            case M:F(D#data.socket, Bin, Opts) of
-                {ok,_} ->
-                    {stop,shutdown};
-                {error,Rsn} ->
-                    error(Rsn)
-            end;
-        _ ->
-            error(request_overrun)
-    end;
 
 handle_event(info, {http_pipe,Res,eof}, _, D) ->
     %% Avoid trying to encode the 'eof' atom. Pop the first response ID off the
     %% queue.
-    [{Res,_}|Q] = D#data.queue,
+    [Res|Q] = D#data.queue,
     Host = case D#data.target of
                undefined -> "???";
                _ -> element(2,D#data.target)
@@ -240,7 +239,7 @@ handle_event(info, {http_pipe,Req,reset}, _, D) ->
 handle_event(info, {http_pipe,Res,Term}, _, D) ->
     case Term of
         {error,Rsn} ->
-            {Res,_} = hd(D#data.queue),
+            Res = hd(D#data.queue),
             Host = case D#data.target of
                        undefined -> "???";
                        _ -> element(2,D#data.target)
@@ -434,9 +433,8 @@ relay_head(H, HI, Bin, D) ->
     ok = http_pipe:new(Req),
     http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
-    UpState = upgrade_state(H),
-    Q = D#data.queue ++ [{Req,UpState}],
-    case {H#head.bodylen, UpState} of
+    Q = D#data.queue ++ [Req],
+    case {H#head.bodylen, upgrade_requested(H)} of
         {0,false} ->
             %% Skip ahead to the idle state when we do not expect to receive
             %% any body data.
@@ -448,12 +446,12 @@ relay_head(H, HI, Bin, D) ->
             D2 = D#data{reader=pimsg:body_reader(H#head.bodylen),
                         target=HI, queue=Q, active=Req},
             {next_state,body,D2,{next_event,info,{tcp,null,Bin}}};
-        {0,_} ->
+        {0,true} ->
             %% An upgrade request stops the pipeline.
             %% Buffer any received binaries inside of reader.
             D2 = D#data{reader=[Bin], target=HI, queue=Q, active=Req},
-            {next_state,upgrade,D2};
-        {_,_} ->
+            {next_state,paused,D2};
+        _ ->
             %% Not sure what to do here...
             error(internal)
     end.
@@ -484,7 +482,7 @@ check_host(Host, Headers) ->
             {error,{host_mismatch,Host2}}
     end.
 
-upgrade_state(H) ->
+upgrade_requested(H) ->
     Headers = H#head.headers,
     Conn = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
     Upgrade = fieldlist:get_value(<<"upgrade">>, H#head.headers),
@@ -493,12 +491,7 @@ upgrade_state(H) ->
         {_,_,not_found} ->
             false;
         {get,true,_} ->
-            case fieldlist:get_value(<<"sec-websocket-key">>, Headers) of
-                not_found ->
-                    unknown;
-                Key ->
-                    {websocket,Key}
-            end;
+            true;
         _ ->
             false
     end.
