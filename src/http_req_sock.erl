@@ -389,7 +389,15 @@ head_uri(H) ->
 handle_head(#head{method=connect}, {authority,HI}, Bin, D) ->
     %% CONNECT uses the "authority" form of URIs and so
     %% cannot be used with relativize/2.
-    send(D#data.socket, {status,http_ok}),
+
+    %% XXX: We MUST send the 200 OK reply here, first. When creating a
+    %% fake HTTPS tunnel, we send the 200 OK unencrypted and then
+    %% pretend to forward the TLS handshake to the host the client
+    %% asked to be CONNECTed to.
+
+    %% XXX: We cannot reply with {status,http_ok} because that will add
+    %% a Content-Length header and a CONNECT reply "MUST NOT" have one.
+    send(D#data.socket, {body,<<"HTTP/1.1 200 OK\015\012\015\012">>}),
     case Bin of
         ?EMPTY -> ok;
         _ -> exit({extra_tunnel_bytes,Bin})
