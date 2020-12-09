@@ -220,52 +220,53 @@ handle_event(info, {http_pipe,_,{upgrade_socket,_,_}}, _, _) ->
     %% Ignore upgrade messages if we are not in the upgrade state.
     keep_state_and_data;
 
+handle_event(info, {http_pipe,_,#head{}=Head}, paused, D) ->
+    io:format("<____~n~s<----~n", [phttp:encode(Head)]),
+    send(D#data.socket, Head);
+
 handle_event(info, {http_pipe,Res,#head{}=Head}, _, D) ->
     %% pipeline the next request ASAP
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Res, Host, "<", Head),
     send(D#data.socket, Head);
 
-handle_event(info, {http_pipe,Req,reset}, _, D) ->
-    case D#data.queue of
-        [Req|_] ->
-            %% Unfortunately we do not know if we have already
-            %% sent any responses with send/2.
-            {stop,shutdown};
-        Q ->
-            {keep_state, D#data{queue=lists:delete(Req, Q)}}
-    end;
+%%handle_event(info, {http_pipe,Req,reset}, _, D) ->
+%%    case D#data.queue of
+%%        [Req|_] ->
+%%            %% Unfortunately we do not know if we have already
+%%            %% sent any responses with send/2.
+%%            {stop,shutdown};
+%%        Q ->
+%%            {keep_state, D#data{queue=lists:delete(Req, Q)}}
+%%    end;
 
-handle_event(info, {http_pipe,Res,Term}, _, D) ->
-    case Term of
-        {error,Rsn} ->
-            Res = hd(D#data.queue),
-            Host = case D#data.target of
-                       undefined -> "???";
-                       _ -> element(2,D#data.target)
-                   end,
-            %%io:format("*DBG* Res=~B~n", [Res]),
-            Bin = iolist_to_binary(phttp:encode(Term)),
-            Line = case binary:match(Bin, <<?CRLF>>) of
-                       {Pos,_} ->
-                           binary:part(Bin, 0, Pos);
-                       _ ->
-                           "???"
-                   end,
-            ?TRACE(Res, Host, "<<", io_lib:format("ERROR: ~p", [Rsn])),
-            ?TRACE(Res, Host, "<", Line);
-        _ ->
-            ok
-    end,
+%% DEBUG TRACING
+handle_event(info, {http_pipe,Res,{error,Rsn}=Term}, _, D) ->
+    Res = hd(D#data.queue),
+    Host = case D#data.target of
+               undefined -> "???";
+               _ -> element(2,D#data.target)
+           end,
+    Bin = iolist_to_binary(phttp:encode(Term)),
+    Line = case binary:match(Bin, <<?CRLF>>) of
+               {Pos,_} ->
+                   binary:part(Bin, 0, Pos);
+               _ ->
+                   "???"
+           end,
+    ?TRACE(Res, Host, "<<", io_lib:format("ERROR: ~p", [Rsn])),
+    ?TRACE(Res, Host, "<", Line),
+    send(D#data.socket, Term);
+
+handle_event(info, {http_pipe,_Res,Term}, _, D) ->
     send(D#data.socket, Term);
 
 %%%
 %%% TLS TUNNEL
 %%%
 
-
-handle_event(cast, {connect,{http,_,80}=HI}, tunnel, D) ->
-    send(D#data.socket, {status,http_ok}),
+handle_event(cast, {connect,{http,Host,80}=HI}, tunnel, D) ->
+    ?TRACE(0, Host, ">", <<"http_tunnel ",Host/binary>>),
     {next_state, idle, D#data{target=HI, reader=undefined}};
 
 handle_event(cast, {connect,{https,Host,443}=HI}, tunnel, D) ->
@@ -273,7 +274,7 @@ handle_event(cast, {connect,{https,Host,443}=HI}, tunnel, D) ->
     [] = D#data.queue,
     case forger:mitm(TcpSock, Host) of
         {ok,TlsSock} ->
-            ?TRACE(0, Host, ">", started_tunnel),
+            ?TRACE(0, Host, ">", <<"https_tunnel ",Host/binary>>),
             %%io:format("~2..0B~2..0B [0] (~s) inbound ~p started tunnel~n",
             %%          [M,S,Host,self()]),
             {next_state, idle, D#data{target=HI,
@@ -297,6 +298,7 @@ handle_event(cast, {connect,_}, tunnel, D) ->
 %%%
 
 send(Sock, Term) ->
+    %%io:format("~s----~n", [phttp:encode(Term)]),
     case pisock:send(Sock, phttp:encode(Term)) of
         ok -> keep_state_and_data;
         {error,closed} -> {stop,shutdown};
@@ -456,6 +458,7 @@ relay_head(H, HI, Bin, D) ->
         {0,true} ->
             %% An upgrade request stops the pipeline.
             %% Buffer any received binaries inside of reader.
+            ?TRACE(Req, Host, ">", "PAUSE PIPELINE"),
             D2 = D#data{reader=[Bin], target=HI, queue=Q, active=Req},
             {next_state,paused,D2};
         _ ->
@@ -491,8 +494,13 @@ check_host(Host, Headers) ->
 
 upgrade_requested(H) ->
     Headers = H#head.headers,
+    case fieldlist:get_value(<<"sec-websocket-key">>, Headers) of
+        not_found -> ok;
+        Key ->
+            io:format("*DBG* ~p Sec-WebSocket-Key: ~s~n", [self(), Key])
+    end,
     Conn = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
-    Upgrade = fieldlist:get_value(<<"upgrade">>, H#head.headers),
+    Upgrade = fieldlist:get_value(<<"upgrade">>, Headers),
     %%io:format("*DBG* Method=~s, Conn=~p, Upgrade=~s~n", [H#head.method, Conn, Upgrade]),
     case {H#head.method,Conn,Upgrade} of
         {_,_,not_found} ->
