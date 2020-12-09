@@ -158,6 +158,9 @@ error_bin({missing_length,_,_}) -> status_bin(http_bad_gateway);
 
 error_bin(_) -> status_bin(http_bad_gateway).
 
+trace(_, _, _, _) ->
+    ok;
+
 trace(Sess, Host, Arrow, Term) ->
     {_,{_H,M,S}} = calendar:local_time(),
     Str = case Term of
@@ -173,5 +176,5 @@ trace(Sess, Host, Arrow, Term) ->
               _ ->
                   Term
           end,
-    io:format("~2..0B~2..0B ~p [~B] (~s) ~s ~s~n",
-              [M,S,self(),Sess,Host,Arrow,Str]).
+    io:format("~2..0B~2..0B ~p [~B] ~s (~s) ~s~n",
+              [M,S,self(),Sess,Arrow,Host,Str]).
