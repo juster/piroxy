@@ -65,7 +65,7 @@ add_value(Name, Value, FL) ->
                    true ->
                        exit(badarg)
                end,
-    [{length(Name),<<BinName/binary,?COLON,BinValue/binary>>}|FL].
+    [{length(Name),<<BinName/binary,": ",BinValue/binary>>}|FL].
 
 find(Name, FL) ->
     find(Name, FL, 1).
@@ -105,11 +105,11 @@ get_value(_Field, [], Default) ->
 
 get_value(Field, [{Len,Line}|FL], Default) ->
     case binary_lcase(binary_part(Line, 0, Len)) of
-        Field when byte_size(Line) =< Len-1 ->
+        Field when byte_size(Line) =< Len+1 ->
             ?EMPTY;
         Field ->
             Value0 = binary_part(Line, Len+1, byte_size(Line) - Len - 1),
-            trimows(binary_lcase(Value0));
+            trimows(Value0);
         _ ->
             get_value(Field, FL, Default)
     end.
