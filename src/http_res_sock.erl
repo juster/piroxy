@@ -361,11 +361,13 @@ send_error(Res, Text) ->
 upgrade(Req, Headers, Rest, D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
     T = try
-            case fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers) of
-                true ->
+            B1 = fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers),
+            B2 = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
+            if
+                B1, B2 ->
                     %% upgrade_ws might also throw(raw_sock)
                     upgrade_ws(Req, Headers, D#data.socket, Rest);
-                false ->
+                true ->
                     throw(raw_sock)
             end
         catch
@@ -384,7 +386,6 @@ upgrade(Req, Headers, Rest, D) ->
     end.
 
 upgrade_ws(Req, Headers, Sock, Rest) ->
-    io:format("*DBG* ~p upgrade_ws~n", [self()]),
     Opts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
                <<"permessage-deflate">> ->
                    %% TODO: handle deflate extension parameters
