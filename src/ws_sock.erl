@@ -80,9 +80,18 @@ handle_event({call,From}, {handshake,MFA}, intro, D) ->
      {reply, From, {?MODULE,websocket,[self()]}}};
 
 handle_event(cast, {upgrade,Sock,Bin}, take_socket, D) ->
-    pisock:setopts(Sock, [{active,true}]),
-    {next_state, active, D#data{socket=Sock},
-     {next_event,info,{tcp,null,Bin}}};
+    case pisock:setopts(Sock, [{active,true}]) of
+        ok ->
+            {next_state, active, D#data{socket=Sock},
+             case Bin of
+                 <<>> -> [];
+                 _ -> {next_event,info,{tcp,null,Bin}}
+             end};
+        {error,Rsn} when Rsn == closed; Rsn == einval ->
+            {stop,shutdown};
+        {error,_}=Err ->
+            {stop,Err}
+    end;
 
 handle_event(_, _, A, _)
   when A == intro; A == take_socket ->
