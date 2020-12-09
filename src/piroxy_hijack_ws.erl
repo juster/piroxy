@@ -20,7 +20,7 @@ relay(Pid, Term) ->
     gen_server:cast(Pid, {websocket,Term}).
 
 accept(Key) ->
-    Digest = crypto:hash(sha, <<Key/binary, ?GUID>>),
+    Digest = crypto:hash(sha, [Key,?GUID]),
     base64:encode(Digest).
 
 %%%
