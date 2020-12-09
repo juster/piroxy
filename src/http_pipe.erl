@@ -1,10 +1,11 @@
 -module(http_pipe).
 -behavior(gen_server).
+-import(lists, [foreach/2]).
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,
-         send/2, listen/2, recv/2, rewind/1, cancel/1]).
+         send/2, listen/2, recv/2, recvall/2, rewind/1, cancel/1]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%% EXPORTS
@@ -47,6 +48,10 @@ cancel(Id) ->
 recv(Id, Term) ->
     piroxy_events:recv(Id, http, Term),
     gen_server:cast(?MODULE, {recv,Id,Term}).
+
+recvall(Id, L) ->
+    foreach(fun (Term) -> recv(Id, Term) end, L),
+    recv(Id, eof).
 
 %%% BEHAVIOR CALLBACKS
 

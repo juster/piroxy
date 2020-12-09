@@ -24,28 +24,25 @@ handle_call(_, _, S) ->
     {reply,ok,S}.
 
 handle_cast({connect,Id}, S) ->
-    ok = http_pipe:listen(Id, self()),
+    http_pipe:listen(Id, self()),
     {noreply,S}.
 
 handle_info({http_pipe,Id,#head{method=get}=H}, S) ->
     case phttp:nsplit(3, H#head.line, <<" ">>) of
         {error,badarg} ->
-            http_pipe:recv(Id, {status,http_bad_request}),
-            http_pipe:recv(Id, eof);
+            http_pipe:recvall(Id, [{status,http_bad_request}]);
         {ok,[_Get,RelUri,<<"HTTP/1.1">>]} ->
-            io:format("*DBG* RelUri=~s~n", [RelUri]),
+            io:format("*DBG* RelUri=~p~n", [RelUri]),
             get_uri(Id, RelUri, H, S);
         {ok,[_,_,Ver]} ->
             ?LOG_WARNING("piroxy_embed: bad http version ~s", [Ver]),
-            http_pipe:recv(Id, {status,http_bad_request}),
-            http_pipe:recv(Id, eof)
+            http_pipe:recvall(Id, [{status,http_bad_request}])
     end,
     {noreply,S};
 
 handle_info({http_pipe,Id,#head{method=M}}, S)
   when M /= get ->
-    http_pipe:recv(Id, {status,http_method_not_supported}),
-    http_pipe:recv(Id, eof),
+    http_pipe:recvall(Id, [{status,http_method_not_supported}]),
     {noreply,S};
 
 handle_info({http_pipe,_Id,A}, S)
@@ -56,22 +53,27 @@ handle_info({http_pipe,_,Any}, _S) ->
     {stop,{unexpected_message,Any}}.
 
 get_uri(Id, <<"/">>, _H, _S) ->
-    Bin = <<"<!DOCTYPE html><html><head><title>Index</title></head>
+    Bin = <<"<!DOCTYPE html><html><head><title>Index</title>
+<meta charset='utf-8'>
+</head>
 <body>
 <h1>Index</h1>
 <script type='text/javascript'>
 (function(){
 var ws = new WebSocket('wss://piroxy/ws')
 ws.binaryType = 'blob'
-ws.addEventListener('open', function(evt){
+ws.onopen = function(evt){
     console.log('*DBG* WS opened!')
-})
-ws.addEventListener('close', function(evt){
+}
+ws.onclose = function(evt){
     console.log('*DBG* WS closed!')
-})
-ws.addEventListener('error', function(evt){
-    console.log('*DBG* WS error:', evt.name, evt.message)
-})
+}
+ws.onerror = function(evt){
+    console.log('*DBG* WS error:', evt.toString())
+}
+ws.onmessage = function(evt){
+    console.log('*DBG* WS message:', evt)
+}
 })()
 </script>
             </body></html>">>,
@@ -80,46 +82,45 @@ ws.addEventListener('error', function(evt){
 get_uri(Id, <<"/ws">>, H, _S) ->
     case fieldlist:get_value(<<"sec-websocket-key">>, H#head.headers) of
         not_found ->
-            io:format("*DBG* no such key!~n"),
-            http_pipe:recv(Id, {status,http_bad_request}),
-            http_pipe:recv(Id, eof);
+            io:format("*DBG* missing sec-websocket-key!~n"),
+            http_pipe:recvall(Id, [{status,http_bad_request}]);
         Key ->
-            L = [{"sec-websocket-version", "13"}, %% TODO: match w/ client's
-                 {"sec-websocket-accept", piroxy_hijack_ws:accept(Key)},
-                 {"connection", "Upgrade"},
-                 {"upgrade", "websocket"}],
+            io:format("*DBG* Sec-WebSocket-Key: ~s~n", [Key]),
+            L = [
+                 {"Sec-WebSocket-Version", "13"}, % TODO: match w/ client's
+                 {"Sec-WebSocket-Accept", piroxy_hijack_ws:accept(Key)},
+                 {"Upgrade", "websocket"},
+                 {"Connection", "Upgrade"}
+                ],
             Headers = fieldlist:from_proplist(L),
             {ok,Pid} = piroxy_hijack_ws:start(),
-            MFAhs = {piroxy_hijack_ws, handshake, [Pid]},
-            MFAws = {ws_sock,start,[client,{handshake,MFAhs},{id,Id}]},
-            http_pipe:recv(Id, #head{line = <<"HTTP/1.1 101 Switching Protocols">>,
-                                     headers = Headers,
-                                     bodylen = 0}),
-            http_pipe:recv(Id, {upgrade_socket,MFAws}),
-            http_pipe:recv(Id, eof)
+            Handshake = {piroxy_hijack_ws, handshake, [Pid]},
+            Start = {ws_sock,start,[client,{handshake,Handshake},{id,Id}]},
+            Head = #head{line = <<"HTTP/1.1 101 Switching Protocols">>,
+                         headers = Headers,
+                         bodylen = 0},
+            http_pipe:recvall(Id, [Head,{upgrade_socket,Start}])
     end;
 
 get_uri(Id, _, _, _S) ->
-    http_pipe:recv(Id, {status,http_not_found}).
+    http_pipe:recvall(Id, [{status,http_not_found}]).
 
 reply_static(Id, ContentType, Bin) ->
     Len = byte_size(Bin),
     L = [{"content-type", ContentType},
          {"content-length", integer_to_list(Len)}],
     Headers = fieldlist:from_proplist(L),
-    http_pipe:recv(Id, #head{line = <<"HTTP/1.1 200 OK">>,
-                             headers = Headers,
-                             bodylen = Len}),
-    http_pipe:recv(Id, {body,Bin}),
-    http_pipe:recv(Id, eof).
+    Head = #head{line = <<"HTTP/1.1 200 OK">>,
+                 headers = Headers,
+                 bodylen = Len},
+    http_pipe:recvall(Id, [Head, {body,Bin}]).
 
 reply_error(Id, HttpErr) ->
     Len = length(HttpErr),
     L = [{"content-type", "text/plain"},
          {"content-length", integer_to_list(Len)}],
     Headers = fieldlist:from_proplist(L),
-    http_pipe:recv(Id, #head{line = <<"HTTP/1.1 200 OK">>,
-                             headers = Headers,
-                             bodylen = Len}),
-    http_pipe:recv(Id, {body,HttpErr}),
-    http_pipe:recv(Id, eof).
+    Head = #head{line = <<"HTTP/1.1 200 OK">>,
+                 headers = Headers,
+                 bodylen = Len},
+    http_pipe:recvall(Id, [Head, {body,HttpErr}]).
