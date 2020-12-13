@@ -30,32 +30,38 @@ accept(Key) ->
 init([]) ->
     {ok, #state{}}.
 
-handle_cast({websocket,{binary,_}}, S) ->
+handle_cast({websocket,Bin}, S) when is_binary(Bin) ->
     %% ignore raw binaries
     {noreply, S};
 
-handle_cast({websocket,{frame,{ping,Bin}}}, S) ->
+handle_cast({websocket,{ping,Bin}}, S) ->
     %% respond to pings but do not generate them... yet
     reply({pong,Bin}, S),
     {noreply, S};
 
-handle_cast({websocket,{frame,{binary,Bin}}}, S) ->
+handle_cast({websocket,{binary,Bin}}, S) ->
     %% all of our frames are binary
     Term = binary_to_term(Bin),
-    Res = rpc(Term, S),
-    reply({binary,term_to_binary(Res)}, S),
+    io:format("*DBG* received: ~p~n", [Term]),
+    %%Res = rpc(Term, S),
+    %%reply({binary,term_to_binary(Res)}, S),
     {noreply, S};
 
-handle_cast({websocket,{frame,{close,L}}}, S) ->
+handle_cast({websocket,{close,L}}, S) ->
     %% we need to send a close in response
     reply({close,L}, S),
     {noreply, S};
 
-handle_cast({websocket,{frame,_}}, S) ->
+handle_cast({websocket,_}, S) ->
     %% ignore other frame types
     {noreply, S}.
 
 handle_call({handshake,MFA}, _From, S) ->
+    {M,F,A} = MFA,
+    Term = {hello, piroxy, ["how","are","you?"]},
+    io:format("*DBG* sending: ~p~n", [term_to_binary(Term)]),
+    Bin = frame({binary, term_to_binary(Term)}),
+    apply(M, F, A++[Bin]),
     {reply, {?MODULE,relay,[self()]}, S#state{reply=MFA}}.
 
 rpc({filter,Filter}, _S) ->
@@ -75,7 +81,7 @@ rpc(_, _S) ->
 
 reply(Term, S) ->
     {M,F,A} = S#state.reply,
-    apply(M, F, A++[frame(Term)]).
+    apply(M, F, A++[{binary,frame(Term)}]).
 
 %% close is the only frame which does not have a binary
 frame({close,L}) when is_list(L) ->

@@ -97,12 +97,12 @@ handle_event(_, _, A, _)
   when A == intro; A == take_socket ->
     {keep_state_and_data, postpone};
 
-handle_event(cast, {websocket,{binary,Bin}}, active, D) ->
+handle_event(cast, {websocket,Bin}, active, D) when is_binary(Bin)->
     %% raw binary is sent in order to be relayed across the opposite socket
     pisock:send(D#data.socket, Bin),
     keep_state_and_data;
 
-handle_event(cast, {websocket,{frame,_}}, active, _) ->
+handle_event(cast, {websocket,Frame}, active, _) when is_tuple(Frame) ->
     %% ignore frames received from the other socket, these are for other types
     %% of receivers
     keep_state_and_data;
@@ -110,7 +110,7 @@ handle_event(cast, {websocket,{frame,_}}, active, _) ->
 handle_event(info, {A,_,Bin}, active, D0)
   when A =:= tcp; A =:= ssl ->
     %% relay binaries to the opposite socket owner
-    relay({binary,Bin}, D0),
+    relay(Bin, D0),
     D = parse(Bin, D0),
     {keep_state,D};
 
@@ -126,22 +126,22 @@ handle_event(info, {A,_,Reason}, active, _D)
 %%% INTERNAL FUNCTIONS
 %%%
 
-relay({frame,Frame} = T, D) ->
+relay(T, D) when is_tuple(T) ->
     Id = D#data.id,
     case D#data.role of
         client ->
-            piroxy_events:send(Id, ws, Frame);
+            piroxy_events:send(Id, ws, T);
         server ->
-            piroxy_events:recv(Id, ws, Frame)
+            piroxy_events:recv(Id, ws, T)
     end,
     relay_(T, D);
 
-relay(T, D) ->
-    relay_(T, D).
+relay(Any, D) ->
+    relay_(Any, D).
 
-relay_(T, D) ->
+relay_(Any, D) ->
     {M,F,A} = D#data.mfa,
-    apply(M, F, A++[T]).
+    apply(M, F, A++[Any]).
 
 parse(Bin2, D) when size(Bin2) + size(D#data.buffer) < 2 ->
     Bin1 = D#data.buffer,
@@ -250,9 +250,9 @@ relay_frame(Rsv1, Op, Payload0, D) ->
                     <<Code:16,Reason/utf8>> ->
                         [Code,Reason]
                 end,
-            relay({frame, {Op,L}}, D);
+            relay({Op,L}, D);
         _ ->
-            relay({frame, {Op,Payload}}, D)
+            relay({Op,Payload}, D)
     end,
     D.
 
