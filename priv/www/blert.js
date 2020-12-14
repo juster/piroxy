@@ -1,16 +1,24 @@
+"use strict";
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-"use strict";
 (function(){
 
-var blert = {
+var exports = {
     alloc: alloc, encode: encode, decode: decode,
-    isTuple: isTuple, isList: isList, isProper: isProper, isNil: isNil
+    isAtom: isAtom, isTuple: isTuple, isList: isList,
+    isProper: isProper, isNil: isNil
 }
-if(typeof module !== "undefined") module.exports = blert
-if(typeof window !== "undefined") window.blert = blert
+if(typeof module !== "undefined"){
+    module.exports = exports
+}else if(typeof globalThis !== "undefined"){
+    globalThis.blert = exports
+}else if(typeof self !== "undefined"){
+    self.blert = exports
+}else if(typeof window !== "undefined"){
+    window.blert = exports
+}
 
 var ETF_MAGIC = 131
 var INFLATE = 80
@@ -34,7 +42,11 @@ var ATOM_EXT = 100 //deprecated
 var SMALL_ATOM_EXT = 115 //deprecated
 
 var blert_buffer = null
-var nil = new List([]) // use empty Array so List.toString prints Nil as "[]"
+var nil = list([]) // use empty Array so List.toString prints Nil as "[]"
+
+var null_buf = new Uint8Array(110,117,108,108)
+var true_buf = new Uint8Array(116,114,117,101)
+var false_buf = new Uint8Array(102,97,108,115,101)
 
 alloc(4096)
 
@@ -166,20 +178,19 @@ function encode(x){
         return j
     }
 
-    function encsy(s, i, V){
-        var u = new TextEncoder().encode(s)
-        if(u.length <= 255){
+    function enca(a, i, V){
+        if(a.length <= 255){
             V.setUint8(i+0, SMALL_ATOM_UTF8_EXT)
-            V.setUint8(i+1, u.length)
-            new Uint8Array(V.buffer, i+2, u.length).set(u)
-            return u.length+2
-        }else if(u.length <= 65535){
+            V.setUint8(i+1, a.length)
+            new Uint8Array(V.buffer, i+2, a.length).set(a)
+            return a.length+2
+        }else if(a.length <= 65535){
             V.setUint8(i+0, ATOM_UTF8_EXT)
-            V.setUint16(i+1, u.length)
-            new Uint8Array(V.buffer, i+3, u.length).set(u)
-            return u.length+3
+            V.setUint16(i+1, a.length)
+            new Uint8Array(V.buffer, i+3, a.length).set(a)
+            return a.length+3
         }else{
-            throw new Error("symbol too long")
+            throw new Error("atom too long")
         }
     }
 
@@ -193,7 +204,7 @@ function encode(x){
     function enc(X, i, V){
         switch(typeof X){
             case "boolean":
-                return encsy((X ? "true" : "false"), i, V)
+                return enca(X ? true_buf : false_buf, i, V)
             case "number":
                 if(Number.isInteger(X)){
                     return enci(X, i, V)
@@ -210,36 +221,37 @@ function encode(x){
                 console.warn("blert: String is encoded as List and will be "+
                     "decoded as List")
                 ****/
-                return encl(new List(X), i, V)
+                //return encl(list(X), i, V)
             case "object":
                 if(X === null){
-                    return encsy("null", i, V)
+                    return enca(null_buf, i, V)
                 }else if(X instanceof Uint8Array){
                     return encb(X, i, V)
                 }else if(X instanceof Map){
                     return encm(X, i, V)
+                }else if(isAtom(X)){
+                    switch(X.atom){
+                        case undefined:
+                            // should never happen
+                            throw new Error("internal error")
+                        case "true":
+                        case "false":
+                        case "null":
+                            // If we encode these, they will be decoded as javascript
+                            // literals.
+                            console.warn("blert: "+atomName(X)+" is "+
+                                "encoded as atom and will be decoded as "+
+                                "JavaScript type")
+                            throw new Error("atom is for internal use only: "+X)
+                        default:
+                            return enca(new TextEncoder().encode(X.atom), i, V)
+                    }
                 }else if(isList(X)){
                     return encl(X, i, V)
                 }else if(isTuple(X)){
                     return enct(X, i, V)
                 }else{
-                    throw new Error("unrecognized object: "+X)
-                }
-            case "symbol":
-                switch(Symbol.keyFor(X)){
-                    case undefined:
-                        throw new Error("symbol not global")
-                    case "true":
-                    case "false":
-                    case "null":
-                        // If we encode these, they will be decoded as javascript
-                        // literals.
-                        console.warn("blert: "+Symbol.keyFor(X)+" is "+
-                            "encoded as symbol and will be decoded as "+
-                            "JavaScript type")
-                        throw new Error("symbol is for internal use only: "+X)
-                    default:
-                        return encsy(Symbol.keyFor(X), i, V)
+                    throw new Error("unrecognized object: "+JSON.stringify(X))
                 }
             default:
                 throw new Error("unknown type: "+typeof(X))
@@ -306,12 +318,12 @@ function decode(A){
                 // codepoints.
                 n = V.getUint16(i+1)
                 x = new Uint8Array(V.buffer, i+3, n)
-                return [n+3, new List(x)]
+                return [n+3, list(x)]
             case LIST_EXT:
                 n = V.getUint32(i+1)
                 x = decn(i, 5, n, V, mapid)
                 R = dec(i+x[0], V)
-                return [x[0]+R[0], new List(x[1], R[1])]
+                return [x[0]+R[0], list(x[1], R[1])]
             case BINARY_EXT:
                 n = V.getUint32(i+1)
                 x = new Uint8Array(new Uint8Array(V.buffer, i+5, n))
@@ -361,13 +373,13 @@ function decode(A){
             return M
         }
 
-        function decs(i, V, n, encoding){
+        function decstr(i, V, n, encoding){
             var A = new Uint8Array(V.buffer, i, n)
             return new TextDecoder(encoding).decode(A)
         }
 
         function deca(i, V, n, encoding){
-            x = decs(i, V, n, encoding)
+            x = decstr(i, V, n, encoding)
             switch(x){
                 case "null":
                     return null
@@ -376,8 +388,7 @@ function decode(A){
                 case "false":
                     return false
                 default:
-                    //XXX: pollutes the global symbol table (like Erlang)
-                    return Symbol.for(x)
+                    return {atom:x}
             }
         }
 
@@ -413,6 +424,10 @@ function decode(A){
     }
 }
 
+function isAtom(A){
+    return (typeof A === "object") && ("atom" in A)
+}
+
 function isTuple(T){
     return (typeof T === "object" && "tuple" in T)
 }
@@ -430,19 +445,19 @@ function isNil(L){
     return L === nil
 }
 
-// x may be an Array, a Uint8Array, a string, or nil_symbol!
-function List(x, tail){
+// x may be an Array or a Uint8Array
+function list(x, tail){
     if(x === undefined){
         throw new Error("bad argument")
-    }else if(typeof x === "string"){
-        this.list = new TextEncoder().encode(x)
     }else{
         // array may be an Array or a Uint8Array
-        this.list = x
+        var list = x
     }
-    this.tail = (Object.is(tail, nil) ? undefined : tail)
+    if(Object.is(tail, nil)) tail = undefined
+    return {list:list, tail:tail}
 }
 
+/**SNIP**
 List.prototype.toString = function(){
     if(this.list instanceof Uint8Array){
         return new TextDecoder().decode(this.list)
@@ -454,6 +469,6 @@ List.prototype.toString = function(){
         return "["+this.list +"|"+ this.tail+"]"
     }
 }
+****/
 
 })() // end of module wrapper function
-

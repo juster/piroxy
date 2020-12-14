@@ -2,37 +2,22 @@
 <html>
 <head>
 <title>Index</title>
-<meta charset='utf-8'>
+<meta charset="utf-8">
 </head>
 <body>
 <h1>Index</h1>
-<script type='text/javascript' src='blert.js'></script>
-<script type='text/javascript'>
+<script type="text/javascript" src="blert.js"></script>
+<script type="text/javascript">
 (function(){
-var MQ = []
-var State = {}
-var ws = new WebSocket('wss://piroxy/ws')
-//ws.binaryType = 'bytearray'
-ws.onopen = function(evt){
-    console.log('*DBG* WS opened!')
+var WW = new Worker('worker.js')
+WW.onerror = report_wwerr
+WW.onmessage = reply
+function report_wwerr(err){
+    console.error('WW error: '+err.message)
 }
-ws.onclose = function(evt){
-    console.log('*DBG* WS closed!')
-}
-ws.onerror = function(evt){
-    console.log('*DBG* WS error:', evt.toString())
-}
-
-ws.onmessage = function(msg){
-    console.log('*DBG* WS message:', msg)
-    msg.data.arrayBuffer().then(buf => {
-        console.log('*DBG* WS decoded:', blert.decode(buf))
-        ws.send(blert.encode({tuple:["piss", "off", {list:["hoser"]}]}))
-    })
-}
-
-function send(msg, resp){
-    State2 = ws.send(msg);
+function reply(msg){
+    console.log('WW recv:', JSON.stringify(msg.data))
+    WW.postMessage({tuple:[{atom:'i'},{atom:'am'},{atom:'okay'}]})
 }
 })()
 </script>
