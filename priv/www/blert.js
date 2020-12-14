@@ -1,8 +1,8 @@
-"use strict";
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+"use strict";
 (function(){
 
 var exports = {
@@ -42,7 +42,7 @@ var ATOM_EXT = 100 //deprecated
 var SMALL_ATOM_EXT = 115 //deprecated
 
 var blert_buffer = null
-var nil = list([]) // use empty Array so List.toString prints Nil as "[]"
+var nil = list([])
 
 var null_buf = new Uint8Array(110,117,108,108)
 var true_buf = new Uint8Array(116,114,117,101)
@@ -118,11 +118,9 @@ function encode(x){
     }
 
     function encl(L, i, V){
-        if(isNil(L)){
+        if(isNil(L) || L.list.length === 0){
             V.setUint8(i, NIL_EXT)
             return 1
-        }else if(L.list.length === 0){
-            throw new Error("bad argument") // sanity check
         }else if(
             L.list instanceof Uint8Array && L.list.length <= 65535 && isProper(L)
         ){
@@ -216,12 +214,8 @@ function encode(x){
                 // never be called.
                 return encbi(X, i, V)
             case "string":
-                // TODO: make this an error?
-                /*SNIP*
-                console.warn("blert: String is encoded as List and will be "+
-                    "decoded as List")
-                ****/
-                //return encl(list(X), i, V)
+                console.warn("blert: automatically encoding string as list")
+                break
             case "object":
                 if(X === null){
                     return enca(null_buf, i, V)
@@ -240,9 +234,9 @@ function encode(x){
                             // If we encode these, they will be decoded as javascript
                             // literals.
                             console.warn("blert: "+atomName(X)+" is "+
-                                "encoded as atom and will be decoded as "+
-                                "JavaScript type")
-                            throw new Error("atom is for internal use only: "+X)
+                                "encoded as atom but would be decoded "+
+                                "as JavaScript primitive")
+                            throw new Error("bad atom: "+X)
                         default:
                             return enca(new TextEncoder().encode(X.atom), i, V)
                     }
@@ -251,10 +245,10 @@ function encode(x){
                 }else if(isTuple(X)){
                     return enct(X, i, V)
                 }else{
-                    throw new Error("unrecognized object: "+JSON.stringify(X))
+                    throw new Error("bad object: "+JSON.stringify(X))
                 }
             default:
-                throw new Error("unknown type: "+typeof(X))
+                throw new Error("bad type: "+typeof(X))
         }
     }
 }
@@ -456,19 +450,5 @@ function list(x, tail){
     if(Object.is(tail, nil)) tail = undefined
     return {list:list, tail:tail}
 }
-
-/**SNIP**
-List.prototype.toString = function(){
-    if(this.list instanceof Uint8Array){
-        return new TextDecoder().decode(this.list)
-    }else if(typeof this.tail === "undefined"){
-        //a proper list looks just like an array
-        return "["+this.list.toString()+"]"
-    }else{
-        //an improper list has a "|" pipe
-        return "["+this.list +"|"+ this.tail+"]"
-    }
-}
-****/
 
 })() // end of module wrapper function
