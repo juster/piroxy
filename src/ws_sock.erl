@@ -252,7 +252,7 @@ relay_frame(Rsv1, Op, Payload0, D) ->
                         [];
                     <<Code:16>> ->
                         [Code];
-                    <<Code:16,Reason/utf8>> ->
+                    <<Code:16,Reason/binary>> ->
                         [Code,Reason]
                 end,
             relay({Op,L}, D);
