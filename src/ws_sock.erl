@@ -226,6 +226,11 @@ reframe(0, Rsv1, Op, Payload, #data{queue=Q}=D) ->
 operation(0) -> continuation;
 operation(1) -> text;
 operation(2) -> binary;
+operation(3) -> nonctrl3; % reserved non-control frames
+operation(4) -> nonctrl4;
+operation(5) -> nonctrl5;
+operation(6) -> nonctrl6;
+operation(7) -> nonctrl7;
 operation(8) -> close;
 operation(9) -> ping;
 operation(10) -> pong.
