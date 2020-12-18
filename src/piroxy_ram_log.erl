@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 -import(lists, [foreach/2, map/2, zip/2, unzip/1, reverse/1]).
 -record(state, {matchfun=nomatch, conntab, logtab, bodytab,
-                accum=#{}}).
+                accum=dict:new()}).
 
 -export([start_link/0, watchman/0]).
 -export([filter/1, connections/0, log/1, body/1]).
@@ -98,30 +98,27 @@ log_event({Id,connect,Time,Proto,Target}, S) ->
 
 log_event({Id,Dir,Time,http,Term}=T, S)
   when Dir =:= send; Dir =:= recv ->
+    ets:insert(S#state.logtab, T),
     case Term of
         #head{bodylen=0} ->
             %% body will not be accumulated
-            io:format("*DBG* [~B:~s] empty body no accum~n", [Id,Dir]),
-            ets:insert(S#state.logtab, T),
+            %%io:format("*DBG* [~B:~s] empty body no accum~n", [Id,Dir]),
             {ok, S};
-        #head{}=Head ->
-            io:format("*DBG* [~B:~s] non-empty body~n", [Id,Dir]),
-            ets:insert(S#state.logtab, T),
-            M0 = S#state.accum,
-            M = M0#{{Id,Dir} => {Head,[]}},
-            {ok, S#state{accum=M}};
+        #head{} ->
+            %%io:format("*DBG* [~B:~s] non-empty body~n", [Id,Dir]),
+            D = dict:store({Id,Dir}, [], S#state.accum),
+            {ok, S#state{accum=D}};
         {body,Body} ->
             {ok, accum_body(Id, Dir, Time, Body, S)};
         {fail,Reason}
           when Reason == cancelled; Reason == reset ->
             {ok, store_body(Id, Dir, S)};
+        {error,_} ->
+            {ok, store_body(Id, Dir, S)};
         eof ->
             {ok, store_body(Id, Dir, S)};
-        {error,Reason} ->
-            ets:insert(S#state.logtab, T),
-            {ok, store_body(Id, Dir, S)};
-        _ ->
-            ets:insert(S#state.logtab, T)
+        {status,_} ->
+            {ok, S}
     end;
 
 log_event(T, S) ->
@@ -129,26 +126,30 @@ log_event(T, S) ->
     {ok,S}.
 
 accum_body(Id, Dir, Time, Bin, S) ->
-    K = {Id,Dir},
-    M0 = #{K:={Head,L}} = S#state.accum, % XXX: error if not found
-    M = M0#{K=>{Head,[{Time,Bin}|L]}},
-    S#state{accum=M}.
+    io:format("*DBG* accum_body!~n"),
+    D0 = S#state.accum, % XXX: error if not found
+    D = dict:append({Id,Dir}, {Time,Bin}, D0),
+    S#state{accum=D}.
 
+%% TODO: strip the chunked lines out of the body so that the same content
+%% does not get a different digest if it is chunked at different bytes
 store_body(Id, Dir, S) ->
-    case S#state.accum of
-        #{{Id,Dir} := {_Head,L1}} ->
-            {Stamps,Chunks} = unzip(reverse(L1)),
+    case dict:find({Id,Dir}, S#state.accum) of
+        {ok,L1} ->
+            {Stamps,Chunks} = unzip(L1),
             Digest = crypto:hash(sha512, Chunks),
             LogTab = S#state.logtab,
             BodyTab = S#state.bodytab,
             L2 = zip(Stamps, map(fun erlang:iolist_size/1, Chunks)),
             foreach(fun({Tstamp,Size}) ->
                             T = {Id,Tstamp,Dir,http,{body,Digest,Size}},
+                            %%io:format("*DBG* [~p] store_body: ~p~n", [Id,T]),
                             ets:insert(LogTab, T)
                     end, L2),
             ets:insert(BodyTab, {Digest,Chunks}),
-            S#state{accum=maps:remove({Id,Dir}, S#state.accum)};
-        _ ->
+            S#state{accum=dict:erase({Id,Dir}, S#state.accum)};
+        error ->
             %% there were no body messages
+            io:format("*DBG* no body found for request ~p~n", [Id]),
             S
     end.

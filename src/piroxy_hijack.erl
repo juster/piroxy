@@ -1,5 +1,6 @@
 -module(piroxy_hijack).
 -behavior(gen_server).
+-import(lists, [filtermap/2, foreach/2, reverse/1]).
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
@@ -79,6 +80,15 @@ get_uri(<<"/ws">>, Id, H, _S) ->
             [Head,{upgrade_socket,Start}]
     end;
 
+get_uri(<<"/cp/",ReqId/binary>>, _Id, _H, _S) ->
+    case re:run(ReqId, "^([0-9]+)([.][0-9]+)*$", [{capture,none}]) of
+        match ->
+            %% TODO: implement dotted Id numbers
+            replay(binary_to_integer(ReqId));
+        nomatch ->
+            [{status,http_not_found}]
+    end;
+
 get_uri(<<"/",Path/binary>>, _Id, H, _S) ->
     static_file(Path, H);
 
@@ -128,3 +138,41 @@ resp_static(_Id, ContentType, Bin) ->
                  headers = Headers,
                  bodylen = Len},
     [Head, {body,Bin}].
+
+replay(OldId) ->
+    case piroxy_ram_log:log(OldId) of
+        [] ->
+            [{status, http_not_found}];
+        L1 ->
+            %% we only care about the recv messages
+            L2 = filtermap(fun ({_,recv,_,_,Term}) -> {true,Term};
+                               (_) -> false
+                           end, L1),
+            io:format("*DBG* replay events:~n~p~n", [L2]),
+            body_expand(L2)
+    end.
+
+body_expand(L) ->
+    body_expand(L, []).
+
+body_expand([], L2) ->
+    reverse(L2);
+body_expand([{body,Digest,_}|_]=L1, L2) ->
+    %% lookup the body on the first {body,_} term we find
+    case piroxy_ram_log:body(Digest) of
+        not_found ->
+            error({missing_body,Digest});
+        IoList ->
+            body_expand(L1, L2, 0, iolist_to_binary(IoList))
+    end;
+
+body_expand([X|L1], L2) ->
+    body_expand(L1, [X|L2]).
+
+body_expand([{body,_Digest,Size}|L1], L2, Pos, Bin) ->
+    Chunk = binary_part(Bin, Pos, Size),
+    body_expand(L1, [{body,Chunk}|L2], Pos+Size, Bin);
+
+body_expand([X|L1], L2, Pos, Bin) ->
+    body_expand(L1, [X|L2], Pos, Bin).
+

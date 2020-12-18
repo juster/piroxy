@@ -221,7 +221,7 @@ handle_event(info, {http_pipe,_,{upgrade_socket,_,_}}, _, _) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_,#head{}=Head}, paused, D) ->
-    io:format("<____~n~s<----~n", [phttp:encode(Head)]),
+    io:format("<====~n~s<~~~~~~~~~n", [phttp:encode(Head)]),
     send(D#data.socket, Head);
 
 handle_event(info, {http_pipe,Res,#head{}=Head}, _, D) ->
