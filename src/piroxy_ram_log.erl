@@ -3,11 +3,11 @@
 -include("../include/phttp.hrl").
 -include_lib("kernel/include/logger.hrl").
 -import(lists, [foreach/2, map/2, zip/2, unzip/1, reverse/1]).
--record(state, {matchfun=nomatch, conntab, logtab, bodytab,
+-record(state, {matchfun=matchall, conntab, logtab, bodytab,
                 accum=dict:new()}).
 
 -export([start_link/0, watchman/0]).
--export([filter/1, connections/0, log/1, log/2, body/1]).
+-export([filter/1, connections/0, target/1, head/2, log/2, body/1]).
 -export([init/1, handle_event/2, handle_call/2]).
 
 %%%
@@ -35,8 +35,11 @@ filter(Term) ->
 connections() ->
     gen_event:call(piroxy_events, ?MODULE, connections).
 
-log(ConnId) ->
-    gen_event:call(piroxy_events, ?MODULE, {log,ConnId,'_'}).
+target(ConnId) ->
+    gen_event:call(piroxy_events, ?MODULE, {target,ConnId}).
+
+head(ConnId, Dir) ->
+    gen_event:call(piroxy_events, ?MODULE, {head,ConnId,Dir}).
 
 log(ConnId, Dir) ->
     gen_event:call(piroxy_events, ?MODULE, {log,ConnId,Dir}).
@@ -79,8 +82,28 @@ handle_call({filter,A}, S) when is_atom(A) ->
 handle_call(connections, S) ->
     {ok, ets:tab2list(S#state.conntab), S};
 
-handle_call({log,ConnId,Dir}, S) ->
-    {ok, ets:match(S#state.logtab, {ConnId,Dir,'_','_','_'}), S};
+handle_call({target,ConnId}, S) ->
+    case ets:lookup(S#state.conntab, ConnId) of
+        [] ->
+            {ok,not_found,S};
+        [{_Id,_Time,_Proto,Target}] ->
+            {ok,Target,S}
+    end;
+
+handle_call({head,ConnId,Dir}, S) ->
+    case ets:match_object(S#state.logtab, {ConnId,Dir,'_','_','_'}, 1) of
+        {[Hd|_], _} ->
+            {ok,Hd,S};
+        '$end_of_table' ->
+            {ok,not_found,S}
+    end;
+
+handle_call({log,ConnId,Dir}, S) when Dir == send; Dir == recv ->
+    L = ets:match_object(S#state.logtab, {ConnId,Dir,'_','_','_'}),
+    {ok, L, S};
+
+handle_call({log,_,_}, S) ->
+    {stop, badarg, S};
 
 handle_call({body,Digest}, S) ->
     Body = case ets:lookup(S#state.bodytab, Digest) of
@@ -156,3 +179,4 @@ store_body(Id, Dir, S) ->
             io:format("*DBG* no body found for request ~p~n", [Id]),
             S
     end.
+

@@ -1,5 +1,5 @@
 -module(user_default).
--export([target/1, target_state/1, restart/0]).
+-export([target/1, target_state/1, start/0, restart/0]).
 
 target(L) when is_list(L) ->
     target(list_to_binary(L));
@@ -19,6 +19,9 @@ target_state(Host) ->
         Pid ->
             sys:get_state(Pid)
     end.
+
+start() ->
+    application:ensure_all_started(piroxy).
 
 restart() ->
     application:stop(piroxy),

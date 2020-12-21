@@ -425,12 +425,12 @@ handle_head(H, {absolute,HI2}, Bin, D) ->
     H2 = relativize(H),
     relay_head(H2, HI2, Bin, D).
 
-connect_request(Req, HI) ->
-    case piroxy_hijack:target(HI) of
+connect_request(Req, HI, H) ->
+    case piroxy_hijack:hijacked(HI, H) of
         true ->
-            %% TODO: avoid using http_pipe to sent to piroxy_hijack because
+            %% TODO: avoid using http_pipe to send to piroxy_hijack because
             %% it does not need to be pipelined on the server-side end
-            piroxy_hijack:connect(Req);
+            piroxy_hijack:connect(Req, HI);
         false ->
             request_manager:connect(Req, HI)
     end.
@@ -439,7 +439,7 @@ relay_head(H, HI, Bin, D) ->
     {_,Host,_} = HI,
     Req = request_manager:nextid(),
     ok = http_pipe:new(Req),
-    connect_request(Req, HI),
+    connect_request(Req, HI, H),
     http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
     Q = D#data.queue ++ [Req],
