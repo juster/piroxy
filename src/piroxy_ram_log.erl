@@ -7,7 +7,7 @@
                 accum=dict:new()}).
 
 -export([start_link/0, watchman/0]).
--export([filter/1, connections/0, log/1, body/1]).
+-export([filter/1, connections/0, log/1, log/2, body/1]).
 -export([init/1, handle_event/2, handle_call/2]).
 
 %%%
@@ -36,7 +36,10 @@ connections() ->
     gen_event:call(piroxy_events, ?MODULE, connections).
 
 log(ConnId) ->
-    gen_event:call(piroxy_events, ?MODULE, {log,ConnId}).
+    gen_event:call(piroxy_events, ?MODULE, {log,ConnId,'_'}).
+
+log(ConnId, Dir) ->
+    gen_event:call(piroxy_events, ?MODULE, {log,ConnId,Dir}).
 
 body(Digest) ->
     gen_event:call(piroxy_events, ?MODULE, {body,Digest}).
@@ -76,8 +79,8 @@ handle_call({filter,A}, S) when is_atom(A) ->
 handle_call(connections, S) ->
     {ok, ets:tab2list(S#state.conntab), S};
 
-handle_call({log,ConnId}, S) ->
-    {ok, ets:lookup(S#state.logtab, ConnId), S};
+handle_call({log,ConnId,Dir}, S) ->
+    {ok, ets:match(S#state.logtab, {ConnId,Dir,'_','_','_'}), S};
 
 handle_call({body,Digest}, S) ->
     Body = case ets:lookup(S#state.bodytab, Digest) of

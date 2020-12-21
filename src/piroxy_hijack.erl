@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
--record(state, {reqs=dict:new()}).
+-record(state, {replays=dict:new()}).
 -export([target/1, connect/1, start_link/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -144,11 +144,8 @@ replay(OldId) ->
         [] ->
             [{status, http_not_found}];
         L1 ->
-            %% we only care about the recv messages
-            L2 = filtermap(fun ({_,recv,_,_,Term}) -> {true,Term};
-                               (_) -> false
-                           end, L1),
-            io:format("*DBG* replay events:~n~p~n", [L2]),
+            L2 = [element(5,T) || T <- L1],
+            io:format("*DBG* replay events:~n~p~n", L2),
             body_expand(L2)
     end.
 
