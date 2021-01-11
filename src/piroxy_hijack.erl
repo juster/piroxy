@@ -4,9 +4,9 @@
 -include_lib("kernel/include/logger.hrl").
 -include("../include/phttp.hrl").
 
--define(HIRAND_SZ, 16).
--define(CLEANUP_MS, 60000).
--define(HJTARGET, {https,<<"piroxy">>,_}).
+-define(HJ_RAND_SZ, 16).
+-define(HJ_TARGET, {https,<<"piroxy">>,_}).
+-define(HJ_CLEANUP_MS, 60000).
 -record(state, {pipes=gb_trees:empty(), replays=gb_trees:empty()}).
 -export([hijacked/2, connect/2, start_link/1, cleanup_replay/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -26,14 +26,14 @@ start_link(Opts) ->
 init([]) ->
     {ok,#state{}}.
 
-handle_call({hijacked, ?HJTARGET, _}, _From, S) ->
+handle_call({hijacked, ?HJ_TARGET, _}, _From, S) ->
     {reply, true, S};
 
 %% checks every GET request to see if it was previously stored as a replay
 handle_call({hijacked, Target, #head{method=get}=H}, _From, S) ->
     case head_reluri(H) of
         {ok,RelUri} ->
-            io:format("*DBG* DONG: ~p~n", [{Target,RelUri}]),
+            %%io:format("*DBG* DONG: ~p~n", [{Target,RelUri}]),
             Bool = gb_trees:is_defined({Target,RelUri}, S#state.replays),
             {reply,Bool,S};
         {error,_} ->
@@ -85,10 +85,10 @@ handle_info({http_pipe,_Id,A}, S)
 handle_info({http_pipe,_,Any}, _S) ->
     {stop,{unexpected_message,Any}}.
 
-get_uri(?HJTARGET, <<"/">>, _Id, H, S) ->
+get_uri(?HJ_TARGET, <<"/">>, _Id, H, S) ->
     {static_file(<<"index.html">>, H), S};
 
-get_uri(?HJTARGET, <<"/ws">>, Id, H, S) ->
+get_uri(?HJ_TARGET, <<"/ws">>, Id, H, S) ->
     case fieldlist:get_value(<<"sec-websocket-key">>, H#head.headers) of
         not_found ->
             io:format("*DBG* missing sec-websocket-key!~n"),
@@ -111,7 +111,7 @@ get_uri(?HJTARGET, <<"/ws">>, Id, H, S) ->
             {[Head,{upgrade_socket,Start}],S}
     end;
 
-get_uri(?HJTARGET, <<"/cp/",BinId/binary>>, _Id, _H, S) ->
+get_uri(?HJ_TARGET, <<"/cp/",BinId/binary>>, _Id, _H, S) ->
     case re:run(BinId, "^([0-9]+)([.][0-9]+)*$", [{capture,none}]) of
         match ->
             %% TODO: implement dotted Id numbers
@@ -148,7 +148,7 @@ lookup_replay(Target, Path, S) ->
 store_replay(Target, OrigId, S) ->
     Path = rand_path(),
     Key = {Target,Path},
-    {ok,TRef} = timer:apply_after(?CLEANUP_MS, ?MODULE, cleanup_replay, [Key]),
+    {ok,TRef} = timer:apply_after(?HJ_CLEANUP_MS, ?MODULE, cleanup_replay, [Key]),
     Tree = gb_trees:insert(Key, {TRef,OrigId}, S#state.replays),
     io:format("*DBG* Tree=~p~n", gb_trees:to_list(Tree)),
     {rebuild_uri(Key), S#state{replays=Tree}}.
@@ -161,7 +161,7 @@ rebuild_uri({{Proto,Host,Port}, RelPath}) ->
       RelPath/binary>>.
 
 rand_path() ->
-    Bin1 = crypto:strong_rand_bytes(?HIRAND_SZ),
+    Bin1 = crypto:strong_rand_bytes(?HJ_RAND_SZ),
     Bin2 = lists:foldl(fun ({A,B}, B64) ->
                                binary:replace(B64, A, B, [global])
                        end,
