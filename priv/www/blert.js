@@ -42,7 +42,6 @@ var ATOM_EXT = 100 //deprecated
 var SMALL_ATOM_EXT = 115 //deprecated
 
 var blert_buffer = null
-var nil = list([])
 
 var null_buf = new Uint8Array(110,117,108,108)
 var true_buf = new Uint8Array(116,114,117,101)
@@ -118,32 +117,37 @@ function encode(x){
     }
 
     function encl(L, i, V){
-        if(isNil(L) || L.list.length === 0){
+        if(L.list.length === 0 && isProper(L)){
+            // NOTE: this matches `nil' AND any other zero-length proper list
             V.setUint8(i, NIL_EXT)
             return 1
         }else if(
-            L.list instanceof Uint8Array && L.list.length <= 65535 && isProper(L)
+            L.list instanceof Uint8Array && isProper(L) && L.list.length <= 65535
         ){
+            // STRING_EXT can only contain bytes.
+            // STRING_EXT has an implicit tail element of [].
+            // STRING_EXT size must fit in 16 bits.
             var A = L.list
             V.setUint8(i, STRING_EXT)
             V.setUint16(i+1, A.length)
-            new Uint8Array(V.buffer, i+3, A.length).set(A)
-            return A.length+3
-        }else{
+            new Uint8Array(V.buffer, i+3, A.length).set(A) // no assignment needed!
+            return 3+A.length
+        }else if(L.list.length <= 4294967295){
             // LIST_EXT can contain elements with arbitrary types.
             // LIST_EXT explicitly stores a tail element of arbitrary type.
+            // LIST_EXT size must fit in 32 bits.
             var A = L.list
             V.setUint8(i+0, LIST_EXT)
             V.setUint32(i+1, A.length)
             for(var j=0, n=5; j<A.length; j++) n += enc(A[j], i+n, V)
-            if(isProper(L)){
-                // Remember that the "tail" of the list Object is undefined
-                // (and not Nil) in a proper list.
+            if(!("tail" in L)){
                 V.setUint8(i+n, NIL_EXT)
                 return n+1
             }else{
                 return n + enc(L.tail, i+n, V)
             }
+        }else{
+            throw new Error("list too long")
         }
     }
 
@@ -163,7 +167,7 @@ function encode(x){
     }
 
     function encm(M, i, V){
-        if(M.size > 65535){
+        if(M.size > 4294967295){
             throw new Error("Map too large")
         }
         V.setUint8(i+0, MAP_EXT)
@@ -214,8 +218,7 @@ function encode(x){
                 // never be called.
                 return encbi(X, i, V)
             case "string":
-                console.warn("blert: automatically encoding string as list")
-                break
+                return encl({list: new TextEncoder().encode(X)}, i, V)
             case "object":
                 if(X === null){
                     return enca(null_buf, i, V)
@@ -304,20 +307,22 @@ function decode(A){
                 n = V.getUint32(i+1)
                 return decn(i, 5, n*2, V, mapm)
             case NIL_EXT:
-                // Nil means [] in Erlang.
-                return [1, nil]
+                // Nil means [] in Erlang. Generate a new empty array.
+                return [1, {list:[], tail:nil}]
             case STRING_EXT:
-                // Even though this says "string", Erlang has no actual string
-                // datatype. "Strings" are just lists whose elements are
-                // codepoints.
+                // "Strings" are just lists whose elements are codepoints.
                 n = V.getUint16(i+1)
                 x = new Uint8Array(V.buffer, i+3, n)
-                return [n+3, list(x)]
+                return [n+3, new TextDecoder().decode(x)]
             case LIST_EXT:
                 n = V.getUint32(i+1)
                 x = decn(i, 5, n, V, mapid)
-                R = dec(i+x[0], V)
-                return [x[0]+R[0], list(x[1], R[1])]
+                if(V.getUint8(i+x[0]) === NIL_EXT){
+                    return [x[0]+1, {list:x[1]}]
+                }else{
+                    R = dec(i+x[0], V)
+                    return [x[0]+R[0], {list:x[1], tail:R[1]}]
+                }
             case BINARY_EXT:
                 n = V.getUint32(i+1)
                 x = new Uint8Array(new Uint8Array(V.buffer, i+5, n))
@@ -427,28 +432,13 @@ function isTuple(T){
 }
 
 function isList(L){
-    return (typeof L === "string") || (typeof L === "object" && "list" in L)
+    // NOTE: nil is a list
+    return typeof L === "object" && "list" in L
 }
 
 function isProper(L){
-    // Note: nil (the empty list) is also a proper list
-    return isList(L) && typeof L.tail === "undefined"
-}
-
-function isNil(L){
-    return L === nil
-}
-
-// x may be an Array or a Uint8Array
-function list(x, tail){
-    if(x === undefined){
-        throw new Error("bad argument")
-    }else{
-        // array may be an Array or a Uint8Array
-        var list = x
-    }
-    if(Object.is(tail, nil)) tail = undefined
-    return {list:list, tail:tail}
+    // NOTE: specifying a "tail" is optional!
+    return isList(L) && !("tail" in L)
 }
 
 })() // end of module wrapper function
