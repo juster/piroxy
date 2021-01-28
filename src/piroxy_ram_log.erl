@@ -143,7 +143,7 @@ log_event({Id,Dir,Time,http,Term}=T, S)
             {ok, store_body(Id, Dir, S)};
         eof ->
             {ok, store_body(Id, Dir, S)};
-        {status,_} ->
+        _ ->
             {ok, S}
     end;
 
