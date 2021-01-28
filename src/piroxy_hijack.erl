@@ -133,7 +133,8 @@ get_uri(Target, Path, _Id, H, S) ->
         {found,L} ->
             {L, S};
         not_found ->
-            {static_file(Path,H), S}
+            <<"/",Filename/binary>> = Path,
+            {static_file(Filename,H), S}
     end.
 
 lookup_replay(Target, Path, S) ->
@@ -171,7 +172,10 @@ rand_path() ->
 
 static_file(File, H) ->
     case {illegal_filename(File), revind($., File)} of
-        {A,B} when A == true; B == nomatch ->
+        {true,_} ->
+            io:format("*DBG* illegal_filename! ~s~n", [File]),
+            [{status,http_not_found}];
+        {_,nomatch} ->
             [{status,http_not_found}];
         {false,I} ->
             AppDir = code:lib_dir(piroxy),
