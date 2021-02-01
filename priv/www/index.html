@@ -3,23 +3,35 @@
 <head>
 <title>Index</title>
 <meta charset="utf-8">
+<script src="app.js"></script>
 </head>
 <body>
-<h1>Index</h1>
-<script type="text/javascript" src="blert.js"></script>
-<script type="text/javascript">
-(function(){
-var WW = new Worker('worker.js')
-WW.onerror = report_wwerr
-WW.onmessage = reply
-function report_wwerr(err){
-    console.error('WW error: '+err.message)
+<script>
+//(function(){
+
+var app = Elm.Main.init()
+
+var worker = new Worker('worker.js')
+worker.onerror = error
+worker.onmessage = recv
+
+function error(err){
+    var str = 'Worker error: '+err.message
+    console.error(str)
+    alert(str)
 }
-function reply(msg){
-    console.log('WW recv:', JSON.stringify(msg.data))
-    WW.postMessage({tuple:[{atom:'i'},{atom:'am'},{atom:'okay'}]})
+
+function recv(msg){
+    var str = JSON.stringify(msg.data)
+    console.log('*DBG* Worker recv:'+str)
+    app.ports.fromPiroxy.send(str)
 }
-})()
+
+app.ports.toPiroxy.subscribe(function(str){
+    worker.postMessage(JSON.decode(str))
+})
+
+//})()
 </script>
 </body>
 </html>

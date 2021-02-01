@@ -24,7 +24,7 @@ dispatchTag tag =
         "new" -> decodeNew
         _ -> D.fail <| "unknown tag: "++tag
 
--- Erlang: {new, {Id, MetaId, Time, Act, Arg}}
+-- Erlang: {new, {Id, Time, Act, Arg}}
 decodeNew : D.Decoder Msg
 decodeNew =
     D.index 1 (
@@ -32,9 +32,8 @@ decodeNew =
             D.map5 LogEntry
             (D.index 0 D.int)
             (D.index 1 D.int)
-            (D.index 2 D.float)
-            (D.index 3 decodeAct)
-            (D.index 4 D.string)
+            (D.index 2 decodeAct)
+            (D.index 3 D.string)
             |>
             D.map New
         )
