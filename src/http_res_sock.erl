@@ -398,8 +398,7 @@ upgrade_ws(Req, Headers, Sock, Rest) ->
            end,
     case ws_sock:start(Sock, Rest, [server|Opts]) of
         {ok,Pid} ->
-            %% gets a little confusing...
-            %%MF = {ws_sock,websocket}, % client message relay fun
+            %% gets a little confusing... there are nested MFAs!
             MFA1 = {ws_sock,handshake,[Pid]}, % server handshake fun
             MFA2 = {ws_sock,start,[client,{handshake,MFA1}|Opts]},
             {ok,{upgrade_socket,MFA2}};
