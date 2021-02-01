@@ -22,6 +22,4 @@ fail(Id, Proto, Reason) ->
     gen_event:notify(?MODULE, {Id,fail,tstamp(),Proto,Reason}).
 
 tstamp() ->
-    DT = calendar:universal_time(),
-    calendar:datetime_to_gregorian_seconds(DT).
-
+    erlang:monotonic_time() - erlang:system_info(start_time).
