@@ -3,7 +3,7 @@
 -behavior(gen_server).
 -record(state, {reply}).
 
--compile(export_all).
+-export([start/0, handshake/2, relay/2, event/2, accept/1]).
 
 %%%
 %%% EXPORTS
@@ -18,6 +18,9 @@ handshake(Pid, MFA) ->
 
 relay(Pid, Term) ->
     gen_server:cast(Pid, {websocket,Term}).
+
+event(Pid, Event) ->
+    gen_server:cast(Pid, {event,Event}).
 
 accept(Key) ->
     Digest = crypto:hash(sha, [Key,?GUID]),
@@ -54,14 +57,21 @@ handle_cast({websocket,{close,L}}, S) ->
 
 handle_cast({websocket,_}, S) ->
     %% ignore other frame types
+    {noreply, S};
+
+handle_cast({event,{connect,HostInfo}}, S) ->
+    ;
+
+handle_cast({event,_}, S) ->
+    %% ignore other events
     {noreply, S}.
 
 handle_call({handshake,MFA}, _From, S) ->
-    {M,F,A} = MFA,
-    Term = {hello, piroxy, ["how","are","you?"]},
-    io:format("*DBG* sending: ~p~n", [term_to_binary(Term)]),
-    Bin = frame({binary, term_to_binary(Term)}),
-    apply(M, F, A++[Bin]),
+    %{M,F,A} = MFA,
+    %Term = {hello, piroxy, ["how","are","you?"]},
+    %io:format("*DBG* sending: ~p~n", [term_to_binary(Term)]),
+    %Bin = frame({binary, term_to_binary(Term)}),
+    %apply(M, F, A++[Bin]),
     {reply, {?MODULE,relay,[self()]}, S#state{reply=MFA}}.
 
 rpc({filter,Filter}, _S) ->
@@ -98,9 +108,9 @@ frame({close,L}) when is_list(L) ->
 frame({Op,Bin}) when is_binary(Bin) ->
     Len = byte_size(Bin),
     if
-        Len >= 4294967296 ->
+        Len >= 4294967296 -> % 2^32
             <<1:1,0:3,(opcode(Op)):4,0:1,127:7,Len:64,Bin/binary>>;
-        Len >= 126 ->
+        Len >= 126 -> % 126 and 127 are used for special lengths
             <<1:1,0:3,(opcode(Op)):4,0:1,126:7,Len:32,Bin/binary>>;
         true ->
             <<1:1,0:3,(opcode(Op)):4,0:1,Len:7,Bin/binary>>
