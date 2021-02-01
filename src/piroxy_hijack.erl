@@ -65,7 +65,6 @@ handle_info({http_pipe,Id,#head{method=get}=H}, S0) ->
                      [{status,http_bad_request}];
                  {ok,RelUri} ->
                      Target = gb_trees:get(Id, S0#state.pipes),
-                     io:format("*DBG* FTW: ~p~n", [Target]),
                      get_uri(Target, RelUri, Id, H, S0)
              end,
     http_pipe:recvall(Id, L),
