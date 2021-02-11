@@ -32,6 +32,7 @@ decodeNew =
             D.map5 LogEntry
             (D.index 0 D.int)
             (D.index 1 D.int)
+            (D.index 2 D.float)
             (D.index 2 decodeAct)
             (D.index 3 D.string)
             |>
