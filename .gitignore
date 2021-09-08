@@ -5,3 +5,4 @@
 *.vim
 dev.config
 werl
+log/*
