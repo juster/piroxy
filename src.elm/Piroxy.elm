@@ -7,11 +7,19 @@ type alias LogEntry = {
     id: Int,
     metaid: Int,
     time: Float,
-    act: Act,
-    arg: String
+    act: Act
     }
 
-type Act = Get | Post | Put | Options | Delete | Patch | Head | Send | Recv
+type alias HostInfo = {
+    host: String,
+    portNo: Int, -- Can't use "port:"
+    secure: Bool
+    }
+
+type SubProto = Http | Https
+
+type Act = Connect HostInfo | Get | Post | Put | Options |
+    Delete | Patch | Head | Send | Recv
 
 type Msg = New LogEntry
 
@@ -34,7 +42,6 @@ decodeNew =
             (D.index 1 D.int)
             (D.index 2 D.float)
             (D.index 2 decodeAct)
-            (D.index 3 D.string)
             |>
             D.map New
         )
@@ -47,6 +54,7 @@ decodeAct =
 dispatchAct : String -> D.Decoder Act
 dispatchAct act =
     case act of
+        "connect" -> decodeConnect
         "get" -> D.succeed Get
         "post" -> D.succeed Post
         "options" -> D.succeed Options
@@ -56,3 +64,7 @@ dispatchAct act =
         "send" -> D.succeed Send
         "recv" -> D.succeed Recv
         _ -> D.fail <| "unknown act: "++act
+
+decodeConnect : D.Decoder Act
+decodeConnect =
+
