@@ -1,7 +1,7 @@
 -module(piserver).
 
 -include_lib("kernel/include/logger.hrl").
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -import(lists, [foreach/2]).
 
 -export([start/2, start_link/2, stop/0, superserver/1, listen/2]).

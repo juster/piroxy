@@ -6,7 +6,7 @@
 -module(http_req_sock).
 -behavior(gen_statem).
 -import(lists, [reverse/1]).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -define(IDLE_TIMEOUT, 5*60*1000).
@@ -221,7 +221,7 @@ handle_event(info, {http_pipe,_,{upgrade_socket,_,_}}, _, _) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_,#head{}=Head}, paused, D) ->
-    io:format("<====~n~s<~~~~~~~~~n", [phttp:encode(Head)]),
+    io:format("<====~n~s<~~~~~~~~~n", [pihttp_lib:encode(Head)]),
     send(D#data.socket, Head);
 
 handle_event(info, {http_pipe,Res,#head{}=Head}, _, D) ->
@@ -247,7 +247,7 @@ handle_event(info, {http_pipe,Res,{error,Rsn}=Term}, _, D) ->
                undefined -> "???";
                _ -> element(2,D#data.target)
            end,
-    Bin = iolist_to_binary(phttp:encode(Term)),
+    Bin = iolist_to_binary(pihttp_lib:encode(Term)),
     Line = case binary:match(Bin, <<?CRLF>>) of
                {Pos,_} ->
                    binary:part(Bin, 0, Pos);
@@ -298,8 +298,8 @@ handle_event(cast, {connect,_}, tunnel, D) ->
 %%%
 
 send(Sock, Term) ->
-    %%io:format("~s----~n", [phttp:encode(Term)]),
-    case pisock:send(Sock, phttp:encode(Term)) of
+    %%io:format("~s----~n", [pihttp_lib:encode(Term)]),
+    case pisock:send(Sock, pihttp_lib:encode(Term)) of
         ok -> keep_state_and_data;
         {error,closed} -> {stop,shutdown};
         {error,einval} -> {stop,shutdown};
@@ -308,8 +308,8 @@ send(Sock, Term) ->
 
 head(StatusLn, Headers) ->
     Len = body_length(StatusLn, Headers),
-    {ok,[MethodBin,_UriBin,VerBin]} = phttp:nsplit(3, StatusLn, <<" ">>),
-    case {phttp:method_atom(MethodBin), phttp:version_atom(VerBin)} of
+    {ok,[MethodBin,_UriBin,VerBin]} = pihttp_lib:nsplit(3, StatusLn, <<" ">>),
+    case {pihttp_lib:method_atom(MethodBin), pihttp_lib:version_atom(VerBin)} of
         {unknown,_} ->
             ?DBG("head", {bad_http_method,MethodBin}),
             exit({bad_http_method,MethodBin});
@@ -322,15 +322,15 @@ head(StatusLn, Headers) ->
     end.
 
 body_length(StatusLn, Headers) ->
-    case phttp:nsplit(3, StatusLn, <<" ">>) of
+    case pihttp_lib:nsplit(3, StatusLn, <<" ">>) of
         {ok,[MethodBin,_UriBin,VerBin]} ->
-            case phttp:version_atom(VerBin) of
+            case pihttp_lib:version_atom(VerBin) of
                 http11 ->
                     ok;
                 _ ->
                     exit({bad_http_version,VerBin})
             end,
-            case phttp:method_atom(MethodBin) of
+            case pihttp_lib:method_atom(MethodBin) of
                 unknown ->
                     exit({bad_http_method,MethodBin});
                 Method ->
@@ -355,7 +355,7 @@ target(Head) ->
     UriBin = head_uri(Head),
     case {Head#head.method, UriBin} of
         {connect,_} ->
-            {ok,[Host,Port]} = phttp:nsplit(2, UriBin, <<":">>),
+            {ok,[Host,Port]} = pihttp_lib:nsplit(2, UriBin, <<":">>),
             case Port of
                 <<"443">> ->
                     {authority, {https,Host,binary_to_integer(Port)}};
@@ -385,7 +385,7 @@ target(Head) ->
     end.
 
 head_uri(H) ->
-    {ok,[_,UriBin,_]} = phttp:nsplit(3, H#head.line, <<" ">>),
+    {ok,[_,UriBin,_]} = pihttp_lib:nsplit(3, H#head.line, <<" ">>),
     UriBin.
 
 handle_head(#head{method=connect}, {authority,HI}, Bin, D) ->
@@ -474,7 +474,7 @@ relativize(H) ->
             case check_host(Host, H#head.headers) of
                 {error,_} = Err -> Err;
                 ok ->
-                    MethodBin = phttp:method_bin(H#head.method),
+                    MethodBin = pihttp_lib:method_bin(H#head.method),
                     Path = iolist_to_binary([Path0|Query]),
                     Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
                     H#head{line=Line}

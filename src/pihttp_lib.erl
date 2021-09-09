@@ -1,9 +1,9 @@
-%%% phttp
+%%% pihttp_lib
 %%%
 %%% Generic utility functions related to HTTP.
 %%%
 
--module(phttp).
+-module(pihttp_lib).
 
 -export([nsplit/3, centenc/1, formenc/1, compose_uri/1]).
 -export([status_split/1, method_bin/1, method_atom/1, version_atom/1]).
@@ -11,7 +11,7 @@
 -export([trace/4]).
 
 -import(lists, [reverse/1, flatten/1]).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 
 %% Split Subject into exactly N fields. Fields are separated by Pattern.
 nsplit(N, _, _) when N < 1 ->

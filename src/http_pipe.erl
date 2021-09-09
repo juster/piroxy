@@ -1,7 +1,7 @@
 -module(http_pipe).
 -behavior(gen_server).
 -import(lists, [foreach/2]).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,

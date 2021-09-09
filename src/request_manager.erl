@@ -3,7 +3,7 @@
 
 -import(lists, [foreach/2, keyfind/3, keytake/3]).
 -include_lib("kernel/include/logger.hrl").
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 
 -export([nextid/0, connect/2, cancel/1, pending/0, targets/0]). % calls
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2]).

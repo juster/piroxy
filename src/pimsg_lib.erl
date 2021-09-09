@@ -10,7 +10,7 @@
 -export([body_length/1]).
 
 -import(lists, [reverse/1]).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 
 %%%
 %%% EXPORTS

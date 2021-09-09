@@ -2,7 +2,7 @@
 -behavior(gen_server).
 -import(lists, [filtermap/2, foreach/2, reverse/1]).
 -include_lib("kernel/include/logger.hrl").
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 
 -define(HJ_RAND_SZ, 16).
 -define(HJ_TARGET, {https,<<"piroxy">>,_}).
@@ -267,7 +267,7 @@ expand_body([X|L1], L2, Pos, Bin) ->
     expand_body(L1, [X|L2], Pos, Bin).
 
 head_reluri(H) ->
-    case phttp:nsplit(3, H#head.line, <<" ">>) of
+    case pihttp_lib:nsplit(3, H#head.line, <<" ">>) of
         {error,_} = Err ->
             Err;
         {ok,[_Method,RelUri,<<"HTTP/1.1">>]} ->

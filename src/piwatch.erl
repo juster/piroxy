@@ -1,7 +1,7 @@
 -module(piwatch).
 -behavior(gen_event).
 -include_lib("kernel/include/logger.hrl").
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 
 -export([start/0, stop/0, hostname/1, watch/2, watch/3, forget/1,
          which_triggers/0]).

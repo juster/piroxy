@@ -1,6 +1,6 @@
 -module(piroxy_ram_log).
 -behavior(gen_event).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -include_lib("kernel/include/logger.hrl").
 -import(lists, [foreach/2, map/2, zip/2, unzip/1, reverse/1]).
 -record(state, {matchfun=matchall, conntab, logtab, bodytab,

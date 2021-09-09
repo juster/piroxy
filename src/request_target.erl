@@ -1,7 +1,7 @@
 -module(request_target).
 -behavior(gen_server).
 -include_lib("kernel/include/logger.hrl").
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -import(lists, [foreach/2, reverse/1, keytake/3, keydelete/3, partition/2,
                 filter/2, any/2]).
 

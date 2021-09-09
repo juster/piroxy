@@ -30,5 +30,5 @@
 %%-define(DBG(Fname, T), ok).
 -record(head, {line, method, version, headers=[], bodylen}).
 
--define(TRACE(Sess, Host, Dir, Str), phttp:trace(Sess,Host,Dir,Str)).
+-define(TRACE(Sess, Host, Dir, Str), pihttp_lib:trace(Sess,Host,Dir,Str)).
 %%-define(TRACE(Sess, Host, Dir, Str), ok).

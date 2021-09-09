@@ -1,6 +1,6 @@
 -module(fieldlist).
 
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -import(lists, [reverse/1, reverse/2]).
 
 -export([add/2, add_value/3, find/2, at/2, remove/2]).

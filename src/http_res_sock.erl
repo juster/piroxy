@@ -5,7 +5,7 @@
 
 -module(http_res_sock).
 -behavior(gen_statem).
--include("../include/phttp.hrl").
+-include("../include/pihttp_lib.hrl").
 -define(ACTIVE_TIMEOUT, 5000).
 -define(IDLE_TIMEOUT, 60000).
 
@@ -134,7 +134,7 @@ handle_event(info, {A,_,Bin}, head, D0)
         {continue,Reader} ->
             {keep_state,D0#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            {ok, [_HttpVer, Code, _]} = phttp:nsplit(3, StatusLn, <<" ">>),
+            {ok, [_HttpVer, Code, _]} = pihttp_lib:nsplit(3, StatusLn, <<" ">>),
             handle_head(Code, StatusLn, Headers, Rest, D0)
     end;
 
@@ -232,7 +232,7 @@ handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
     %% pipeline.
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Req, Host, ">>", Head),
-    pisock:send(D#data.socket, phttp:encode(Head)),
+    pisock:send(D#data.socket, pihttp_lib:encode(Head)),
     Q = D#data.queue ++ [{Req,Head}],
     {keep_state, D#data{queue=Q}};
 
@@ -255,7 +255,7 @@ handle_event(info, {http_pipe,Req,eof}, _, _) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_Req,Term}, _, D) ->
-    pisock:send(D#data.socket, phttp:encode(Term)),
+    pisock:send(D#data.socket, pihttp_lib:encode(Term)),
     keep_state_and_data.
 
 %%%
