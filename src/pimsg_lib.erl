@@ -1,10 +1,10 @@
-%%% pimsg
+%%% pimsg_lib
 %%% HTTP messages.
 %%%
 %%% Contains functions for simplistic HTTP message reading (splitting),
 %%% calculating the body length, etc.
 
--module(pimsg).
+-module(pimsg_lib).
 
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
 -export([body_length/1]).

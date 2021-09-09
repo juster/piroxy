@@ -146,7 +146,7 @@ error_bin({unknown_method,_}) -> status_bin(http_bad_request);
 error_bin({unknown_version,_}) -> status_bin(http_bad_request);
 error_bin({unknown_length,_,_}) -> status_bin(http_bad_request);
 
-%% from pimsg:body_length/1
+%% from pimsg_lib:body_length/1
 error_bin({missing_length,_}) -> status_bin(http_bad_request);
 
 %% from http11_res

@@ -98,11 +98,11 @@ handle_event(info, {A,_,?EMPTY}, idle, _)
 
 handle_event(info, {A,_,_}, idle, D)
   when A == tcp; A == ssl ->
-    {next_state, head, D#data{reader=pimsg:head_reader()}, postpone};
+    {next_state, head, D#data{reader=pimsg_lib:head_reader()}, postpone};
 
 handle_event(info, {A,_,Bin}, head, D)
   when A == tcp; A == ssl ->
-    case pimsg:head_reader(D#data.reader, Bin) of
+    case pimsg_lib:head_reader(D#data.reader, Bin) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
@@ -116,7 +116,7 @@ handle_event(info, {A,_,Bin}, head, D)
 
 handle_event(info, {A,_,Bin1}, body, D)
   when A == tcp; A == ssl ->
-    case pimsg:body_reader(D#data.reader, Bin1) of
+    case pimsg_lib:body_reader(D#data.reader, Bin1) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Bin2,Reader} ->
@@ -347,7 +347,7 @@ request_length(connect, _) -> {ok,0};
 request_length(get, _) -> {ok,0};
 request_length(options, _) -> {ok,0};
 request_length(head, _) -> {ok,0};
-request_length(_, Headers) -> pimsg:body_length(Headers).
+request_length(_, Headers) -> pimsg_lib:body_length(Headers).
 
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
 %% If the Head contains a request to a relative URI, Host=null.
@@ -452,7 +452,7 @@ relay_head(H, HI, Bin, D) ->
             D2 = D#data{reader=undefined, target=HI, queue=Q, active=undefined},
             {next_state,idle,D2,{next_event,info,{tcp,null,Bin}}};
         {_,false} ->
-            D2 = D#data{reader=pimsg:body_reader(H#head.bodylen),
+            D2 = D#data{reader=pimsg_lib:body_reader(H#head.bodylen),
                         target=HI, queue=Q, active=Req},
             {next_state,body,D2,{next_event,info,{tcp,null,Bin}}};
         {0,true} ->
