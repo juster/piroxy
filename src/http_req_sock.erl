@@ -112,7 +112,12 @@ handle_event(info, {A,_,Bin}, head, D)
             %% head may throw an exit/error
             case head(StatusLn, Headers) of
                 {ok,H} ->
-                    handle_head(H, target(H), Rest, D);
+                    case head_target(H) of
+                        {ok,Target} ->
+                            handle_head(H, Target, Rest, D);
+                        {error,Rsn} ->
+                            {stop,Rsn,D}
+                    end;
                 {error,Rsn} ->
                     {stop,Rsn,D}
             end
@@ -331,19 +336,20 @@ request_length(_, Headers) -> pihttp_lib:body_length(Headers).
 
 %% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
 %% If the Head contains a request to a relative URI, Host=null.
-target(Head) ->
-    UriBin = head_uri(Head),
-    case {Head#head.method, UriBin} of
-        {connect,_} ->
+head_target(H) ->
+    case {H#head.method,head_uri(H#head.line)} of
+        {_,{error,_} = Err} ->
+            Err;
+        {connect,{ok,UriBin}} ->
             {ok,[Host,Port]} = pihttp_lib:nsplit(2, UriBin, <<":">>),
             case Port of
                 <<"443">> ->
-                    {authority, {https,Host,binary_to_integer(Port)}};
+                    {ok,{authority,{https,Host,binary_to_integer(Port)}}};
                 <<"80">> ->
                     %% NYI
-                    {authority, {http,Host,binary_to_integer(Port)}};
+                    {ok,{authority,{http,Host,binary_to_integer(Port)}}};
                 _ ->
-                    exit(http_bad_request)
+                    {error,http_bad_request}
             end;
         {options,<<"*">>} ->
             self;
@@ -351,22 +357,27 @@ target(Head) ->
             %% relative URI, hopefully we are already CONNECT-ed to a
             %% single host
             relative;
-        _ ->
-            case http_uri:parse(UriBin) of
+        {_,{ok,UriBin}} ->
+            case uri_string:parse(UriBin) of
                 {error,{malformed_uri,_,_}} ->
-                    exit(http_bad_request);
-                {ok,{Scheme,_UserInfo,Host,Port,_Path0,_Query}} ->
+                    {error,http_bad_request};
+                {ok,#{scheme:=Scheme,host:=Host,port:=Port}} ->
                     %% XXX: never Fragment?
                     %% XXX: how to use UserInfo?
                     %% URI should be absolute when received from proxy client!
                     %% Convert to relative before sending to host.
-                    {absolute, {Scheme,Host,Port}}
+                    {ok,{absolute,{Scheme,Host,Port}}}
             end
     end.
 
-head_uri(H) ->
-    {ok,[_,UriBin,_]} = pihttp_lib:nsplit(3, H#head.line, <<" ">>),
-    UriBin.
+head_uri(Bin) ->
+    %% XXX: this is the second time that the status line is split
+    case pihttp_lib:split_status(request, Bin) of
+        {ok,{_,UriBin,_}} ->
+            {ok,UriBin};
+        {error,_} = Err ->
+            Err
+    end.
 
 handle_head(#head{method=connect}, {authority,HI}, Bin, D) ->
     %% CONNECT uses the "authority" form of URIs and so
@@ -402,8 +413,12 @@ handle_head(H, relative, Bin, D) ->
 
 handle_head(H, {absolute,HI2}, Bin, D) ->
     %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
-    H2 = relativize(H),
-    relay_head(H2, HI2, Bin, D).
+    case relativize(H) of
+        {ok,H2} ->
+            relay_head(H2, HI2, Bin, D);
+        {error,Rsn} ->
+            {stop,Rsn,D}
+    end.
 
 connect_request(Req, HI, H) ->
     case piroxy_hijack:hijacked(HI, H) of
@@ -446,18 +461,20 @@ relay_head(H, HI, Bin, D) ->
             error(internal)
     end.
 
+%% Modify the status line in the header so that it is a relative version of itself.
+%% XXX: May be easier just to have a URI field in the record which can later be updated.
 relativize(H) ->
     UriBin = head_uri(H),
-    case http_uri:parse(UriBin) of
-        {error,Rsn} -> Rsn;
-        {ok,{_Scheme,_UserInfo,Host,_Port,Path0,Query}} ->
+    case uri_string:parse(UriBin) of
+        {error,_} = Err -> Err;
+        {ok,#{host:=Host,path:=Path0,query:=Query}} ->
             case check_host(Host, H#head.headers) of
                 {error,_} = Err -> Err;
                 ok ->
                     MethodBin = pihttp_lib:method_bin(H#head.method),
                     Path = iolist_to_binary([Path0|Query]),
                     Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
-                    H#head{line=Line}
+                    {ok,H#head{line=Line}}
             end
     end.
 
