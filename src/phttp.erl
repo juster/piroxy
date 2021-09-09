@@ -37,13 +37,11 @@ centenc(Chars) ->
 
 centenc([], L2) ->
     flatten(reverse(L2));
-centenc([Ch|L1], L2) when Ch >= $a, Ch =< $z ->
-    centenc(L1, [Ch|L2]);
-centenc([Ch|L1], L2) when Ch >= $A, Ch =< $Z ->
-    centenc(L1, [Ch|L2]);
-centenc([Ch|L1], L2) when Ch >= $0, Ch =< $9 ->
-    centenc(L1, [Ch|L2]);
-centenc([Ch|L1], L2) when Ch =:= $-; Ch =:= $.; Ch =:= $_; Ch =:= $~ ->
+centenc([Ch|L1], L2)
+  when Ch >= $a, Ch =< $z;
+       Ch >= $A, Ch =< $Z;
+       Ch >= $0, Ch =< $9;
+       Ch =:= $-; Ch =:= $.; Ch =:= $_; Ch =:= $~ ->
     centenc(L1, [Ch|L2]);
 centenc([Ch|L1], L2) ->
     %io:format("*DBG*: Ch=~.16B=~c~n", [Ch,Ch]),
