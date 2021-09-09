@@ -239,8 +239,6 @@ buflen({?EMPTY,Bin2}) -> byte_size(Bin2);
 buflen({Bin1,?EMPTY}) -> byte_size(Bin1);
 buflen({Bin1,Bin2}) -> byte_size(Bin1) + byte_size(Bin2).
 
-bufbin({Bin1,Bin2}) -> concat(Bin1, Bin2).
-
 bufpop({Bin1,_}) -> Bin1.
 
 bufnext({_,Bin2}, Bin3) -> concat(Bin2, Bin3).
