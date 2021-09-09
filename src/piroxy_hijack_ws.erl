@@ -60,9 +60,6 @@ handle_cast({websocket,_}, S) ->
     %% ignore other frame types
     {noreply, S};
 
-handle_cast({event,{connect,HostInfo}}, S) ->
-    ;
-
 handle_cast({event,_}, S) ->
     %% ignore other events
     {noreply, S}.
