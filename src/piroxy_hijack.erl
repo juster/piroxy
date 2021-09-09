@@ -8,11 +8,11 @@
 -define(HJ_TARGET, {https,<<"piroxy">>,_}).
 -define(HJ_CLEANUP_MS, 60000).
 -record(state, {pipes=gb_trees:empty(), replays=gb_trees:empty()}).
--export([hijacked/2, connect/2, start_link/1, cleanup_replay/1]).
+-export([hijacked/3, connect/2, start_link/1, cleanup_replay/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
-hijacked(Target, Head) ->
-    gen_server:call(?MODULE, {hijacked,Target,Head}).
+hijacked(Target,Method,Uri) ->
+    gen_server:call(?MODULE, {hijacked,{Target,Method,Uri}}).
 
 connect(Id, Target) ->
     gen_server:cast(?MODULE, {connect,Id,Target}).
@@ -26,22 +26,15 @@ start_link(Opts) ->
 init([]) ->
     {ok,#state{}}.
 
-handle_call({hijacked, ?HJ_TARGET, _}, _From, S) ->
+handle_call({hijacked,{_,?HJ_TARGET,_}}, _From, S) ->
     {reply, true, S};
 
 %% checks every GET request to see if it was previously stored as a replay
-handle_call({hijacked, Target, #head{method=get}=H}, _From, S) ->
-    case head_reluri(H) of
-        {ok,RelUri} ->
-            %%io:format("*DBG* DONG: ~p~n", [{Target,RelUri}]),
-            Bool = gb_trees:is_defined({Target,RelUri}, S#state.replays),
-            {reply,Bool,S};
-        {error,_} ->
-            io:format("*DBG* DANG: ~p~n", [{Target}]),
-            {reply,false,S}
-    end;
+handle_call({hijacked,{get,Target,Uri}}, _From, S) ->
+    %%io:format("*DBG* DONG: ~p~n", [{Target,RelUri}]),
+    {reply,gb_trees:is_defined({Target,Uri}, S#state.replays),S};
 
-handle_call({hijacked,_,_}, _From, S) ->
+handle_call({hijacked,_}, _From, S) ->
     {reply,false,S}.
 
 handle_cast({connect,Id,Target}, S) ->
@@ -62,7 +55,7 @@ handle_cast({cleanup_replay,Key}, S) ->
 handle_info({http_pipe,Id,#head{method=get}=H}, S0) ->
     {L,S1} = case head_reluri(H) of
                  {error,badarg} ->
-                     [{status,http_bad_request}];
+                     {[{status,http_bad_request}],S0};
                  {ok,RelUri} ->
                      Target = gb_trees:get(Id, S0#state.pipes),
                      get_uri(Target, RelUri, Id, H, S0)

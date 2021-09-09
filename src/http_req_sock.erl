@@ -110,11 +110,11 @@ handle_event(info, {A,_,Bin}, head, D)
              {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
             %% head may throw an exit/error
-            case head(StatusLn, Headers) of
-                {ok,H} ->
-                    case head_target(H) of
+            case request_headuri(StatusLn, Headers) of
+                {ok,{H,Uri}} ->
+                    case head_target(H,Uri) of
                         {ok,Target} ->
-                            handle_head(H, Target, Rest, D);
+                            handle_head(H,Target,Rest,D);
                         {error,Rsn} ->
                             {stop,Rsn,D}
                     end;
@@ -315,12 +315,14 @@ send(Sock, Term) ->
         {error,Rsn} -> {stop,Rsn}
     end.
 
-head(StatusLn, Headers) ->
+%% Assemble a #head{} record and separates out the URI while we are at it.
+request_headuri(StatusLn, Headers) ->
     case pihttp_lib:split_status(request,StatusLn) of
-        {ok,{Method,_Uri,Ver}} ->
+        {ok,{Method,Uri,Ver}} ->
             case request_length(Method,Headers) of
                 {ok,Len} ->
-                    {ok,#head{line=StatusLn,method=Method,version=Ver,headers=Headers,bodylen=Len}};
+                    H = #head{line=StatusLn,method=Method,version=Ver,headers=Headers,bodylen=Len},
+                    {ok,{H,Uri}};
                 {error,_} = Err ->
                     Err
             end;
@@ -334,88 +336,77 @@ request_length(options, _) -> {ok,0};
 request_length(head, _) -> {ok,0};
 request_length(_, Headers) -> pihttp_lib:body_length(Headers).
 
-%% Returns HostInfo ({Host,Port}) for the provided request HTTP message header.
-%% If the Head contains a request to a relative URI, Host=null.
-head_target(H) ->
-    case {H#head.method,head_uri(H#head.line)} of
-        {_,{error,_} = Err} ->
-            Err;
-        {connect,{ok,UriBin}} ->
-            {ok,[Host,Port]} = pihttp_lib:nsplit(2, UriBin, <<":">>),
-            case Port of
-                <<"443">> ->
-                    {ok,{authority,{https,Host,binary_to_integer(Port)}}};
-                <<"80">> ->
-                    %% NYI
-                    {ok,{authority,{http,Host,binary_to_integer(Port)}}};
-                _ ->
-                    {error,http_bad_request}
-            end;
-        {options,<<"*">>} ->
-            self;
-        {_,<<"/",_/binary>>} ->
-            %% relative URI, hopefully we are already CONNECT-ed to a
-            %% single host
-            relative;
-        {_,{ok,UriBin}} ->
-            case uri_string:parse(UriBin) of
-                {error,{malformed_uri,_,_}} ->
-                    {error,http_bad_request};
-                {ok,#{scheme:=Scheme,host:=Host,port:=Port}} ->
-                    %% XXX: never Fragment?
-                    %% XXX: how to use UserInfo?
-                    %% URI should be absolute when received from proxy client!
-                    %% Convert to relative before sending to host.
-                    {ok,{absolute,{Scheme,Host,Port}}}
-            end
-    end.
-
-head_uri(Bin) ->
-    %% XXX: this is the second time that the status line is split
-    case pihttp_lib:split_status(request, Bin) of
-        {ok,{_,UriBin,_}} ->
-            {ok,UriBin};
+head_target(#head{method=connect},UriBin) ->
+    case pihttp_lib:nsplit(2, UriBin, <<":">>) of
+        {ok,[Host,<<"443">>]} ->
+            {ok,{authority,{https,Host,443}}};
+        {ok,[Host,<<"80">>]} ->
+            %% NYI?
+            {ok,{authority,{http,Host,80}}};
+        {ok,_} ->
+            {error,http_bad_request};
         {error,_} = Err ->
             Err
+    end;
+
+head_target(#head{method=options},<<"*">>) ->
+    %% This is a request to list the OPTIONs supported by the proxy (that's us!)
+    {ok,self};
+
+head_target(_,<<"/",_/binary>>) ->
+    %% There is no host specified and so this is considered a relative target.
+    %% Hopefully we are already CONNECT-ed to a single host.
+    {ok,relative};
+
+head_target(_,UriBin) ->
+    case uri_string:parse(UriBin) of
+        {error,_Rsn} ->
+            {error,http_bad_request};
+        {ok,UriMap} ->
+            %% XXX: how to use UserInfo?
+            %% URI should be absolute when received from proxy client!
+            %% We will convert to relative before sending to host.
+            {ok,{absolute,UriMap}}
     end.
 
-handle_head(#head{method=connect}, {authority,HI}, Bin, D) ->
+handle_head(#head{method=connect},{authority,UriMap}, Bin,D) ->
     %% CONNECT uses the "authority" form of URIs and so
     %% cannot be used with relativize/2.
 
-    %% XXX: We MUST send the 200 OK reply here, first. When creating a
+    %% We MUST send the 200 OK reply here, first. When creating a
     %% fake HTTPS tunnel, we send the 200 OK unencrypted and then
     %% pretend to forward the TLS handshake to the host the client
     %% asked to be CONNECTed to.
 
-    %% XXX: We cannot reply with {status,http_ok} because that will add
+    %% We cannot reply with {status,http_ok} because that will add
     %% a Content-Length header and a CONNECT reply "MUST NOT" have one.
     send(D#data.socket, {body,<<"HTTP/1.1 200 OK\015\012\015\012">>}),
     case Bin of
         ?EMPTY -> ok;
         _ -> exit({extra_tunnel_bytes,Bin})
     end,
-    {next_state, tunnel, D, {next_event, cast, {connect,HI}}};
+    {next_state, tunnel, D, {next_event, cast, {connect,urimap_hostinfo(UriMap)}}};
 
-handle_head(#head{method=options}, self, Bin, D) ->
+handle_head(#head{method=options},self,Bin, D) ->
     %% OPTIONS * refers to the proxy itself. Create a fake response..
     %% TODO: not yet implemented
     send(D#data.socket, {status,http_ok}),
     {next_state, idle, D#data{reader=undefined},
      {next_event, info, {tcp,null,Bin}}};
 
-handle_head(H, relative, Bin, D) ->
+handle_head(H,relative,Bin,D) ->
     %% HTTP header is for a relative URL. Hopefully this is inside of a
     %% CONNECT tunnel!
     HI = D#data.target,
     case HI of undefined -> exit(host_missing); _ -> ok end,
-    relay_head(H, HI, Bin, D);
+    relay_head(H,HI,Bin,D);
 
-handle_head(H, {absolute,HI2}, Bin, D) ->
+handle_head(H,{absolute,UriMap},Bin,D) ->
+    %% This is the only case that uses the Uri.
     %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
-    case relativize(H) of
-        {ok,H2} ->
-            relay_head(H2, HI2, Bin, D);
+    case relativize(H,UriMap) of
+        {ok,{H2,UriMap2}} ->
+            relay_head(H2,urimap_hostinfo(UriMap2),Bin,D);
         {error,Rsn} ->
             {stop,Rsn,D}
     end.
@@ -461,21 +452,20 @@ relay_head(H, HI, Bin, D) ->
             error(internal)
     end.
 
+urimap_hostinfo(#{scheme:=Scheme,host:=Host,port:=Port}) ->
+    {Scheme,Host,Port}.
+
 %% Modify the status line in the header so that it is a relative version of itself.
-%% XXX: May be easier just to have a URI field in the record which can later be updated.
-relativize(H) ->
-    UriBin = head_uri(H),
-    case uri_string:parse(UriBin) of
+%% This amounts to removing the explicit reference to a hostname.
+relativize(H,#{host:=Host,path:=Path0,query:=Query} = M0) ->
+    case check_host(Host, H#head.headers) of
         {error,_} = Err -> Err;
-        {ok,#{host:=Host,path:=Path0,query:=Query}} ->
-            case check_host(Host, H#head.headers) of
-                {error,_} = Err -> Err;
-                ok ->
-                    MethodBin = pihttp_lib:method_bin(H#head.method),
-                    Path = iolist_to_binary([Path0|Query]),
-                    Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
-                    {ok,H#head{line=Line}}
-            end
+        ok ->
+            MethodBin = pihttp_lib:method_bin(H#head.method),
+            Path = iolist_to_binary([Path0|Query]),
+            Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
+            M1 = lists:reduce(fun (X,M) -> maps:remove(X,M) end,M0,[host,port]),
+            {ok,{H#head{line=Line},M1}}
     end.
 
 check_host(Host, Headers) ->
