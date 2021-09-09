@@ -36,15 +36,21 @@ init([]) ->
     {ok, {1,[]}}.
 
 handle_cast({connect,Req,Target}, {I,L}=S) ->
+    {Proto,Host,Port} = Target,
+    Secure = case Proto of
+                 http -> false;
+                 https -> true;
+                 _ -> exit(badarg)
+             end,
     case keyfind(Target, 1, L) of
         {_,Pid} ->
-            piroxy_events:connect(Req, http, Target),
+            piroxy_events:connect(Req, http, {Host,Port,Secure}),
             request_target:connect(Pid, Req),
             {noreply, S};
         false ->
             case request_target:start_link(Target) of
                 {ok,Pid} ->
-                    piroxy_events:connect(Req, http, Target),
+                    piroxy_events:connect(Req, http, {Host,Port,Secure}),
                     request_target:connect(Pid, Req),
                     {noreply, {I,[{Target,Pid}|L]}};
                 ignore ->
@@ -54,6 +60,7 @@ handle_cast({connect,Req,Target}, {I,L}=S) ->
             end
     end;
 
+%%% XXX: very inefficient, we do not know which target handles this request
 handle_cast({cancel,Req}, {_,L}=S) ->
     lists:foreach(fun ({_Target,Pid}) ->
                           request_target:cancel(Pid, Req)
