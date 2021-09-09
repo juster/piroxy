@@ -4,6 +4,7 @@
 -record(state, {reply}).
 
 -export([start/0, handshake/2, relay/2, event/2, accept/1]).
+-export([init/1, handle_cast/2, handle_call/3]).
 
 %%%
 %%% EXPORTS
@@ -94,6 +95,7 @@ reply(Term, S) ->
     apply(M, F, A++[{binary,frame(Term)}]).
 
 %% close is the only frame which does not have a binary
+
 frame({close,L}) when is_list(L) ->
     case L of
         [] ->
@@ -103,6 +105,9 @@ frame({close,L}) when is_list(L) ->
         [Code,Reason] ->
             frame({close,<<Code:16,Reason/utf8>>})
     end;
+
+frame({close,_}) ->
+    error(badlogic);
 
 %% generates a websocket frame, does not do any frame splitting
 frame({Op,Bin}) when is_binary(Bin) ->
