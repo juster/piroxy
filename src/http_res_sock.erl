@@ -128,7 +128,7 @@ handle_event(info, {A,_,_}, eof, D)
 
 handle_event(info, {A,_,Bin}, head, D0)
   when A == tcp; A == ssl ->
-    case pimsg_lib:head_reader(D0#data.reader, Bin) of
+    case pihttp_lib:head_reader(D0#data.reader, Bin) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
@@ -140,7 +140,7 @@ handle_event(info, {A,_,Bin}, head, D0)
 
 handle_event(info, {A,_,Bin1}, body, D)
   when A == tcp; A == ssl ->
-    case pimsg_lib:body_reader(D#data.reader, Bin1) of
+    case pihttp_lib:body_reader(D#data.reader, Bin1) of
         {error,Reason} ->
             {stop,Reason};
         {continue,?EMPTY,Reader} ->
@@ -320,12 +320,12 @@ body_length(Method, Code, Headers) ->
 
 %%% Reference: RFC7230 3.3.3 p32
 response_length(head, <<"200">>, _) -> {ok, 0}; % optimize 200
-response_length(_, <<"200">>, Headers) -> pimsg_lib:body_length(Headers);
+response_length(_, <<"200">>, Headers) -> pihttp_lib:body_length(Headers);
 response_length(_, <<"1",_,_>>, _) -> {ok, 0};
 response_length(_, <<"204">>, _) -> {ok, 0};
 response_length(_, <<"304">>, _) -> {ok, 0};
 response_length(head, _, _) -> {ok, 0};
-response_length(_, _, Headers) -> pimsg_lib:body_length(Headers).
+response_length(_, _, Headers) -> pihttp_lib:body_length(Headers).
 
 %%% TODO: double-check RFC7231 for other values
 connection_close(Headers) ->

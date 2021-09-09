@@ -3,7 +3,7 @@
   {vsn, "0.01"},
   {modules, [fieldlist, forger, forger_lib,
              http_pipe, http_req_sock, http_res_sock,
-             pihttp_lib, pimsg_lib, piserver, pisock,
+             pihttp_lib, piserver, pisock,
              piroxy_app, piroxy_sup,
              piroxy_disk_log, piroxy_ram_log,
              piroxy_events, piroxy_hijack, piroxy_hijack_spy,
