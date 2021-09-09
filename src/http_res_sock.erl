@@ -126,16 +126,22 @@ handle_event(info, {A,_,_}, eof, D)
   when A == tcp; A == ssl ->
     {next_state, head, D#data{reader=pimsg_lib:head_reader()}, postpone};
 
-handle_event(info, {A,_,Bin}, head, D0)
+handle_event(info, {A,_,Bin}, head, D)
   when A == tcp; A == ssl ->
-    case pihttp_lib:head_reader(D0#data.reader, Bin) of
+    case pihttp_lib:head_reader(D#data.reader, Bin) of
         {error,Reason} ->
             {stop,Reason};
         {continue,Reader} ->
-            {keep_state,D0#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
+            {keep_state,D#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            {ok, [_HttpVer, Code, _]} = pihttp_lib:nsplit(3, StatusLn, <<" ">>),
-            handle_head(Code, StatusLn, Headers, Rest, D0)
+            case pihttp_lib:split_status(response, StatusLn) of
+                {ok,[{1,X},Code,_Etc]} when X =:= 0; X =:= 1 ->
+                    handle_head(Code, StatusLn, Headers, Rest, D);
+                {ok,[Ver,_,_]} ->
+                    {stop,{badversion,Ver},D};
+                {error,Rsn} ->
+                    {stop,Rsn,D}
+            end
     end;
 
 handle_event(info, {A,_,Bin1}, body, D)
@@ -262,24 +268,26 @@ handle_event(info, {http_pipe,_Req,Term}, _, D) ->
 %%% INTERNAL FUNCTIONS
 %%%
 
-handle_head(<<"408">>, _StatusLn, _Headers, _Rest, _D0) ->
+handle_head(408, _StatusLn, _Headers, _Rest, _D0) ->
     %% 408 Request Timeout means that the server probably timed out before we
     %% sent a request. We shutdown and if we had any pending responses then
     %% they will be resent.
     {stop,{shutdown,reset}};
 
+%%% 101 often means to upgrade to a WebSocket.
+handle_head(101, _, Headers, Rest, D) ->
+    ?DBG(head, "101 Upgrade"),
+    {Req,_Hreq} = hd(D#data.queue),
+    upgrade(Req, Headers, Rest, D);
+
 handle_head(Code, StatusLn, Headers, Rest, D0) ->
     ConnClosed = connection_close(Headers),
     {Req,Hreq} = hd(D0#data.queue),
-    Hres = head(Hreq#head.method, Code, Headers, ConnClosed, StatusLn),
-    Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
-    ?TRACE(Req, Host, "<<", Hres),
-    http_pipe:recv(Req, Hres),
-    case Code of
-        <<"101">> ->
-            ?DBG(head, "101 Upgrade"),
-            upgrade(Req, Headers, Rest, D0);
-        _ ->
+    case head(Hreq#head.method, Code, Headers, ConnClosed, StatusLn) of
+        {ok,Hres} ->
+            Host = fieldlist:get_value(<<"host">>, Hreq#head.headers),
+            ?TRACE(Req, Host, "<<", Hres),
+            http_pipe:recv(Req, Hres),
             CloseStatus = case {Hres#head.bodylen, ConnClosed} of
                               {until_closed,_} -> eof_on_close;
                               {_,true} -> close_on_eof;
@@ -295,35 +303,31 @@ handle_head(Code, StatusLn, Headers, Rest, D0) ->
             end,
             D = D0#data{reader=pimsg_lib:body_reader(Hres#head.bodylen),
                         closed=CloseStatus},
-            {next_state,body,D,{next_event,info,{tcp,null,Rest}}}
+            {next_state,body,D,{next_event,info,{tcp,null,Rest}}};
+        {error,Rsn} ->
+            {stop,Rsn,D0}
     end.
 
 head(ReqMethod, Code, Headers, Closed, StatusLn) ->
-    case body_length(ReqMethod, Code, Headers) of
-        not_found ->
+    case response_length(ReqMethod, Code, Headers) of
+        {error,_} ->
             case Closed of
                 true ->
-                    #head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=until_closed};
+                    %% Connection was closed and so we will just read until the end of input.
+                    {ok,#head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=until_closed}};
                 false ->
-                    exit({missing_length,StatusLn,Headers})
+                    {error,{badhead,StatusLn,Headers}}
             end;
-        Len ->
-            #head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=Len}
-    end.
-
-body_length(Method, Code, Headers) ->
-    %% the response length depends on the request method
-    case response_length(Method, Code, Headers) of
-        {ok,BodyLen} -> BodyLen;
-        {error,{missing_length,_}} -> not_found
+        {ok,Len} ->
+            {ok,#head{method=ReqMethod, line=StatusLn, headers=Headers, bodylen=Len}}
     end.
 
 %%% Reference: RFC7230 3.3.3 p32
-response_length(head, <<"200">>, _) -> {ok, 0}; % optimize 200
-response_length(_, <<"200">>, Headers) -> pihttp_lib:body_length(Headers);
-response_length(_, <<"1",_,_>>, _) -> {ok, 0};
-response_length(_, <<"204">>, _) -> {ok, 0};
-response_length(_, <<"304">>, _) -> {ok, 0};
+response_length(head, 200, _) -> {ok, 0}; % avoid the next match on code 200 for HEAD responses
+response_length(_, 200, Headers) -> pihttp_lib:body_length(Headers);
+response_length(_, N, _) when 100 =< N, N < 200 -> {ok, 0}; % 1XX responses
+response_length(_, 204, _) -> {ok, 0};
+response_length(_, 304, _) -> {ok, 0};
 response_length(head, _, _) -> {ok, 0};
 response_length(_, _, Headers) -> pihttp_lib:body_length(Headers).
 
@@ -377,8 +381,7 @@ upgrade(Req, Headers, Rest, D) ->
         end,
     case T of
         {ok,Msg} ->
-            http_pipe:recv(Req, Msg),
-            http_pipe:recv(Req, eof), % to make http_pipe cleanup
+            http_pipe:recvall(Req, [Msg]), % make http_pipe cleanup
             request_target:finish(D#data.target, Req), % avoid request retry
             {stop,shutdown};
         {error,Rsn} ->
@@ -406,7 +409,7 @@ upgrade_ws(Req, Headers, Sock, Rest) ->
             Err
     end.
 
-upgrade_raw(Req, Sock, Rest) ->
+upgrade_raw(_Req, Sock, Rest) ->
     io:format("*DBG* ~p upgrade_raw~n", [self()]),
     case raw_sock:start(Sock, Rest, [server]) of
         {ok,Pid} ->

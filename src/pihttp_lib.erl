@@ -6,13 +6,13 @@
 -module(pihttp_lib).
 
 -export([nsplit/3, centenc/1, formenc/1, compose_uri/1]).
--export([status_split/1, method_bin/1, method_atom/1, version_atom/1]).
+-export([method_bin/1, method_atom/1, version_atom/1]).
 -export([status_bin/1, encode/1]).
 -export([trace/4]).
 
 %%% HTTP message parsing functions.
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
--export([body_length/1]).
+-export([split_status/2, body_length/1]).
 
 -import(lists, [reverse/1, flatten/1]).
 -include("../include/pihttp_lib.hrl").
@@ -59,33 +59,52 @@ compose_uri({Scheme, UserInfo, Host, Port, Path, Query, Fragment}) ->
              compose3(Scheme, Host, Port),
              compose4(Path, Query, Fragment)],
         string:join(L, "").
-
 compose2(Scheme, "") ->
         atom_to_list(Scheme) ++ "://";
 compose2(Scheme, UserInfo) ->
         atom_to_list(Scheme) ++ "://" ++ UserInfo ++ "@".
-
 compose3(http, Host, 80) ->
         Host;
 compose3(https, Host, 443) ->
         Host;
 compose3(_, Host, Port) ->
         Host ++ ":" ++ integer_to_list(Port).
-
 compose4(Path, Query, Fragment) ->
         Path ++ Query ++ Fragment.
 
-status_split(<<"HTTP/",VerMaj," ",Status:3/binary," ">>) ->
-    {ok, {{VerMaj-$0, 0}, Status, ?EMPTY}};
-status_split(<<"HTTP/",VerMaj," ",Status:3/binary," ",Phrase/binary>>) ->
-    {ok, {{VerMaj-$0, 0}, Status, Phrase}};
-status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">>) ->
-    %% Ignore a missing reason-phrase.
-    {ok, {{VerMaj-$0, VerMin-$0}, Status, ?EMPTY}};
-status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ", Phrase/binary>>) ->
-    {ok, {{VerMaj-$0, VerMin-$0}, Status, Phrase}};
-status_split(Line) ->
-    {error, {badarg,Line}}.
+req_ver_tuple(<<Maj,".",Min>>) ->
+    {Maj-$0,Min-$0};
+req_ver_tuple(_) ->
+    badarg.
+
+res_ver_tuple(<<"HTTP/",Maj,".",Min>>) ->
+    {Maj-$0,Min-$0};
+res_ver_tuple(_) ->
+    badarg.
+
+split_status(request, Bin) ->
+    case nsplit(3,Bin,<<" ">>) of
+        {ok,[Method,Uri,Ver]} ->
+            case {method_atom(Method),req_ver_tuple(Ver)} of
+                {unknown,_} -> {error,{badstatus,Bin}};
+                {_,badarg} -> {error,{badstatus,Bin}};
+                {A,T} -> {ok,{A,Uri,T}}
+            end;
+        error ->
+            {error,{badstatus,Bin}}
+    end;
+
+split_status(response, Bin) ->
+    case nsplit(3,Bin,<<" ">>) of
+        {ok,[Ver,Code,Reason]} ->
+            case {res_ver_tuple(Ver),catch(binary_to_integer(Code))} of
+                {badarg,_} -> {error,{badstatus,Bin}};
+                {_,{'EXIT',{badarg,_}}} -> {error,{badstatus,Bin}};
+                {A,N} -> {ok,{A,N,Reason}}
+            end;
+        error ->
+            {error,{badstatus,Bin}}
+    end.
 
 method_bin(get) -> <<"GET">>;
 method_bin(post) -> <<"POST">>;
@@ -369,7 +388,7 @@ body_length(Headers) ->
                                         Headers, ?EMPTY),
     case {ContentLength, Chunked} of
         {?EMPTY, false} ->
-            {error,{missing_length,Headers}};
+            {error,{badheaders,Headers}};
         {?EMPTY, true} ->
             {ok, chunked};
         {_Bin, true} ->

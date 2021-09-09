@@ -11,7 +11,6 @@
 
 -define(IDLE_TIMEOUT, 5*60*1000).
 -define(ACTIVE_TIMEOUT, 5000).
-%% TODO: move CONNECT_TIMEOUT here
 
 -record(data, {target, socket, reader, queue=[], active}).
 -export([start/0, stop/1, control/2]).
@@ -110,8 +109,13 @@ handle_event(info, {A,_,Bin}, head, D)
             {keep_state,D#data{reader=Reader},
              {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            H = head(StatusLn, Headers),
-            handle_head(H, target(H), Rest, D)
+            %% head may throw an exit/error
+            case head(StatusLn, Headers) of
+                {ok,H} ->
+                    handle_head(H, target(H), Rest, D);
+                {error,Rsn} ->
+                    {stop,Rsn,D}
+            end
     end;
 
 handle_event(info, {A,_,Bin1}, body, D)
@@ -171,7 +175,7 @@ handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, paused, D) ->
             %% Transfers the socket to the new process and shuts down.
             Bin = iolist_to_binary(reverse(D#data.reader)),
             {M,F,Opts} = MFA,
-            case apply(M, F, [D#data.socket, Bin, Opts]) of
+            case M:F(D#data.socket, Bin, Opts) of
                 {ok,_} ->
                     {stop,shutdown};
                 {error,Rsn} ->
@@ -307,40 +311,16 @@ send(Sock, Term) ->
     end.
 
 head(StatusLn, Headers) ->
-    Len = body_length(StatusLn, Headers),
-    {ok,[MethodBin,_UriBin,VerBin]} = pihttp_lib:nsplit(3, StatusLn, <<" ">>),
-    case {pihttp_lib:method_atom(MethodBin), pihttp_lib:version_atom(VerBin)} of
-        {unknown,_} ->
-            ?DBG("head", {bad_http_method,MethodBin}),
-            exit({bad_http_method,MethodBin});
-        {_,unknown} ->
-            ?DBG("head", {bad_http_version,VerBin}),
-            exit({bad_http_version,VerBin});
-        {Method,Ver} ->
-            #head{line=StatusLn, method=Method, version=Ver,
-                  headers=Headers, bodylen=Len}
-    end.
-
-body_length(StatusLn, Headers) ->
-    case pihttp_lib:nsplit(3, StatusLn, <<" ">>) of
-        {ok,[MethodBin,_UriBin,VerBin]} ->
-            case pihttp_lib:version_atom(VerBin) of
-                http11 ->
-                    ok;
-                _ ->
-                    exit({bad_http_version,VerBin})
-            end,
-            case pihttp_lib:method_atom(MethodBin) of
-                unknown ->
-                    exit({bad_http_method,MethodBin});
-                Method ->
-                    case request_length(Method, Headers) of
-                        {error,Rsn} -> exit(Rsn);
-                        {ok,BodyLen} -> BodyLen
-                    end
+    case pihttp_lib:split_status(request,StatusLn) of
+        {ok,{Method,_Uri,Ver}} ->
+            case request_length(Method,Headers) of
+                {ok,Len} ->
+                    {ok,#head{line=StatusLn,method=Method,version=Ver,headers=Headers,bodylen=Len}};
+                {error,_} = Err ->
+                    Err
             end;
-        {error,badarg} ->
-            exit(http_bad_request)
+        {error,_} = Err  ->
+            Err
     end.
 
 request_length(connect, _) -> {ok,0};
