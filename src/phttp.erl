@@ -15,10 +15,9 @@
 
 %% Split Subject into exactly N fields. Fields are separated by Pattern.
 nsplit(N, _, _) when N < 1 ->
-    error(bad_argument);
+    error(badarg);
 nsplit(N, Subject, Pattern) ->
     nsplit(N, Subject, Pattern, []).
-
 nsplit(1, Subject, _, L) ->
     {ok, reverse([Subject|L])};
 nsplit(N, Subject, Pattern, L) ->
@@ -34,9 +33,8 @@ centenc(Chars) ->
         {error,Err} -> error(Err);
         L -> centenc(L, [])
     end.
-
 centenc([], L2) ->
-    flatten(reverse(L2));
+    reverse(L2);
 centenc([Ch|L1], L2)
   when Ch >= $a, Ch =< $z;
        Ch >= $A, Ch =< $Z;
@@ -83,7 +81,7 @@ status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ">>) ->
 status_split(<<"HTTP/",VerMaj,".",VerMin," ",Status:3/binary," ", Phrase/binary>>) ->
     {ok, {{VerMaj-$0, VerMin-$0}, Status, Phrase}};
 status_split(Line) ->
-    {error, {bad_status_line,Line}}.
+    {error, {badarg,Line}}.
 
 method_bin(get) -> <<"GET">>;
 method_bin(post) -> <<"POST">>;
@@ -123,14 +121,11 @@ status_bin(_) -> not_found.
 
 encode(#head{line=Line, headers=Headers}) ->
     [Line,<<?CRLF>>,fieldlist:to_binary(Headers)|<<?CRLF>>];
-
 encode({body,Body}) ->
     Body;
-
 encode({error,Reason}) ->
     Bin = error_bin(Reason),
     [<<?HTTP11," ">>,Bin,<<?CRLF>>,<<"content-length:0">>,<<?CRLF>>,<<?CRLF>>];
-
 encode({status,HttpStatus}) ->
     case status_bin(HttpStatus) of
         not_found ->
@@ -145,20 +140,13 @@ error_bin({malformed_uri,_,_}) -> status_bin(http_bad_request);
 error_bin({unknown_method,_}) -> status_bin(http_bad_request);
 error_bin({unknown_version,_}) -> status_bin(http_bad_request);
 error_bin({unknown_length,_,_}) -> status_bin(http_bad_request);
-
-%% from pimsg_lib:body_length/1
-error_bin({missing_length,_}) -> status_bin(http_bad_request);
-
-%% from http11_res
-error_bin({shutdown,timeout}) -> status_bin(http_gateway_timeout);
-%% http11_res:body_length/3
-error_bin({missing_length,_,_}) -> status_bin(http_bad_gateway);
-
+error_bin({missing_length,_}) -> status_bin(http_bad_request); % pimsg_lib:body_length/1
+error_bin({shutdown,timeout}) -> status_bin(http_gateway_timeout); % http11_res
+error_bin({missing_length,_,_}) -> status_bin(http_bad_gateway); % http11_res:body_length/3
 error_bin(_) -> status_bin(http_bad_gateway).
 
 trace(_, _, _, _) ->
     ok;
-
 trace(Sess, Host, Arrow, Term) ->
     {_,{_H,M,S}} = calendar:local_time(),
     Str = case Term of
