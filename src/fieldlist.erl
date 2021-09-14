@@ -10,42 +10,9 @@
 
 trimows(?EMPTY) ->
     ?EMPTY;
+
 trimows(Bin) ->
-    rtrimows(ltrimows(Bin)).
-
-rtrimows(?EMPTY) ->
-    ?EMPTY;
-rtrimows(Bin) ->
-    Last = binary:last(Bin),
-    if
-        Last =:= $\s orelse Last =:= $\t ->
-            N = byte_size(Bin),
-            if
-                N =:= 1 ->
-                    ?EMPTY;
-                true ->
-                    rtrimows(binary_part(Bin, 0, N-1))
-            end;
-        true ->
-            Bin
-    end.
-
-ltrimows(?EMPTY) ->
-    ?EMPTY;
-ltrimows(Bin) ->
-    First = binary:first(Bin),
-    if
-        First =:= $\s orelse First =:= $\t ->
-            N = byte_size(Bin),
-            if
-                N =:= 1 ->
-                    ?EMPTY;
-                true ->
-                    ltrimows(binary_part(Bin, 1, N-1))
-            end;
-        true ->
-            Bin
-    end.
+    string:trim(Bin, both, "\s\t").
 
 add(F, FL) ->
     case binary:match(F, <<?COLON>>) of
@@ -55,17 +22,20 @@ add(F, FL) ->
             {ok, [{Pos,F}|FL]}
     end.
 
-add_value(Name, Value, FL) ->
-    BinName = list_to_binary(Name),
-    BinValue = if
-                   is_list(Value) ->
-                       list_to_binary(Value);
-                   is_binary(Value) ->
-                       Value;
-                   true ->
-                       exit(badarg)
-               end,
-    [{length(Name),<<BinName/binary,": ",BinValue/binary>>}|FL].
+add_value(Name,Value,FL) when is_atom(Name) ->
+    add_value(atom_to_list(Name),Value,FL);
+
+add_value(Name,Value,FL) when is_list(Name) ->
+    add_value(list_to_binary(Name),Value,FL);
+
+add_value(Name,Value,FL) when is_list(Value) ->
+    add_value(Name,list_to_binary(Value),FL);
+
+add_value(Name,Value,FL) when is_binary(Name); is_binary(Value) ->
+    [{size(Name),<<Name/binary,": ",Value/binary>>}|FL];
+
+add_value(_,_,_) ->
+    exit(badarg).
 
 find(Name, FL) ->
     find(Name, FL, 1).
@@ -151,21 +121,18 @@ to_binary(FL) ->
     iolist_to_binary(to_iolist(FL)).
 
 to_proplist(FL) ->
-    to_proplist(FL, []).
-
-to_proplist([], PL) ->
-    PL;
-
-to_proplist([{Pos,Bin}|FL], PL) ->
-    Prop = binary_to_list(binary_lcase(binary_part(Bin, 0, Pos))),
-    Value = binary_to_list(trimows(binary_part(Bin, Pos+1, byte_size(Bin)-Pos-1))),
-    to_proplist(FL, [{list_to_atom(Prop),Value}|PL]).
+    lists:map(fun ({Pos,Bin}) ->
+                      PropBin = binary_part(Bin, 0, Pos),
+                      ValueBin = binary_part(Bin, Pos+1, byte_size(Bin)-Pos-1),
+                      Prop = list_to_atom(binary_to_list(binary_lcase(PropBin))),
+                      Value = binary_to_list(trimows(ValueBin)),
+                      {Prop,Value}
+              end, FL).
 
 from_proplist(PL) ->
     lists:foldl(fun ({K,V}, FL) ->
                         fieldlist:add_value(K, V, FL)
                 end, [], PL).
-
 
 binary_lcase(?EMPTY) ->
     ?EMPTY;
