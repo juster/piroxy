@@ -238,7 +238,7 @@ handle_event(info, {http_pipe,Req,#head{}=Head}, _, D) ->
     %% pipeline.
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Req, Host, ">>", Head),
-    pisock:send(D#data.socket, pihttp_lib:encode(Head)),
+    pisock_lib:send(D#data.socket, pihttp_lib:encode(Head)),
     Q = D#data.queue ++ [{Req,Head}],
     {keep_state, D#data{queue=Q}};
 
@@ -261,7 +261,7 @@ handle_event(info, {http_pipe,Req,eof}, _, _) ->
     keep_state_and_data;
 
 handle_event(info, {http_pipe,_Req,Term}, _, D) ->
-    pisock:send(D#data.socket, pihttp_lib:encode(Term)),
+    pisock_lib:send(D#data.socket, pihttp_lib:encode(Term)),
     keep_state_and_data.
 
 %%%

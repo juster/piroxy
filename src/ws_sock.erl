@@ -15,8 +15,8 @@
 start(Sock, Bin, Opts) ->
     case gen_statem:start(?MODULE, Opts, []) of
         {ok,Pid}=T ->
-            pisock:setopts(Sock, [{active,false}]),
-            pisock:control(Sock, Pid),
+            pisock_lib:setopts(Sock, [{active,false}]),
+            pisock_lib:control(Sock, Pid),
             gen_statem:cast(Pid, {upgrade,Sock,Bin}),
             T;
         {error,_}=Err ->
@@ -80,7 +80,7 @@ handle_event({call,From}, {handshake,MFA}, intro, D) ->
      {reply, From, {?MODULE,websocket,[self()]}}};
 
 handle_event(cast, {upgrade,Sock,Bin}, take_socket, D) ->
-    case pisock:setopts(Sock, [{active,true}]) of
+    case pisock_lib:setopts(Sock, [{active,true}]) of
         ok ->
             {next_state, active, D#data{socket=Sock},
              case Bin of
@@ -99,7 +99,7 @@ handle_event(_, _, A, _)
 
 handle_event(cast, {websocket,Bin}, active, D) when is_binary(Bin)->
     %% raw binary is sent in order to be relayed across the opposite socket
-    pisock:send(D#data.socket, Bin),
+    pisock_lib:send(D#data.socket, Bin),
     keep_state_and_data;
 
 handle_event(cast, {websocket,Frame}, active, _) when is_tuple(Frame) ->

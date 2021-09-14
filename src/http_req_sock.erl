@@ -308,7 +308,7 @@ handle_event(cast, {connect,_}, tunnel, D) ->
 
 send(Sock, Term) ->
     %%io:format("~s----~n", [pihttp_lib:encode(Term)]),
-    case pisock:send(Sock, pihttp_lib:encode(Term)) of
+    case pisock_lib:send(Sock, pihttp_lib:encode(Term)) of
         ok -> keep_state_and_data;
         {error,closed} -> {stop,shutdown};
         {error,einval} -> {stop,shutdown};

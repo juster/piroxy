@@ -21,8 +21,8 @@ relay(Pid, Term) ->
 
 start(Socket, Bin, Opts) ->
     Pid = spawn(?MODULE, loop, [Opts]),
-    pisock:setopts(Socket, [{active,false}]),
-    case pisock:control(Socket, Pid) of
+    pisock_lib:setopts(Socket, [{active,false}]),
+    case pisock_lib:control(Socket, Pid) of
         ok ->
             Pid ! {upgrade,Socket,Bin},
             {ok,Pid};
@@ -60,7 +60,7 @@ loop(Role,{M,F,A}=MFA) ->
         {upgrade,Sock,Bin} ->
             %% Ensure that the leftover binary is relayed
             apply(M, F, A++[Bin]),
-            pisock:setopts(Sock, [{active,true}]),
+            pisock_lib:setopts(Sock, [{active,true}]),
             loop(Role,MFA,Sock)
     end.
 
@@ -80,7 +80,7 @@ loop(Role,{M,F,A}=MFA,Sock) ->
         {raw_sock,exit} ->
             shutdown(Role,MFA,Sock);
         {raw_sock,Bin} when is_binary(Bin) ->
-            case pisock:send(Sock,Bin) of
+            case pisock_lib:send(Sock,Bin) of
                 ok ->
                     loop(Role,MFA,Sock);
                 {error,Rsn} ->
@@ -96,7 +96,7 @@ loop(Role,{M,F,A}=MFA,Sock) ->
     end.
 
 shutdown(Role,{M,F,A}=MFA,Sock) ->
-    case pisock:shutdown(Sock, write) of
+    case pisock_lib:shutdown(Sock, write) of
         ok ->
             cleanup(Role,MFA,Sock);
         {error,closed} ->
@@ -117,7 +117,7 @@ cleanup(Role,{M,F,A}=MFA,Sock) ->
         {ssl_closed,_} ->
             exit(shutdown);
         {raw_sock,exit} ->
-            pisock:close(Sock),
+            pisock_lib:close(Sock),
             exit(shutdown);
         {raw_sock,_} ->
             cleanup(Role,MFA,Sock);

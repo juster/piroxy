@@ -1,4 +1,4 @@
--module(pisock).
+-module(pisock_lib).
 -export([send/2, shutdown/2, setopts/2, control/2, close/1]).
 
 send({tcp,Sock}, Data) ->
