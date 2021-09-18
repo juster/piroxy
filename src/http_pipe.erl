@@ -85,7 +85,7 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,Dict0}=State) ->
                     %% Ensure this is the first session for Pid2 and then send
                     %% any previously cached messages.
                     Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,send})],
-                    Dict = case sendall(Pid2, Id, Msgs) of
+                    Dict = case sendall(http_res_sock,Pid2,Id,Msgs) of
                                true ->
                                    Dict0;
                                false ->
@@ -215,7 +215,7 @@ handle_cast({recv,Id,Term}, {MsgTab,Sessions0,_}=State) ->
                 T ->
                     %% This session is at the front of the Pid1's pipeline so we
                     %% can send it directly.
-                    Pid1 ! {http_pipe,Id,Term},
+                    http_req_sock:transmit(Pid1,Id,Term),
                     case Term of
                         eof ->
                             %% Avoid inserting into ETS table if we are going to
@@ -247,7 +247,7 @@ flush_server(Pid2, {MsgTab,Sessions,Dict0}=State) ->
     case dict:find(Pid2, Dict0) of
         {ok,[Id|L]} ->
             Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,send})],
-            case sendall(Pid2, Id, Msgs) of
+            case sendall(http_res_sock,Pid2,Id,Msgs) of
                 true ->
                     Dict = case L of
                                [] -> dict:erase(Pid2, Dict0);
@@ -270,7 +270,7 @@ flush_client(Pid1, {MsgTab,Sessions0,_}=State) ->
             State;
         {Id,_,_Pid2}=T ->
             Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,recv})],
-            case sendall(Pid1, Id, Msgs) of
+            case sendall(http_req_sock,Pid1,Id,Msgs) of
                 true ->
                     flush_client(Pid1, cleanup(T, State));
                 false ->
@@ -290,13 +290,13 @@ cleanup({Id,_,Pid2}, {MsgTab,Sessions0,Dict0}) ->
             {MsgTab,Sessions,dict_delete(Pid2, Id, Dict0)}
     end.
 
-sendall(Pid, Id, [eof]) ->
-    Pid ! {http_pipe,Id,eof},
+sendall(M,Pid,Sid,[eof]) ->
+    M:transmit(Pid,Sid,eof),
     true;
 
-sendall(_, _, []) ->
+sendall(_,_,_,[]) ->
     false;
 
-sendall(Pid, Id, [Msg|L]) ->
-    Pid ! {http_pipe,Id,Msg},
-    sendall(Pid, Id, L).
+sendall(M,Pid,Sid,[Msg|L]) ->
+    M:transmit(Pid,Sid,Msg),
+    sendall(M,Pid,Sid,L).
