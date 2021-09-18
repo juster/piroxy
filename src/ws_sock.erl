@@ -16,7 +16,7 @@ start(Sock, Bin, Opts) ->
     case gen_statem:start(?MODULE, Opts, []) of
         {ok,Pid}=T ->
             pisock_lib:setopts(Sock, [{active,false}]),
-            pisock_lib:control(Sock, Pid),
+            pisock_lib:controlling_process(Sock, Pid),
             gen_statem:cast(Pid, {upgrade,Sock,Bin}),
             T;
         {error,_}=Err ->

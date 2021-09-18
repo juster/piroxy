@@ -22,7 +22,7 @@ relay(Pid, Term) ->
 start(Socket, Bin, Opts) ->
     Pid = spawn(?MODULE, loop, [Opts]),
     pisock_lib:setopts(Socket, [{active,false}]),
-    case pisock_lib:control(Socket, Pid) of
+    case pisock_lib:controlling_process(Socket, Pid) of
         ok ->
             Pid ! {upgrade,Socket,Bin},
             {ok,Pid};
