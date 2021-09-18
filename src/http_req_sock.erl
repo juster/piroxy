@@ -175,7 +175,7 @@ handle_event(info, {A,_,Reason}, _, _)
 handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, paused, D) ->
     case D#data.queue of
         [] ->
-            error(underrun);
+            {stop,underrun};
         [Res] ->
             %% Transfers the socket to the new process and shuts down.
             Bin = iolist_to_binary(reverse(D#data.reader)),
@@ -184,46 +184,50 @@ handle_event(info, {http_pipe,Res,{upgrade_socket,MFA}}, paused, D) ->
                 {ok,_} ->
                     {stop,shutdown};
                 {error,Rsn} ->
-                    error(Rsn)
+                    {stop,Rsn}
             end;
         [Res|_] ->
-            error(outoforder);
+            {stop,outoforder};
         _ ->
-            error(overrun)
+            {stop,overrun}
     end;
 
-handle_event(info, {http_pipe,Res,eof}, paused, D) ->
+handle_event(info,{http_pipe,Res,eof},paused,D) ->
     Host = case D#data.target of
                undefined -> "???";
                _ -> element(2,D#data.target)
            end,
     case D#data.queue of
         [] ->
-            error(request_underrun);
+            {stop,underrun};
         [Res|Q] ->
             ?TRACE(Res, Host, "<", "EOF"),
-            {keep_state, D#data{queue=Q}};
+            {keep_state,D#data{queue=Q}};
         [Res] ->
             %% If we get this far, an upgrade request did not result in a
             %% successful upgrade response (101). Restart the pipeline.
             ?TRACE(Res, Host, "<", "EOF"),
             Bin = iolist_to_binary(reverse(D#data.reader)),
-            {next_state, idle,
-             D#data{queue=[], reader=undefined, active=undefined},
-             {next_event, info, {tcp,null,Bin}}}
+            {next_state,idle,
+             D#data{queue=[],reader=undefined,active=undefined},
+             {next_event,info,{tcp,null,Bin}}}
     end;
 
 
 handle_event(info, {http_pipe,Res,eof}, _, D) ->
     %% Avoid trying to encode the 'eof' atom. Pop the first response ID off the
     %% queue.
-    [Res|Q] = D#data.queue,
-    Host = case D#data.target of
-               undefined -> "???";
-               _ -> element(2,D#data.target)
-           end,
-    ?TRACE(Res, Host, "<", "EOF"),
-    {keep_state, D#data{queue=Q}};
+    case D#data.queue of
+        [Res|Q] ->
+            Host = case D#data.target of
+                       undefined -> "???";
+                       _ -> element(2,D#data.target)
+                   end,
+            ?TRACE(Res, Host, "<", "EOF"),
+            {keep_state,D#data{queue=Q}};
+        _ ->
+            {stop,outoforder}
+    end;
 
 handle_event(info, {http_pipe,_,{upgrade_socket,_,_}}, _, _) ->
     %% Ignore upgrade messages if we are not in the upgrade state.
