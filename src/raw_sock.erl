@@ -1,133 +1,109 @@
 -module(raw_sock).
+-export([start_link/1,init/1,handshake/2,binary_to/2,relay_binary/2]).
+-record(state, {socket,relay=[],buffer=[]}).
 -include_lib("kernel/include/logger.hrl").
 
--export([start/3, loop/1, handshake/2, relay/2]).
-
-handshake(Pid, MFA) ->
-    link(Pid),
-    Pid ! {handshake,self(),MFA},
-    receive
-        {handshake,Pid,MFA2} ->
-            MFA2
-    end.
-
-relay(Pid, Term) ->
-    Pid ! {raw_sock,Term},
-    ok.
-
 %%%
-%%% raw_sock socket handler process
+%%% EXPORTS
 %%%
 
-start(Socket, Bin, Opts) ->
-    Pid = spawn(?MODULE, loop, [Opts]),
-    pisock_lib:setopts(Socket, [{active,false}]),
-    case pisock_lib:controlling_process(Socket, Pid) of
-        ok ->
-            Pid ! {upgrade,Socket,Bin},
-            {ok,Pid};
-        {error,_} = Err ->
-            exit(Pid, kill),
-            Err
-    end.
-
-loop(Opts) ->
-    io:format("*DBG* spawned raw_sock ~p~n", [self()]),
-    Client = proplists:get_bool(client, Opts),
-    Server = proplists:get_bool(server, Opts),
-    Role = if
-               Client -> client;
-               Server -> server;
-               true -> exit(badarg)
-           end,
-    MFA = {?MODULE,relay,[self()]}, % the MFA used to send us messages
-    case proplists:get_value(handshake, Opts) of
-        {M,F,A} ->
-            %% Start the handshake ourselves.
-            loop(Role, apply(M,F,A++[MFA]));
+start_link(Opts) ->
+    case proplists:get_value(socket,Opts) of
         undefined ->
-            %% Wait to receive the handshake. This is send via the handshake/2
-            %% exported fun
-            receive
-                {handshake,Pid2,MFA2} ->
-                    Pid2 ! {handshake,self(),MFA},
-                    loop(Role, MFA2)
+            exit(badarg);
+        Sock ->
+            pisock_lib:setopts(Sock,[{active,false}]),
+            Pid = spawn_link(fun () -> init(Opts) end),
+            case pisock_lib:controlling_process(Sock,Pid) of
+                ok ->
+                    {ok,Pid};
+                Any ->
+                    unlink(Pid),
+                    exit(Pid,kill),
+                    Any
             end
     end.
 
-loop(Role,{M,F,A}=MFA) ->
-    receive
-        {upgrade,Sock,Bin} ->
-            %% Ensure that the leftover binary is relayed
-            apply(M, F, A++[Bin]),
-            pisock_lib:setopts(Sock, [{active,true}]),
-            loop(Role,MFA,Sock)
+init(Opts) ->
+    [Sock,Buf] = [proplists:get_value(A,Opts) || A <- [socket,buffer]],
+    case lists:member(undefined,[Sock,Buf]) of
+        true ->
+            exit(badarg);
+        false ->
+            loop(#state{socket=Sock,buffer=Buf})
     end.
 
-loop(Role,{M,F,A}=MFA,Sock) ->
+handshake(Pid1,Pid2) ->
+    Pid1 ! {handshake,binary,Pid2}.
+
+binary_to(Pid1,L) ->
+    Pid1 ! {binary_to,L},
+    ok.
+
+relay_binary(Pid,Any) ->
+    Pid ! {binary,Any}.
+
+%%%
+%%% INTERNAL
+%%%
+
+loop(State0) ->
     receive
-        {X,_,Bin} when X == tcp; X == ssl ->
-            apply(M, F, A++[Bin]),
-            loop(Role,MFA,Sock);
-        {X,_,Rsn} when X == tcp_error; X == ssl_error ->
-            ?LOG_ERROR("raw_sock ~s: ~p", [A,Rsn]),
-            apply(M, F, A++[exit]),
-            shutdown(Role,MFA,Sock);
-        {X,_} when X == tcp_closed; X == ssl_closed ->
-            apply(M, F, A++[exit]),
-            shutdown(Role,MFA,Sock);
-        %% messages sent from relay/2
-        {raw_sock,exit} ->
-            shutdown(Role,MFA,Sock);
-        {raw_sock,Bin} when is_binary(Bin) ->
-            case pisock_lib:send(Sock,Bin) of
-                ok ->
-                    loop(Role,MFA,Sock);
-                {error,Rsn} ->
-                    exit(Rsn)
-            end;
-        {http_pipe,_,_} = Msg ->
-            ?LOG_ERROR("trailing http_pipe message to raw_sock (~p): ~p~n",
-                       [self(),Msg]),
-            error(trailing_http_pipe);
         Any ->
-            io:format("*DBG* received unexpected messages: ~p~n", [Any]),
-            error(internal)
+            loop(handle(Any, State0))
     end.
 
-shutdown(Role,{M,F,A}=MFA,Sock) ->
-    case pisock_lib:shutdown(Sock, write) of
-        ok ->
-            cleanup(Role,MFA,Sock);
-        {error,closed} ->
-            apply(M, F, A++[exit]),
-            exit(closed);
-        {error,Rsn} ->
-            exit(Rsn)
-    end.
+handle({handshake,binary,Pid2},S) ->
+    binary_to(Pid2,self()),
+    S;
 
-cleanup(Role,{M,F,A}=MFA,Sock) ->
-    io:format("*DBG* raw_sock:cleanup~n"),
-    receive
-        {X,_,Bin} when X == tcp; X == ssl ->
-            apply(M, F, A++[Bin]),
-            cleanup(Role,MFA,Sock);
-        {tcp_closed,_} ->
-            exit(shutdown);
-        {ssl_closed,_} ->
-            exit(shutdown);
-        {raw_sock,exit} ->
-            pisock_lib:close(Sock),
-            exit(shutdown);
-        {raw_sock,_} ->
-            cleanup(Role,MFA,Sock);
-        {X,_,Rsn} when X == tcp_error; X == ssl_error ->
-            ?LOG_ERROR("raw_sock ~s: ~p", [X, Rsn]),
-            exit(Rsn);
-        {X,_} when X == tcp_closed; X == ssl_closed ->
-            apply(M, F, A++[exit]),
-            exit(shutdown);
-        Any ->
-            ?LOG_ERROR("raw_sock received unknown message: ~p", [Any]),
-            error(internal)
-    end.
+handle({handshake,_,_},S) ->
+    S;
+
+handle({binary_to,L},#state{relay=undefined} = S) ->
+    #state{socket=Sock,buffer=Buf} = S,
+    lists:foreach(fun (Pid) ->
+                          relay_binary(Pid,Buf),
+                          link(Pid)
+                  end,L),
+    ok = pisock_lib:set_opts(Sock,[{active,true}]),
+    S#state{relay=L,buffer=undefined};
+
+handle({binary_to,L},_) ->
+    ?LOG_ERROR("raw_sock: attempt to set relay twice"),
+    lists:foreach(fun (Pid) -> exit(Pid,kill) end, L),
+    exit(badlogic);
+
+handle({binary,Bin},#state{socket=Sock} = S)
+  when is_binary(Bin) ->
+    pisock_lib:send(Sock,Bin),
+    S;
+
+handle({binary,_},_) ->
+    exit(badarg);
+
+handle(closed,#state{relay=Pid,socket=Sock}) ->
+    pisock_lib:close(Sock),
+    case Pid of
+        undefined ->
+            ok;
+        _ ->
+            Pid ! closed
+    end,
+    exit(normal);
+
+handle({X,_,_},#state{relay=undefined}) when X == tcp; X == ssl ->
+    %% socket should not be active until a relay is provided!
+    exit(badlogic);
+
+handle({X,_,Bin},#state{relay=L} = S) when X == tcp; X == ssl ->
+    lists:foreach(fun (Pid) -> relay_binary(Pid,Bin) end, L),
+    S;
+
+handle({X,_,Rsn},#state{socket=Sock}) when X == tcp_error; X == ssl_error ->
+    ?LOG_ERROR("raw_sock ~s: ~p", [X,Rsn]),
+    pisock_lib:close(Sock),
+    exit({X,Rsn});
+
+handle({X,_},_) when X == tcp_closed; X == ssl_closed ->
+    exit(closed).
