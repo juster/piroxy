@@ -90,6 +90,7 @@ acknowledge({A,WsPid,{BinPid,FramePid}}, S0) ->
     RawPid ! {hello,self(),[self()|L]},
     receive
         {howdy,RawPid,_} ->
+            dispatch(open, S),
             S
     after 1000 ->
             exit(timeout)
