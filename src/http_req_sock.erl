@@ -187,7 +187,7 @@ handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
                           (close) ->
                               piroxy_events:close(Res,ws);
                           ({frame,_} = Frame) ->
-                              piroxy_events:recv(Res,ws,Frame)
+                              piroxy_events:send(Res,ws,Frame)
                       end,
             %% XXX: EventCb is ignored by raw_sock
             case M:start_link(D#data.socket,

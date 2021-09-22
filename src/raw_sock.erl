@@ -1,5 +1,5 @@
 -module(raw_sock).
--export([start_link/1,init/1,handshake/2,relay_binary/2]).
+-export([start_link/1,init/1,handshake/2,relay_binary/2,close/1]).
 -record(state, {socket,relay=[],buffer=[]}).
 -include_lib("kernel/include/logger.hrl").
 
@@ -34,7 +34,6 @@ init(Opts) ->
     end.
 
 handshake(Pid1,Pid2) ->
-    Ref = make_ref(),
     Pid1 ! {handshake,self(),Pid2},
     receive
         {handshake,Term} ->
@@ -45,6 +44,15 @@ handshake(Pid1,Pid2) ->
 
 relay_binary(Pid,Any) ->
     Pid ! {binary,Any}.
+
+close(Pid) ->
+    Pid ! {close,self()},
+    receive
+        closed ->
+            ok
+    after 1000 ->
+            error(timeout)
+    end.
 
 %%%
 %%% INTERNAL
@@ -84,16 +92,7 @@ loop(State0) ->
             loop(handle(Any, State0))
     end.
 
-handle({binary_to,L},#state{relay=undefined} = S) ->
-    #state{socket=Sock,buffer=Buf} = S,
-    S#state{relay=L,buffer=undefined};
-
-handle({binary_to,L},_) ->
-    ?LOG_ERROR("raw_sock: attempt to set relay twice"),
-    lists:foreach(fun (Pid) -> exit(Pid,kill) end, L),
-    exit(badlogic);
-
-handle({binary,Bin},#state{socket=Sock} = S)
+handle({binary,Bin}, #state{socket=Sock} = S)
   when is_binary(Bin) ->
     pisock_lib:send(Sock,Bin),
     S;
@@ -101,22 +100,18 @@ handle({binary,Bin},#state{socket=Sock} = S)
 handle({binary,_},_) ->
     exit(badarg);
 
-handle(closed,#state{relay=Pid,socket=Sock}) ->
-    pisock_lib:close(Sock),
-    case Pid of
-        undefined ->
-            ok;
-        _ ->
-            Pid ! closed
-    end,
-    exit(normal);
+handle({close,Reply}, S) ->
+    %% XXX: tcp_closed/ssl_closed event should fire after this
+    pisock_lib:close(S#state.socket),
+    Reply ! closed,
+    exit(closed);
 
 handle({X,_,_},#state{relay=undefined}) when X == tcp; X == ssl ->
     %% socket should not be active until a relay is provided!
     exit(badlogic);
 
-handle({X,_,Bin},#state{relay=L} = S) when X == tcp; X == ssl ->
-    lists:foreach(fun (Pid) -> relay_binary(Pid,Bin) end, L),
+handle({X,_,Bin}, S) when X == tcp; X == ssl ->
+    relay({binary,Bin}, S),
     S;
 
 handle({X,_,Rsn},#state{socket=Sock}) when X == tcp_error; X == ssl_error ->
@@ -124,5 +119,12 @@ handle({X,_,Rsn},#state{socket=Sock}) when X == tcp_error; X == ssl_error ->
     pisock_lib:close(Sock),
     exit({X,Rsn});
 
-handle({X,_},_) when X == tcp_closed; X == ssl_closed ->
+handle({X,_}, _) when X == tcp_closed; X == ssl_closed ->
+    %% - for raw_sock pairs, the twin raw_sock is linked and exits.
+    %% - for ws_sock pairs, the ws_sock which owns this raw_sock gets the
+    %%   {'EXIT',Pid,closed} message.
     exit(closed).
+
+relay(Term,S) ->
+    lists:foreach(fun (Pid) -> Pid ! Term end, S#state.relay),
+    ok.

@@ -8,6 +8,7 @@
 %%%
 
 start_link(Opts0) ->
+    process_flag(trap_exit, true),
     case raw_sock:start_link(Opts0) of
         {ok,Pid1} ->
             Opts = [{rawpid,Pid1}|Opts0],
@@ -105,6 +106,20 @@ loop(State0) ->
 
 handle({binary,Bin}, S) ->
     parse(Bin,S);
+
+handle({'EXIT',Pid,closed}, S) ->
+    case S#state.rawpid of
+        Pid ->
+            ok;
+        RawPid ->
+            raw_sock:close(RawPid)
+    end,
+    dispatch(close,S),
+    exit(closed);
+
+handle({'EXIT',_,Error}, S) ->
+    dispatch({fail,Error},S),
+    exit(Error);
 
 handle(Any, S) ->
     ?LOG_WARNING("ws_sock: unknown message ~p", [Any]),

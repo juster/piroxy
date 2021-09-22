@@ -404,9 +404,11 @@ upgrade_ws(Req, Headers, Sock, Rest, TargetHost) ->
                    throw(raw_sock)
            end,
     EventCb = fun (open) ->
-                      piroxy_events:connect(Req,ws,TargetHost);
+                      %% Only one side (ws_sock) of the session can log open/close events.
+                      %% We log open/close events from the http_req_sock side.
+                      ok;
                   (close) ->
-                      piroxy_events:close(Req,ws);
+                      ok;
                   ({frame,_} = Frame) ->
                       piroxy_events:recv(Req,ws,Frame)
               end,
