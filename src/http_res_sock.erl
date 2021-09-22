@@ -9,7 +9,7 @@
 -define(ACTIVE_TIMEOUT, 5000).
 -define(IDLE_TIMEOUT, 60000).
 
--record(data, {target, socket, reader, queue=[], closed=open}).
+-record(data, {targetpid, socket, reader, queue=[], closed=open}).
 -export([start_link/1,stop/1,transmit/3]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
@@ -42,7 +42,7 @@ transmit(Pid,Sid,Term) ->
 callback_mode() -> [handle_event_function, state_enter].
 
 init([Pid,T]) ->
-    {ok, disconnected, #data{target=Pid}, {next_event,cast,{connect,T}}}.
+    {ok, disconnected, #data{targetpid=Pid}, {next_event,cast,{connect,T}}}.
 
 %% Use enter events to choose between the idle timeout and active timeout.
 %% Remember that we are idle only when we are not in the middle of receiving
@@ -79,7 +79,7 @@ handle_event(state_timeout, active, _, _) ->
 %%% disconnected state: connect socket to protocol/host/port provided by start_link
 %%%
 
-handle_event(cast, {connect,{http,Host,Port}}, disconnected, D) ->
+handle_event(cast, {connect,{Host,Port,false}}, disconnected, D) ->
     case gen_tcp:connect(Host, Port, [{active,true},binary,{packet,0},
                                       {keepalive,true},
                                       {exit_on_close,false}],
@@ -94,7 +94,7 @@ handle_event(cast, {connect,{http,Host,Port}}, disconnected, D) ->
             {next_state,eof,D#data{socket={tcp,Socket}}}
     end;
 
-handle_event(cast, {connect,{https,Host,Port}}, disconnected, D) ->
+handle_event(cast, {connect,{Host,Port,true}}, disconnected, D) ->
     case ssl:connect(Host, Port, [{active,true},binary,{packet,0},
                                   {keepalive,true},
                                   {exit_on_close,false}],
@@ -170,7 +170,7 @@ handle_event(info, {A,_,Bin1}, body, D)
             http_pipe:recv(Req, eof),
             %% Notify request_target that we have finished receiving the response for Req.
             %% This will remove it from the sent list.
-            request_target:finish(D#data.target, Req),
+            request_target:finish(D#data.targetpid, Req),
             case D#data.closed of
                 eof_on_close ->
                     %% This should never happen.
@@ -367,32 +367,31 @@ send_error(Res, Text) ->
 
 upgrade(Req, Headers, Rest, D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
-    TargetHost = request_target:hostinfo(D#data.target),
     T = try
             B1 = fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers),
             B2 = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
             if
                 B1, B2 ->
                     %% upgrade_ws might also throw(raw_sock)
-                    upgrade_ws(Req, Headers, D#data.socket, Rest, TargetHost);
+                    upgrade_ws(Req, Headers, D#data.socket, Rest);
                 true ->
                     throw(raw_sock)
             end
         catch
             raw_sock ->
                 %% Fall back to using raw_sock
-                upgrade_raw(Req, D#data.socket, Rest, TargetHost)
+                upgrade_raw(Req, D#data.socket, Rest)
         end,
     case T of
         {ok,Msg} ->
             http_pipe:recvall(Req, [Msg]), % make http_pipe cleanup
-            request_target:finish(D#data.target, Req), % avoid request retry
+            request_target:finish(D#data.targetpid, Req), % avoid request retry
             {stop,shutdown};
         {error,Rsn} ->
             {stop,Rsn}
     end.
 
-upgrade_ws(Req, Headers, Sock, Rest, TargetHost) ->
+upgrade_ws(Req, Headers, Sock, Rest) ->
     Opts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
                <<"permessage-deflate">> ->
                    %% TODO: handle deflate extension parameters
@@ -403,14 +402,12 @@ upgrade_ws(Req, Headers, Sock, Rest, TargetHost) ->
                    %% unknown extension(s), cannot be parsed
                    throw(raw_sock)
            end,
-    EventCb = fun (open) ->
+    EventCb = fun ({frame,_} = Frame) ->
+                      piroxy_events:recv(Req,ws,Frame);
+                  (_) ->
                       %% Only one side (ws_sock) of the session can log open/close events.
                       %% We log open/close events from the http_req_sock side.
-                      ok;
-                  (close) ->
-                      ok;
-                  ({frame,_} = Frame) ->
-                      piroxy_events:recv(Req,ws,Frame)
+                      ok
               end,
     case ws_sock:start(Sock, Rest, [{eventcb,EventCb}|Opts]) of
         {ok,Pid} ->
@@ -419,7 +416,7 @@ upgrade_ws(Req, Headers, Sock, Rest, TargetHost) ->
             Any
     end.
 
-upgrade_raw(_Req, Sock, Rest, _TargetHost) ->
+upgrade_raw(_Req, Sock, Rest) ->
     %% TODO: add event logging to raw sockets
     io:format("*DBG* ~p upgrade_raw~n", [self()]),
     case raw_sock:start(Sock, Rest, [server]) of

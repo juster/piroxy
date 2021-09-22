@@ -79,7 +79,7 @@ handle_cast({connect,Req}, S0) ->
             %% Does not advance the counter so that the next time connect is
             %% called, we reuse the last process.
             io:format("*DBG* [request_target] (~s) unknown_session~n",
-                      [element(2,S#state.hostinfo)]),
+                      [element(1,S#state.hostinfo)]),
             {noreply, S};
         {error,Rsn} ->
             %% There should be no other error reasons.
@@ -108,7 +108,7 @@ handle_cast({retire_self,Pid}, S) ->
 
 %% Unexpected errors in outbound process.
 handle_info({'EXIT',Pid,Reason}, S0) ->
-    ?TRACE(0, element(2,S0#state.hostinfo), ">>",
+    ?TRACE(0, element(1,S0#state.hostinfo), ">>",
            io_lib:format("outbound closed: ~p", [Reason])),
     FailType = failure_type(Reason),
     S1 = case FailType of
