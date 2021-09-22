@@ -14,7 +14,7 @@
 %%-define(DEC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field-1}}).
 -define(INC(Field, S), S#state{stats=S#state.stats#stats{Field=(S#state.stats)#stats.Field+1}}).
 
--export([start_link/1,connect/2,cancel/2,finish/2,pending/1,hostinfo/1]).
+-export([start_link/1,connect/2,cancel/2,finish/2,pending/1]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2]).
 
 %%% called by request_manager
@@ -58,10 +58,7 @@ terminate(Reason, #state{sent=Lsent}) ->
     ok.
 
 handle_call(pending, _From, S) ->
-    {reply, [Req || {_,Req} <- S#state.sent], S};
-
-handle_call(hostinfo, _From, S) ->
-    {reply, S#state.hostinfo, S}.
+    {reply, [Req || {_,Req} <- S#state.sent], S}.
 
 %%%
 %%% from request_manager
