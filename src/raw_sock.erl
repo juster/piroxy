@@ -34,7 +34,14 @@ init(Opts) ->
     end.
 
 handshake(Pid1,Pid2) ->
-    Pid1 ! {handshake,Pid2}.
+    Ref = make_ref(),
+    Pid1 ! {handshake,self(),Pid2},
+    receive
+        {handshake,Term} ->
+            Term
+    after 1000 ->
+            {error,timeout}
+    end.
 
 relay_binary(Pid,Any) ->
     Pid ! {binary,Any}.
@@ -45,18 +52,23 @@ relay_binary(Pid,Any) ->
 
 wait(S) ->
     receive
-        {handshake,Pid} ->
+        {handshake,Pid,RawPid} ->
             link(Pid),
-            Pid ! {hello,self(),[self()]},
-            wait(S);
+            RawPid ! {hello,self(),[self()]},
+            wait2(Pid,S);
         {hello,Pid,L} ->
             Pid ! {howdy,self(),[self()]},
-            warmup(L,S);
-        {howdy,_Pid,L} ->
-            %% XXX: should I double-check that the Pid matches hello?
             warmup(L,S)
     after 1000 ->
             exit(timeout)
+    end.
+
+wait2(Pid, S) ->
+    receive
+        {howdy,_RawPid,L} ->
+            %% XXX: should I double-check that the Pid matches hello?
+            Pid ! {handshake,ok},
+            warmup(L,S)
     end.
 
 warmup(L,S) ->

@@ -175,17 +175,32 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(info, {transmit,Res,{upgrade_socket,MFA}}, paused, D) ->
+handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
     case D#data.queue of
         [] ->
             {stop,underrun};
         [Res] ->
             %% Transfers the socket to the new process and shuts down.
-            Bin = iolist_to_binary(reverse(D#data.reader)),
-            {M,F,Opts} = MFA,
-            case M:F(D#data.socket, Bin, Opts) of
-                {ok,_} ->
-                    {stop,shutdown};
+            TargetHost = D#data.target,
+            EventCb = fun (open) ->
+                              piroxy_events:connect(Res,ws,TargetHost);
+                          (close) ->
+                              piroxy_events:close(Res,ws);
+                          ({frame,_} = Frame) ->
+                              piroxy_events:recv(Res,ws,Frame)
+                      end,
+            %% XXX: EventCb is ignored by raw_sock
+            case M:start_link(D#data.socket,
+                              lists:reverse(D#data.reader),
+                              [{eventcb,EventCb}]) of
+                {ok,Pid1} ->
+                    piroxy_events:close(Res,http),
+                    case M:handshake(Pid1,Pid2) of
+                        ok ->
+                            {stop,shutdown};
+                        {error,Rsn} ->
+                            {stop,{M,Rsn}}
+                    end;
                 {error,Rsn} ->
                     {stop,Rsn}
             end;

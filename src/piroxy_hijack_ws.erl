@@ -31,11 +31,11 @@ init(Sid) ->
 
 wait(S) ->
     receive
-        {handshake,WsPid} ->
+        {handshake,Pid,WsPid} ->
             % Tell the ws_sock to relay frames to ourselves.
             link(WsPid),
             WsPid ! {hello,self(),{null,self()}},
-            wait2(S);
+            wait2(Pid,S);
         {hello,WsPid,{BinPid,_}} ->
             WsPid ! {howdy,self(),{null,self()}},
             loop(S#state{rawpid=BinPid})
@@ -43,9 +43,10 @@ wait(S) ->
             exit(timeout)
     end.
 
-wait2(S) ->
+wait2(Pid,S) ->
     receive
         {howdy,_,{BinPid,_}} ->
+            Pid ! {handshake,ok},
             loop(S#state{rawpid=BinPid})
     after 1000 ->
             exit(timeout)

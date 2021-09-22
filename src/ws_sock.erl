@@ -18,8 +18,8 @@ start_link(Opts0) ->
             Any
     end.
 
-handshake(Pid1,Pid2) ->
-    Pid1 ! {handshake,Pid2}.
+handshake(Pid1, Pid2) ->
+    raw_sock:handshake(Pid1,Pid2).
 
 %% relay_frame/2 is used by piroxy_hijack_ws but not by ws_sock.
 relay_frame(Pid1, Frame) ->
@@ -52,15 +52,26 @@ init(Opts) ->
 
 wait(#state{rawpid=RawPid1} = S) ->
     receive
-        {handshake,Pid} ->
+        {handshake,Pid,WsPid} ->
             %% First message received from a third party to the first ws_sock.
-            link(Pid),
-            Pid ! {hello,self(),{RawPid1,null}},
-            wait(S);
-        {A,_,_} = T when A == hello; A == howdy ->
-            acknowledge(T,S)
+            link(WsPid),
+            WsPid ! {hello,self(),{RawPid1,null}},
+            wait2(Pid,S);
+        {hello,_,_} = T ->
+            loop(acknowledge(T,S))
     after 1000 ->
             exit(timeout)
+    end.
+
+wait2(Pid, S0) ->
+    receive
+        {howdy,_,_} = T ->
+            S = acknowledge(T,S0),
+            Pid ! {handshake,ok},
+            loop(S)
+    after 1000 ->
+            %% XXX: we could just call exit here instead
+            Pid ! {handshake,timeout}
     end.
 
 acknowledge({_,_WsPid,{null,null}}, _S) ->
@@ -79,8 +90,7 @@ acknowledge({A,WsPid,{BinPid,FramePid}}, S0) ->
     RawPid ! {hello,self(),[self()|L]},
     receive
         {howdy,RawPid,_} ->
-            dispatch(open,S),
-            loop(S) % finish handshake
+            S
     after 1000 ->
             exit(timeout)
     end.
