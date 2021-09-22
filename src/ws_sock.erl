@@ -1,6 +1,6 @@
 -module(ws_sock).
--export([start_link/1,handshake/2,frame_to/2,relay_frame/2]).
--record(state, {sid,relay=null,rawpid,buffer=(<<>>),fragments=[],z=null}).
+-export([start_link/1,handshake/2,relay_frame/2]).
+-record(state, {sid,relay=null,rawpid,eventcb,buffer=(<<>>),fragments=[],z=null}).
 -include_lib("kernel/include/logger.hrl").
 
 %%%
@@ -21,13 +21,7 @@ start_link(Opts0) ->
 handshake(Pid1,Pid2) ->
     Pid1 ! {handshake,Pid2}.
 
-frame_to(Pid1, Pid2) ->
-    Pid1 ! {frame_to,Pid2}.
-
 %% relay_frame/2 is used by piroxy_hijack_ws but not by ws_sock.
-relay_frame(null, _) ->
-    ok;
-
 relay_frame(Pid1, Frame) ->
     Pid1 ! {frame,Frame}.
 
@@ -48,12 +42,12 @@ init(Opts) ->
             false ->
                 null
         end,
-    [Sid,RawPid] = [proplists:get_value(A,Opts) || A <- [id,rawpid]],
-    case lists:member(undefined,[Sid]) of
+    [Sid,RawPid,Callback] = [proplists:get_value(A,Opts) || A <- [id,rawpid,eventcb]],
+    case lists:member(undefined,[Sid,RawPid,Callback]) of
         true ->
             exit(badarg);
         false ->
-            wait(#state{sid=Sid,z=Z,rawpid=RawPid})
+            wait(#state{sid=Sid,z=Z,rawpid=RawPid,eventcb=Callback})
     end.
 
 wait(#state{rawpid=RawPid1} = S) ->
@@ -85,6 +79,7 @@ acknowledge({A,WsPid,{BinPid,FramePid}}, S0) ->
     RawPid ! {hello,self(),[self()|L]},
     receive
         {howdy,RawPid,_} ->
+            dispatch(open,S),
             loop(S) % finish handshake
     after 1000 ->
             exit(timeout)
@@ -225,8 +220,7 @@ send_frame(Rsv1, Op, Payload0, S) ->
                 _ ->
                     {Op,Bin}
             end,
-    relay_frame(S#state.relay, Frame),
-    S.
+    relay(Frame,S).
 
 inflate(Z, Bin0) ->
     %% These extra octets are always the same and so removed/appended.
@@ -235,3 +229,18 @@ inflate(Z, Bin0) ->
     zlib:inflate(Z, Bin, [{exception_on_need_dict,true}]).
     %% I believe future messages depend on previous message state.
     %%zlib:inflateReset(Z).
+
+relay(Frame, #state{relay=null} = S) ->
+    dispatch({frame,Frame},S),
+    S;
+
+relay(Frame, #state{relay=Pid} = S) ->
+    dispatch({frame,Frame},S),
+    ws_sock:relay_frame(Pid,Frame),
+    S.
+
+dispatch(_, #state{eventcb=null}) ->
+    ok;
+
+dispatch(Event, #state{eventcb=Callback}) ->
+    Callback(Event).

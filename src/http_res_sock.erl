@@ -367,20 +367,21 @@ send_error(Res, Text) ->
 
 upgrade(Req, Headers, Rest, D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
+    TargetHost = request_target:hostinfo(D#data.target),
     T = try
             B1 = fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers),
             B2 = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
             if
                 B1, B2 ->
                     %% upgrade_ws might also throw(raw_sock)
-                    upgrade_ws(Req, Headers, D#data.socket, Rest);
+                    upgrade_ws(Req, Headers, D#data.socket, Rest, TargetHost);
                 true ->
                     throw(raw_sock)
             end
         catch
             raw_sock ->
                 %% Fall back to using raw_sock
-                upgrade_raw(Req, D#data.socket, Rest)
+                upgrade_raw(Req, D#data.socket, Rest, TargetHost)
         end,
     case T of
         {ok,Msg} ->
@@ -391,7 +392,7 @@ upgrade(Req, Headers, Rest, D) ->
             {stop,Rsn}
     end.
 
-upgrade_ws(Req, Headers, Sock, Rest) ->
+upgrade_ws(Req, Headers, Sock, Rest, TargetHost) ->
     Opts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
                <<"permessage-deflate">> ->
                    %% TODO: handle deflate extension parameters
@@ -402,24 +403,27 @@ upgrade_ws(Req, Headers, Sock, Rest) ->
                    %% unknown extension(s), cannot be parsed
                    throw(raw_sock)
            end,
-    case ws_sock:start(Sock, Rest, [server|Opts]) of
+    EventCb = fun (open) ->
+                      piroxy_events:connect(Req,ws,TargetHost);
+                  (close) ->
+                      piroxy_events:close(Req,ws);
+                  ({frame,_} = Frame) ->
+                      piroxy_events:recv(Req,ws,Frame)
+              end,
+    case ws_sock:start(Sock, Rest, [{eventcb,EventCb}|Opts]) of
         {ok,Pid} ->
-            %% gets a little confusing... there are nested MFAs!
-            MFA1 = {ws_sock,handshake,[Pid]}, % server handshake fun
-            MFA2 = {ws_sock,start,[client,{handshake,MFA1}|Opts]},
-            {ok,{upgrade_socket,MFA2}};
-        {error,_} = Err ->
-            Err
+            {ok,{upgrade_socket,{ws_sock,Pid}}};
+        Any ->
+            Any
     end.
 
-upgrade_raw(_Req, Sock, Rest) ->
+upgrade_raw(_Req, Sock, Rest, _TargetHost) ->
+    %% TODO: add event logging to raw sockets
     io:format("*DBG* ~p upgrade_raw~n", [self()]),
     case raw_sock:start(Sock, Rest, [server]) of
         {ok,Pid} ->
             %%MF = {raw_sock,relay}, % client message relay fun
-            MFA1 = {raw_sock,handshake,[Pid]}, % server handshake fun
-            MFA2 = {raw_sock,start,[client,{handshake,MFA1}]},
-            {ok,{upgrade_socket,MFA2}};
-        {error,_} = Err ->
-            Err
+            {ok,{upgrade_socket,{raw_sock,Pid}}};
+        Any ->
+            Any
     end.
