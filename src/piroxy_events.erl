@@ -1,5 +1,5 @@
 -module(piroxy_events).
--export([start_link/0, connect/3, send/3, recv/3, cancel/2, fail/3]).
+-export([start_link/0, connect/3, send/3, recv/3, close/2, cancel/2, fail/3]).
 
 start_link() ->
     gen_event:start_link({local,?MODULE}).
@@ -14,6 +14,9 @@ send(Id, Proto, Term) ->
 
 recv(Id, Proto, Term) ->
     gen_event:notify(?MODULE, {Id,recv,tstamp(),Proto,Term}).
+
+close(Id, Proto) ->
+    gen_event:notify(?MODULE, {Id,recv,tstamp(),Proto,closed}).
 
 cancel(Id, Proto) ->
     gen_event:notify(?MODULE, {Id,fail,tstamp(),Proto,cancelled}).
