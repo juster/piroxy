@@ -1,5 +1,5 @@
 -module(raw_sock).
--export([start_link/1,init/1,handshake/2,binary_to/2,relay_binary/2]).
+-export([start_link/1,init/1,handshake/2,relay_binary/2]).
 -record(state, {socket,relay=[],buffer=[]}).
 -include_lib("kernel/include/logger.hrl").
 
@@ -30,15 +30,11 @@ init(Opts) ->
         true ->
             exit(badarg);
         false ->
-            loop(#state{socket=Sock,buffer=Buf})
+            wait(#state{socket=Sock,buffer=Buf})
     end.
 
 handshake(Pid1,Pid2) ->
-    Pid1 ! {handshake,binary,Pid2}.
-
-binary_to(Pid1,L) ->
-    Pid1 ! {binary_to,L},
-    ok.
+    Pid1 ! {handshake,Pid2}.
 
 relay_binary(Pid,Any) ->
     Pid ! {binary,Any}.
@@ -47,26 +43,37 @@ relay_binary(Pid,Any) ->
 %%% INTERNAL
 %%%
 
+wait(S) ->
+    receive
+        {handshake,Pid} ->
+            link(Pid),
+            Pid ! {hello,self(),[self()]},
+            wait(S);
+        {hello,Pid,L} ->
+            Pid ! {howdy,self(),[self()]},
+            warmup(L,S);
+        {howdy,_Pid,L} ->
+            %% XXX: should I double-check that the Pid matches hello?
+            warmup(L,S)
+    after 1000 ->
+            exit(timeout)
+    end.
+
+warmup(L,S) ->
+    #state{socket=Sock,buffer=Buf} = S,
+    lists:foreach(fun (Pid) -> relay_binary(Pid,Buf) end, L),
+    %% Switch the socket to active mode.
+    ok = pisock_lib:set_opts(Sock,[{active,true}]),
+    loop(S#state{relay=L,buffer=undefined}).
+
 loop(State0) ->
     receive
         Any ->
             loop(handle(Any, State0))
     end.
 
-handle({handshake,binary,Pid2},S) ->
-    binary_to(Pid2,self()),
-    S;
-
-handle({handshake,_,_},S) ->
-    S;
-
 handle({binary_to,L},#state{relay=undefined} = S) ->
     #state{socket=Sock,buffer=Buf} = S,
-    lists:foreach(fun (Pid) ->
-                          relay_binary(Pid,Buf),
-                          link(Pid)
-                  end,L),
-    ok = pisock_lib:set_opts(Sock,[{active,true}]),
     S#state{relay=L,buffer=undefined};
 
 handle({binary_to,L},_) ->

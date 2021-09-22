@@ -1,6 +1,6 @@
 -module(ws_sock).
 -export([start_link/1,handshake/2,frame_to/2,relay_frame/2]).
--record(state, {sid,relay,rawpid,buffer=(<<>>),fragments=[],z=null}).
+-record(state, {sid,relay=null,rawpid,buffer=(<<>>),fragments=[],z=null}).
 -include_lib("kernel/include/logger.hrl").
 
 %%%
@@ -18,11 +18,15 @@ start_link(Opts0) ->
             Any
     end.
 
-handshake(Pid1, Pid2) ->
-    Pid1 ! {handshake,frame,Pid2}.
+handshake(Pid1,Pid2) ->
+    Pid1 ! {handshake,Pid2}.
 
 frame_to(Pid1, Pid2) ->
     Pid1 ! {frame_to,Pid2}.
+
+%% relay_frame/2 is used by piroxy_hijack_ws but not by ws_sock.
+relay_frame(null, _) ->
+    ok;
 
 relay_frame(Pid1, Frame) ->
     Pid1 ! {frame,Frame}.
@@ -49,7 +53,41 @@ init(Opts) ->
         true ->
             exit(badarg);
         false ->
-            loop(#state{sid=Sid,z=Z,rawpid=RawPid})
+            wait(#state{sid=Sid,z=Z,rawpid=RawPid})
+    end.
+
+wait(#state{rawpid=RawPid1} = S) ->
+    receive
+        {handshake,Pid} ->
+            %% First message received from a third party to the first ws_sock.
+            link(Pid),
+            Pid ! {hello,self(),{RawPid1,null}},
+            wait(S);
+        {A,_,_} = T when A == hello; A == howdy ->
+            acknowledge(T,S)
+    after 1000 ->
+            exit(timeout)
+    end.
+
+acknowledge({_,_WsPid,{null,null}}, _S) ->
+    exit(badlogic);
+
+acknowledge({A,WsPid,{BinPid,FramePid}}, S0) ->
+    RawPid = S0#state.rawpid,
+    case A of
+        hello -> WsPid ! {howdy,self(),{RawPid,null}}; % we don't want frames
+        howdy -> ok
+    end,
+    %% Either BinPid or FramePid may be null.
+    L = if is_pid(BinPid) -> [BinPid]; true -> [] end,
+    S = if is_pid(FramePid) -> S0#state{relay=FramePid}; true -> S0 end,
+    %% Send handshake to (and wait for ack from) our raw_sock pid.
+    RawPid ! {hello,self(),[self()|L]},
+    receive
+        {howdy,RawPid,_} ->
+            loop(S) % finish handshake
+    after 1000 ->
+            exit(timeout)
     end.
 
 loop(State0) ->
@@ -58,22 +96,6 @@ loop(State0) ->
             State = handle(Any,State0),
             loop(State)
     end.
-
-handle({binary_to,Pid}, S) ->
-    raw_sock:binary_to(S#state.rawpid,Pid),
-    S;
-
-handle({frame_to,_}, S) ->
-    S;
-
-handle({handshake,Pid}, S) ->
-    %% Tell the opposite socket to route directly to the raw_sock.
-    raw_sock:binary_to(Pid, S#state.rawpid);
-
-handle({binary_to,Pid}, S) ->
-    %% Start routing binaries from the raw_sock we wrap both to ourselves
-    %% and to the opposite side.
-    raw_sock:binary_to(S#state.rawpid,[Pid,self()]);
 
 handle({binary,Bin}, S) ->
     parse(Bin,S);

@@ -1,76 +1,82 @@
 -module(piroxy_hijack_ws).
--define(GUID, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").
--behavior(gen_server).
--record(state, {reply}).
+-define(WS_GUID, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").
+-record(state, {sid,rawpid}).
 
--export([start/0, handshake/2, relay/2, event/2, accept/1]).
--export([init/1, handle_cast/2, handle_call/3]).
+-export([start_link/1,accept/1]).
 
 %%%
 %%% EXPORTS
 %%%
 
-start() ->
-    gen_server:start(?MODULE, [], []).
+start_link(Opts) ->
+    case proplists:get_value(id, Opts) of
+        undefined ->
+            exit(badarg);
+        Sid ->
+            Pid = spawn_link(fun () -> init(Sid) end),
+            {ok,Pid}
+    end.
 
-handshake(Pid, MFA) ->
-    link(Pid),
-    gen_server:call(Pid, {handshake,MFA}).
-
-relay(Pid, Term) ->
-    gen_server:cast(Pid, {websocket,Term}).
-
-event(Pid, Event) ->
-    gen_server:cast(Pid, {event,Event}).
-
+%%% Utility function to calculate the WebSocket accept header.
 accept(Key) ->
-    Digest = crypto:hash(sha, [Key,?GUID]),
+    Digest = crypto:hash(sha,[Key|?WS_GUID]),
     base64:encode(Digest).
 
 %%%
-%%% BEHAVIOR CALLBACKS
+%%% INTERNALS
 %%%
 
-init([]) ->
-    {ok, #state{}}.
+init(Sid) ->
+    wait(#state{sid=Sid}).
 
-handle_cast({websocket,Bin}, S) when is_binary(Bin) ->
-    %% ignore raw binaries
-    {noreply, S};
+wait(S) ->
+    receive
+        {handshake,WsPid} ->
+            % Tell the ws_sock to relay frames to ourselves.
+            link(WsPid),
+            WsPid ! {hello,self(),{null,self()}},
+            wait2(S);
+        {hello,WsPid,{BinPid,_}} ->
+            WsPid ! {howdy,self(),{null,self()}},
+            loop(S#state{rawpid=BinPid})
+    after 1000 ->
+            exit(timeout)
+    end.
 
-handle_cast({websocket,{ping,Bin}}, S) ->
+wait2(S) ->
+    receive
+        {howdy,_,{BinPid,_}} ->
+            loop(S#state{rawpid=BinPid})
+    after 1000 ->
+            exit(timeout)
+    end.
+
+loop(State0) ->
+    receive
+        Any ->
+            State = handle(Any,State0),
+            loop(State)
+    end.
+
+handle({frame,{ping,Bin}}, S) ->
     %% respond to pings but do not generate them... yet
-    reply({pong,Bin}, S),
-    {noreply, S};
+    reply({pong,Bin},S);
 
-handle_cast({websocket,{binary,Bin}}, S) ->
+handle({frame,{binary,Bin}}, S0) ->
     %% all of our frames are binary
     Term = binary_to_term(Bin),
     io:format("*DBG* received: ~p~n", [Term]),
-    %%Res = rpc(Term, S),
-    %%reply({binary,term_to_binary(Res)}, S),
-    {noreply, S};
+    {Res,S} = rpc(Term, S0),
+    reply({binary,term_to_iovec(Res)}, S);
 
-handle_cast({websocket,{close,L}}, S) ->
+handle({frame,{close,L}}, S) ->
     %% we need to send a close in response
     reply({close,L}, S),
-    {noreply, S};
+    exit(normal);
 
-handle_cast({websocket,_}, S) ->
+handle({frame,_}, S) ->
     %% ignore other frame types
-    {noreply, S};
-
-handle_cast({event,_}, S) ->
-    %% ignore other events
-    {noreply, S}.
-
-handle_call({handshake,MFA}, _From, S) ->
-    %{M,F,A} = MFA,
-    %Term = {hello, piroxy, ["how","are","you?"]},
-    %io:format("*DBG* sending: ~p~n", [term_to_binary(Term)]),
-    %Bin = frame({binary, term_to_binary(Term)}),
-    %apply(M, F, A++[Bin]),
-    {reply, {?MODULE,relay,[self()]}, S#state{reply=MFA}}.
+    S.
 
 rpc({filter,Filter}, _S) ->
     piroxy_ram_log:filter(Filter);
@@ -87,24 +93,21 @@ rpc({body,Digest}, _S) ->
 rpc(_, _S) ->
     {error,badrpc}.
 
-reply(Term, S) ->
-    {M,F,A} = S#state.reply,
-    apply(M, F, A++[{binary,frame(Term)}]).
+reply(Term, #state{rawpid=Pid} = S) ->
+    Bin = frame(Term),
+    raw_sock:relay_binary(Pid,Bin),
+    S.
 
 %% close is the only frame which does not have a binary
 
-frame({close,L}) when is_list(L) ->
-    case L of
-        [] ->
-            frame({close,<<>>});
-        [Code] ->
-            frame({close,<<Code:16>>});
-        [Code,Reason] ->
-            frame({close,<<Code:16,Reason/utf8>>})
-    end;
+frame({close,[]}) ->
+    frame({close,<<>>});
 
-frame({close,_}) ->
-    error(badlogic);
+frame({close,[Code]}) ->
+    frame({close,<<Code:16>>});
+
+frame({close,[Code,Reason]}) ->
+    frame({close,<<Code:16,Reason/utf8>>});
 
 %% generates a websocket frame, does not do any frame splitting
 frame({Op,Bin}) when is_binary(Bin) ->
@@ -116,7 +119,10 @@ frame({Op,Bin}) when is_binary(Bin) ->
             <<1:1,0:3,(opcode(Op)):4,0:1,126:7,Len:32,Bin/binary>>;
         true ->
             <<1:1,0:3,(opcode(Op)):4,0:1,Len:7,Bin/binary>>
-    end.
+    end;
+
+frame(_) ->
+    exit(badarg).
 
 opcode(binary) -> 2;
 opcode(close) -> 8;
