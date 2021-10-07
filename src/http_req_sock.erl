@@ -337,7 +337,7 @@ send(Sock, Term) ->
 
 %% Assemble a #head{} record and separates out the URI while we are at it.
 request_headuri(StatusLn, Headers) ->
-    case pihttp_lib:split_status(request,StatusLn) of
+    case pihttp_lib:split_request_line(StatusLn) of
         {ok,{Method,Uri,Ver}} ->
             case request_length(Method,Headers) of
                 {ok,Len} ->

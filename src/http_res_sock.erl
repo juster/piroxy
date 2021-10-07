@@ -137,7 +137,7 @@ handle_event(info, {A,_,Bin}, head, D)
         {continue,Reader} ->
             {keep_state,D#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            case pihttp_lib:split_status(response, StatusLn) of
+            case pihttp_lib:split_status_line(StatusLn) of
                 {ok,[{1,X},Code,_Etc]} when X =:= 0; X =:= 1 ->
                     handle_head(Code, StatusLn, Headers, Rest, D);
                 {ok,[Ver,_,_]} ->

@@ -12,7 +12,7 @@
 
 %%% HTTP message parsing functions.
 -export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
--export([split_status/2, body_length/1]).
+-export([split_request_line/1,split_status_line/1,body_length/1]).
 
 -import(lists, [reverse/1, flatten/1]).
 -include("../include/pihttp_lib.hrl").
@@ -82,28 +82,41 @@ res_ver_tuple(<<"HTTP/",Maj,".",Min>>) ->
 res_ver_tuple(_) ->
     badarg.
 
-split_status(request, Bin) ->
+split_request_line(Bin) ->
     case nsplit(3,Bin,<<" ">>) of
-        {ok,[Method,Uri,Ver]} ->
-            case {method_atom(Method),req_ver_tuple(Ver)} of
-                {unknown,_} -> {error,{badstatus,Bin}};
-                {_,badarg} -> {error,{badstatus,Bin}};
-                {A,T} -> {ok,{A,Uri,T}}
+        {ok,[X,Y,Z]} ->
+            case method_atom(X) of
+                unknown ->
+                    {error,{badarg,Bin}};
+                connect ->
+                    case res_ver_tuple(Z) of
+                        badarg ->
+                            {error,{badarg,Bin}};
+                        T ->
+                            {ok,{connect,Y,T}}
+                    end;
+                Method ->
+                    case req_ver_tuple(Z) of
+                        badarg ->
+                            {error,badarg,Bin};
+                        T ->
+                            {ok,{Method,Y,T}}
+                    end
             end;
         error ->
-            {error,{badstatus,Bin}}
-    end;
+            {error,{badarg,Bin}}
+    end.
 
-split_status(response, Bin) ->
+split_status_line(Bin) ->
     case nsplit(3,Bin,<<" ">>) of
         {ok,[Ver,Code,Reason]} ->
             case {res_ver_tuple(Ver),catch(binary_to_integer(Code))} of
-                {badarg,_} -> {error,{badstatus,Bin}};
-                {_,{'EXIT',{badarg,_}}} -> {error,{badstatus,Bin}};
+                {badarg,_} -> {error,{badarg,Bin}};
+                {_,{'EXIT',{badarg,_}}} -> {error,{badarg,Bin}};
                 {A,N} -> {ok,{A,N,Reason}}
             end;
         error ->
-            {error,{badstatus,Bin}}
+            {error,{badarg,Bin}}
     end.
 
 method_bin(get) -> <<"GET">>;
