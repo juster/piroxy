@@ -72,14 +72,9 @@ compose3(_, Host, Port) ->
 compose4(Path, Query, Fragment) ->
         Path ++ Query ++ Fragment.
 
-req_ver_tuple(<<Maj,".",Min>>) ->
+http_ver_tuple(<<"HTTP/",Maj,".",Min>>) ->
     {Maj-$0,Min-$0};
-req_ver_tuple(_) ->
-    badarg.
-
-res_ver_tuple(<<"HTTP/",Maj,".",Min>>) ->
-    {Maj-$0,Min-$0};
-res_ver_tuple(_) ->
+http_ver_tuple(_) ->
     badarg.
 
 split_request_line(Bin) ->
@@ -88,17 +83,10 @@ split_request_line(Bin) ->
             case method_atom(X) of
                 unknown ->
                     {error,{badarg,Bin}};
-                connect ->
-                    case res_ver_tuple(Z) of
+                Method ->
+                    case http_ver_tuple(Z) of
                         badarg ->
                             {error,{badarg,Bin}};
-                        T ->
-                            {ok,{connect,Y,T}}
-                    end;
-                Method ->
-                    case req_ver_tuple(Z) of
-                        badarg ->
-                            {error,badarg,Bin};
                         T ->
                             {ok,{Method,Y,T}}
                     end
@@ -110,7 +98,7 @@ split_request_line(Bin) ->
 split_status_line(Bin) ->
     case nsplit(3,Bin,<<" ">>) of
         {ok,[Ver,Code,Reason]} ->
-            case {res_ver_tuple(Ver),catch(binary_to_integer(Code))} of
+            case {http_ver_tuple(Ver),catch(binary_to_integer(Code))} of
                 {badarg,_} -> {error,{badarg,Bin}};
                 {_,{'EXIT',{badarg,_}}} -> {error,{badarg,Bin}};
                 {A,N} -> {ok,{A,N,Reason}}
