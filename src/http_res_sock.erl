@@ -127,7 +127,7 @@ handle_event(info, {transmit,_,_}, nxdomain, _) ->
 
 handle_event(info, {A,_,_}, eof, D)
   when A == tcp; A == ssl ->
-    {next_state, head, D#data{reader=pimsg_lib:head_reader()}, postpone};
+    {next_state, head, D#data{reader=pihttp_lib:head_reader()}, postpone};
 
 handle_event(info, {A,_,Bin}, head, D)
   when A == tcp; A == ssl ->
@@ -304,7 +304,7 @@ handle_head(Code, StatusLn, Headers, Rest, D0) ->
                 open ->
                     ok
             end,
-            D = D0#data{reader=pimsg_lib:body_reader(Hres#head.bodylen),
+            D = D0#data{reader=pihttp_lib:body_reader(Hres#head.bodylen),
                         closed=CloseStatus},
             {next_state,body,D,{next_event,info,{tcp,null,Rest}}};
         {error,Rsn} ->

@@ -100,7 +100,7 @@ handle_event(info, {A,_,?EMPTY}, idle, _)
 
 handle_event(info, {A,_,_}, idle, D)
   when A == tcp; A == ssl ->
-    {next_state, head, D#data{reader=pimsg_lib:head_reader()}, postpone};
+    {next_state, head, D#data{reader=pihttp_lib:head_reader()}, postpone};
 
 handle_event(info, {A,_,Bin}, head, D)
   when A == tcp; A == ssl ->
@@ -458,7 +458,7 @@ relay_head(H, HI, Bin, D) ->
             D2 = D#data{reader=undefined, target=HI, queue=Q, active=undefined},
             {next_state,idle,D2,{next_event,info,{tcp,null,Bin}}};
         {_,false} ->
-            D2 = D#data{reader=pimsg_lib:body_reader(H#head.bodylen),
+            D2 = D#data{reader=pihttp_lib:body_reader(H#head.bodylen),
                         target=HI, queue=Q, active=Req},
             {next_state,body,D2,{next_event,info,{tcp,null,Bin}}};
         {0,true} ->
