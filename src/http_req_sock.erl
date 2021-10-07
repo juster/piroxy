@@ -389,7 +389,7 @@ head_target(_,UriBin) ->
             {ok,{absolute,UriMap}}
     end.
 
-handle_head(#head{method=connect},{authority,UriMap}, Bin,D) ->
+handle_head(#head{method=connect},{authority,T},Bin,D) ->
     %% CONNECT uses the "authority" form of URIs and so
     %% cannot be used with relativize/2.
 
@@ -400,12 +400,17 @@ handle_head(#head{method=connect},{authority,UriMap}, Bin,D) ->
 
     %% We cannot reply with {status,http_ok} because that will add
     %% a Content-Length header and a CONNECT reply "MUST NOT" have one.
-    send(D#data.socket, {body,<<"HTTP/1.1 200 OK\015\012\015\012">>}),
-    case Bin of
-        ?EMPTY -> ok;
-        _ -> exit({extra_tunnel_bytes,Bin})
-    end,
-    {next_state, tunnel, D, {next_event, cast, {connect,urimap_hostinfo(UriMap)}}};
+    case T of
+        {_,_,_} ->
+            send(D#data.socket, {body,<<"HTTP/1.1 200 OK\015\012\015\012">>}),
+            case Bin of
+                ?EMPTY -> ok;
+                _ -> exit({extra_tunnel_bytes,Bin})
+            end,
+            {next_state, tunnel, D, {next_event, cast, {connect,T}}};
+        _ ->
+            {stop,{badarg,{authority,T}}}
+    end;
 
 handle_head(#head{method=options},self,Bin, D) ->
     %% OPTIONS * refers to the proxy itself. Create a fake response..
