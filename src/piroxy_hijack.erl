@@ -52,7 +52,7 @@ handle_cast({cleanup_replay,Key}, S) ->
             {noreply, S#state{replays=Tree}}
     end.
 
-handle_info({http_pipe,Id,#head{method=get}=H}, S0) ->
+handle_info({transmit,Id,#head{method=get}=H}, S0) ->
     {L,S1} = case head_reluri(H) of
                  {error,badarg} ->
                      {[{status,http_bad_request}],S0};
@@ -64,17 +64,17 @@ handle_info({http_pipe,Id,#head{method=get}=H}, S0) ->
     Tree = gb_trees:delete(Id, S1#state.pipes),
     {noreply, S1#state{pipes=Tree}};
 
-handle_info({http_pipe,Id,#head{method=M}}, S)
+handle_info({transmit,Id,#head{method=M}}, S)
   when M /= get ->
     http_pipe:recvall(Id, [{status,http_method_not_supported}]),
     Tree = gb_trees:delete(Id, S#state.pipes),
     {noreply,S#state{pipes=Tree}};
 
-handle_info({http_pipe,_Id,A}, S)
+handle_info({transmit,_Id,A}, S)
   when A == eof; A == cancel ->
     {noreply,S};
 
-handle_info({http_pipe,_,Any}, _S) ->
+handle_info({transmit,_,Any}, _S) ->
     {stop,{unexpected_message,Any}}.
 
 get_uri(?HJ_TARGET, <<"/">>, _Id, H, S) ->
