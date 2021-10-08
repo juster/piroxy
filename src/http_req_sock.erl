@@ -13,7 +13,7 @@
 -define(ACTIVE_TIMEOUT, 5000).
 
 -record(data, {target, socket, reader, queue=[], active}).
--export([start/0,stop/1,control/2,transmit/3]).
+-export([start/0,stop/1,control/2]).
 -export([init/1,terminate/3,callback_mode/0,handle_event/4]).
 
 %%%
@@ -32,9 +32,6 @@ stop(Pid) ->
 
 control(Pid, Socket) ->
     gen_statem:cast(Pid, {control,Socket}).
-
-transmit(Pid,Sid,Term) ->
-    gen_statem:cast(Pid, {transmit,Sid,Term}).
 
 %%%
 %%% BEHAVIOR CALLBACKS
@@ -175,7 +172,7 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(cast, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
+handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
     case D#data.queue of
         [] ->
             {stop,underrun};
@@ -210,7 +207,7 @@ handle_event(cast, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
             {stop,overrun}
     end;
 
-handle_event(cast, {transmit,Res,eof}, paused, D) ->
+handle_event(info, {transmit,Res,eof}, paused, D) ->
     Host = case D#data.target of
                undefined -> "???";
                _ -> element(2,D#data.target)
@@ -232,7 +229,7 @@ handle_event(cast, {transmit,Res,eof}, paused, D) ->
     end;
 
 
-handle_event(cast, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
+handle_event(info, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
     %% Avoid trying to encode the 'eof' atom. Pop the first response ID off the
     %% queue. eof must be received in order?
     Host = case D#data.target of
@@ -242,18 +239,18 @@ handle_event(cast, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
     ?TRACE(Res, Host, "<", "EOF"),
     {keep_state,D#data{queue=Q}};
 
-handle_event(cast, {transmit,_,eof}, _, _) ->
+handle_event(info, {transmit,_,eof}, _, _) ->
     {stop,outoforder};
 
-handle_event(cast, {transmit,_,{upgrade_socket,_,_}}, _, _) ->
+handle_event(info, {transmit,_,{upgrade_socket,_,_}}, _, _) ->
     %% Ignore upgrade messages if we are not in the upgrade state.
     keep_state_and_data;
 
-handle_event(cast, {transmit,_,#head{}=Head}, paused, D) ->
+handle_event(info, {transmit,_,#head{}=Head}, paused, D) ->
     io:format("<====~n~s<~~~~~~~~~n", [pihttp_lib:encode(Head)]),
     send(D#data.socket, Head);
 
-handle_event(cast, {transmit,Res,#head{}=Head}, _, D) ->
+handle_event(info, {transmit,Res,#head{}=Head}, _, D) ->
     %% pipeline the next request ASAP
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Res, Host, "<", Head),
@@ -270,7 +267,7 @@ handle_event(cast, {transmit,Res,#head{}=Head}, _, D) ->
 %%    end;
 
 %% DEBUG TRACING
-handle_event(cast, {transmit,Res,{error,Rsn}=Term}, _, D) ->
+handle_event(info, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     Res = hd(D#data.queue),
     Host = case D#data.target of
                undefined -> "???";
@@ -287,7 +284,7 @@ handle_event(cast, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     ?TRACE(Res, Host, "<", Line),
     send(D#data.socket, Term);
 
-handle_event(cast, {transmit,_Res,Term}, _, D) ->
+handle_event(info, {transmit,_Res,Term}, _, D) ->
     send(D#data.socket, Term);
 
 %%%
@@ -547,4 +544,3 @@ upgrade_requested(H) ->
         _ ->
             false
     end.
-

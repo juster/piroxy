@@ -5,7 +5,8 @@
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,
-         send/2, listen/2, recv/2, recvall/2, rewind/1, cancel/1]).
+         send/2, listen/2, recv/2, recvall/2, rewind/1, cancel/1,
+         transmit/3]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%% EXPORTS
@@ -53,6 +54,9 @@ recvall(Id, L) ->
     foreach(fun (Term) -> recv(Id, Term) end, L),
     recv(Id, eof).
 
+transmit(Pid,Id,Term) ->
+    Pid ! {transmit,Id,Term}.
+
 %%% BEHAVIOR CALLBACKS
 
 init([]) ->
@@ -85,7 +89,7 @@ handle_call({listen,Id,Pid2}, _From, {MsgTab,Sessions0,Dict0}=State) ->
                     %% Ensure this is the first session for Pid2 and then send
                     %% any previously cached messages.
                     Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,send})],
-                    Dict = case sendall(http_res_sock,Pid2,Id,Msgs) of
+                    Dict = case sendall(Pid2,Id,Msgs) of
                                true ->
                                    Dict0;
                                false ->
@@ -165,7 +169,7 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions,Dict0}=State) ->
                 {ok,[Id|L]} ->
                     %% If this is the first session in Pid2's pipeline then we do
                     %% not have to wait before we send it!
-                    http_res_sock:transmit(Pid2,Id,Term),
+                    transmit(Pid2,Id,Term),
                     case Term of
                         eof ->
                             %% We also close the server end of the pipe when an
@@ -195,7 +199,7 @@ handle_cast({cancel,Id}, {_,Sessions,_}=State) ->
             %% Pid2 was likely sent some messages, which it has relayed.
             %% We must notify it so it can decide if it should shutdown.
             %% http_res_sock MAY exit at this point, but we don't know...
-            http_res_sock:transmit(Pid2,Id,cancel),
+            transmit(Pid2,Id,cancel),
             {noreply, cleanup(T, State)}
     end;
 
@@ -215,7 +219,7 @@ handle_cast({recv,Id,Term}, {MsgTab,Sessions0,_}=State) ->
                 T ->
                     %% This session is at the front of the Pid1's pipeline so we
                     %% can send it directly.
-                    http_req_sock:transmit(Pid1,Id,Term),
+                    transmit(Pid1,Id,Term),
                     case Term of
                         eof ->
                             %% Avoid inserting into ETS table if we are going to
@@ -247,7 +251,7 @@ flush_server(Pid2, {MsgTab,Sessions,Dict0}=State) ->
     case dict:find(Pid2, Dict0) of
         {ok,[Id|L]} ->
             Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,send})],
-            case sendall(http_res_sock,Pid2,Id,Msgs) of
+            case sendall(Pid2,Id,Msgs) of
                 true ->
                     Dict = case L of
                                [] -> dict:erase(Pid2, Dict0);
@@ -270,7 +274,7 @@ flush_client(Pid1, {MsgTab,Sessions0,_}=State) ->
             State;
         {Id,_,_Pid2}=T ->
             Msgs = [Msg || {_,Msg} <- ets:lookup(MsgTab, {Id,recv})],
-            case sendall(http_req_sock,Pid1,Id,Msgs) of
+            case sendall(Pid1,Id,Msgs) of
                 true ->
                     flush_client(Pid1, cleanup(T, State));
                 false ->
@@ -290,13 +294,13 @@ cleanup({Id,_,Pid2}, {MsgTab,Sessions0,Dict0}) ->
             {MsgTab,Sessions,dict_delete(Pid2, Id, Dict0)}
     end.
 
-sendall(M,Pid,Sid,[eof]) ->
-    M:transmit(Pid,Sid,eof),
+sendall(Pid,Sid,[eof]) ->
+    transmit(Pid,Sid,eof),
     true;
 
-sendall(_,_,_,[]) ->
+sendall(_,_,[]) ->
     false;
 
-sendall(M,Pid,Sid,[Msg|L]) ->
-    M:transmit(Pid,Sid,Msg),
-    sendall(M,Pid,Sid,L).
+sendall(Pid,Sid,[Msg|L]) ->
+    transmit(Pid,Sid,Msg),
+    sendall(Pid,Sid,L).
