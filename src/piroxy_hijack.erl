@@ -11,8 +11,8 @@
 -export([hijacked/3, connect/2, start_link/1, cleanup_replay/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
-hijacked(Target,Method,Uri) ->
-    gen_server:call(?MODULE, {hijacked,{Target,Method,Uri}}).
+hijacked(Target,H,Uri) ->
+    gen_server:call(?MODULE, {hijacked,{Target,H#head.method,Uri}}).
 
 connect(Id, Target) ->
     gen_server:cast(?MODULE, {connect,Id,Target}).

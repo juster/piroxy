@@ -35,22 +35,22 @@ init([]) ->
     process_flag(trap_exit, true),
     {ok, {1,[]}}.
 
-handle_cast({connect,Req,Target}, {I,L}=S) ->
-    {Proto,Host,Port} = Target,
+handle_cast({connect,Req,{Proto,Host,Port} = Target}, {I,L}=S) ->
     Secure = case Proto of
                  http -> false;
                  https -> true;
                  _ -> exit(badarg)
              end,
+    HttpTarget = {Host,Port,Secure},
     case keyfind(Target, 1, L) of
         {_,Pid} ->
-            piroxy_events:connect(Req, http, {Host,Port,Secure}),
+            piroxy_events:connect(Req, http, HttpTarget),
             request_target:connect(Pid, Req),
             {noreply, S};
         false ->
-            case request_target:start_link(Target) of
+            case request_target:start_link(HttpTarget) of
                 {ok,Pid} ->
-                    piroxy_events:connect(Req, http, {Host,Port,Secure}),
+                    piroxy_events:connect(Req, http, HttpTarget),
                     request_target:connect(Pid, Req),
                     {noreply, {I,[{Target,Pid}|L]}};
                 ignore ->

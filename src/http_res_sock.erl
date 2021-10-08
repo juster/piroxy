@@ -17,8 +17,8 @@
 %%% EXTERNAL INTERFACE
 %%%
 
-start_link({Proto,Host,Port}) ->
-    gen_statem:start_link(?MODULE, [self(), {Proto,binary_to_list(Host),Port}], []).
+start_link({Host,Port,Secure}) ->
+    gen_statem:start_link(?MODULE, [self(), {binary_to_list(Host),Port,Secure}], []).
     %%case Host of
     %%    <<"v.redd.it">> ->
     %%        gen_statem:start_link(?MODULE, [self(), {Proto,binary_to_list(Host),Port}], [{debug,[trace]}]);
@@ -111,17 +111,6 @@ handle_event(cast, {connect,{Host,Port,true}}, disconnected, D) ->
     end;
 
 %%%
-%%% Error message generator
-%%%
-
-handle_event(info, {transmit,Res,eof}, nxdomain, Host) ->
-    send_error(Res, "Unknown domain name: "++Host),
-    {stop,shutdown};
-
-handle_event(info, {transmit,_,_}, nxdomain, _) ->
-    keep_state_and_data;
-
-%%%
 %%% TCP/SSL messages
 %%%
 
@@ -138,9 +127,9 @@ handle_event(info, {A,_,Bin}, head, D)
             {keep_state,D#data{reader=Reader},{state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
             case pihttp_lib:split_status_line(StatusLn) of
-                {ok,[{1,X},Code,_Etc]} when X =:= 0; X =:= 1 ->
+                {ok,{{1,X},Code,_Etc}} when X =:= 0; X =:= 1 ->
                     handle_head(Code, StatusLn, Headers, Rest, D);
-                {ok,[Ver,_,_]} ->
+                {ok,{Ver,_,_}} ->
                     {stop,{badversion,Ver},D};
                 {error,Rsn} ->
                     {stop,Rsn,D}
@@ -213,15 +202,22 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(info, {transmit,_,_}, disconnected, _) ->
+handle_event(cast, {transmit,Res,eof}, nxdomain, Host) ->
+    send_error(Res, "Unknown domain name: "++Host),
+    {stop,shutdown};
+
+handle_event(cast, {transmit,_,_}, nxdomain, _) ->
+    keep_state_and_data;
+
+handle_event(cast, {transmit,_,_}, disconnected, _) ->
     {keep_state_and_data, postpone};
 
-handle_event(info, {transmit,_Req,cancel}, _, D)
+handle_event(cast, {transmit,_Req,cancel}, _, D)
   when D#data.queue =:= [] ->
     %% Special case: Avoid breaking lists:last/1 with empty list.
     keep_state_and_data;
 
-handle_event(info, {transmit,Req,cancel}, _, D) ->
+handle_event(cast, {transmit,Req,cancel}, _, D) ->
     case lists:any(fun ({Req2,_}) when Req =:= Req2 -> true; (_) -> false end,
                    D#data.queue) of
         true ->
@@ -232,11 +228,11 @@ handle_event(info, {transmit,Req,cancel}, _, D) ->
             keep_state_and_data
     end;
 
-handle_event(info, {transmit,_,_}, _, #data{closed=close_on_eof}) ->
+handle_event(cast, {transmit,_,_}, _, #data{closed=close_on_eof}) ->
     %% discard http_pipe events after the socket has been remotely closed
     keep_state_and_data;
 
-handle_event(info, {transmit,Req,#head{}=Head}, _, D) ->
+handle_event(cast, {transmit,Req,Head = #head{}}, _, D) ->
     %% Push a new request on the queue when we receive a message head from the
     %% pipeline.
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
@@ -258,15 +254,16 @@ handle_event(info, {transmit,Req,#head{}=Head}, _, D) ->
 %%  4. <-EOF                <==                   EOF<-
 %%  5.                    (from #2)               EOF->
 
-handle_event(info, {transmit,Req,eof}, _, _) ->
+handle_event(cast, {transmit,Req,eof}, _, _) ->
     %% Avoid trying to encode the 'eof' atom.
     ?TRACE(Req, '?', ">>", "EOF"),
     keep_state_and_data;
 
-handle_event(info, {transmit,_Req,Term}, _, D) ->
+handle_event(cast, {transmit,_Req,Term}, _, D) ->
     pisock_lib:send(D#data.socket, pihttp_lib:encode(Term)),
     keep_state_and_data.
 
+%%%
 %%%
 %%% INTERNAL FUNCTIONS
 %%%

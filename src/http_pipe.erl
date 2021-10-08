@@ -165,7 +165,7 @@ handle_cast({send, Id, Term}, {MsgTab,Sessions,Dict0}=State) ->
                 {ok,[Id|L]} ->
                     %% If this is the first session in Pid2's pipeline then we do
                     %% not have to wait before we send it!
-                    Pid2 ! {http_pipe,Id,Term},
+                    http_res_sock:transmit(Pid2,Id,Term),
                     case Term of
                         eof ->
                             %% We also close the server end of the pipe when an
@@ -195,7 +195,7 @@ handle_cast({cancel,Id}, {_,Sessions,_}=State) ->
             %% Pid2 was likely sent some messages, which it has relayed.
             %% We must notify it so it can decide if it should shutdown.
             %% http_res_sock MAY exit at this point, but we don't know...
-            Pid2 ! {http_pipe,Id,cancel},
+            http_res_sock:transmit(Pid2,Id,cancel),
             {noreply, cleanup(T, State)}
     end;
 

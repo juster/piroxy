@@ -175,7 +175,7 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
+handle_event(cast, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
     case D#data.queue of
         [] ->
             {stop,underrun};
@@ -210,7 +210,7 @@ handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
             {stop,overrun}
     end;
 
-handle_event(info,{transmit,Res,eof},paused,D) ->
+handle_event(cast, {transmit,Res,eof}, paused, D) ->
     Host = case D#data.target of
                undefined -> "???";
                _ -> element(2,D#data.target)
@@ -232,7 +232,7 @@ handle_event(info,{transmit,Res,eof},paused,D) ->
     end;
 
 
-handle_event(info, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
+handle_event(cast, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
     %% Avoid trying to encode the 'eof' atom. Pop the first response ID off the
     %% queue. eof must be received in order?
     Host = case D#data.target of
@@ -242,18 +242,18 @@ handle_event(info, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
     ?TRACE(Res, Host, "<", "EOF"),
     {keep_state,D#data{queue=Q}};
 
-handle_event(info,{transmit,_,eof},_,_) ->
+handle_event(cast, {transmit,_,eof}, _, _) ->
     {stop,outoforder};
 
-handle_event(info, {transmit,_,{upgrade_socket,_,_}}, _, _) ->
+handle_event(cast, {transmit,_,{upgrade_socket,_,_}}, _, _) ->
     %% Ignore upgrade messages if we are not in the upgrade state.
     keep_state_and_data;
 
-handle_event(info, {transmit,_,#head{}=Head}, paused, D) ->
+handle_event(cast, {transmit,_,#head{}=Head}, paused, D) ->
     io:format("<====~n~s<~~~~~~~~~n", [pihttp_lib:encode(Head)]),
     send(D#data.socket, Head);
 
-handle_event(info, {transmit,Res,#head{}=Head}, _, D) ->
+handle_event(cast, {transmit,Res,#head{}=Head}, _, D) ->
     %% pipeline the next request ASAP
     Host = fieldlist:get_value(<<"host">>, Head#head.headers),
     ?TRACE(Res, Host, "<", Head),
@@ -270,7 +270,7 @@ handle_event(info, {transmit,Res,#head{}=Head}, _, D) ->
 %%    end;
 
 %% DEBUG TRACING
-handle_event(info, {transmit,Res,{error,Rsn}=Term}, _, D) ->
+handle_event(cast, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     Res = hd(D#data.queue),
     Host = case D#data.target of
                undefined -> "???";
@@ -287,7 +287,7 @@ handle_event(info, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     ?TRACE(Res, Host, "<", Line),
     send(D#data.socket, Term);
 
-handle_event(info, {transmit,_Res,Term}, _, D) ->
+handle_event(cast, {transmit,_Res,Term}, _, D) ->
     send(D#data.socket, Term);
 
 %%%
@@ -373,21 +373,13 @@ head_target(#head{method=options},<<"*">>) ->
     %% This is a request to list the OPTIONs supported by the proxy (that's us!)
     {ok,self};
 
-head_target(_,<<"/",_/binary>>) ->
+head_target(_,<<"/",_/binary>> = UriBin) ->
     %% There is no host specified and so this is considered a relative target.
     %% Hopefully we are already CONNECT-ed to a single host.
-    {ok,relative};
+    {ok,{relative,UriBin}};
 
 head_target(_,UriBin) ->
-    case uri_string:parse(UriBin) of
-        {error,_Rsn} ->
-            {error,http_bad_request};
-        {ok,UriMap} ->
-            %% XXX: how to use UserInfo?
-            %% URI should be absolute when received from proxy client!
-            %% We will convert to relative before sending to host.
-            {ok,{absolute,UriMap}}
-    end.
+    {ok,{absolute,UriBin}}.
 
 handle_head(#head{method=connect},{authority,T},Bin,D) ->
     %% CONNECT uses the "authority" form of URIs and so
@@ -419,38 +411,56 @@ handle_head(#head{method=options},self,Bin, D) ->
     {next_state, idle, D#data{reader=undefined},
      {next_event, info, {tcp,null,Bin}}};
 
-handle_head(H,relative,Bin,D) ->
+handle_head(H,{relative,RelUri},Bin,D) ->
     %% HTTP header is for a relative URL. Hopefully this is inside of a
     %% CONNECT tunnel!
-    HI = D#data.target,
-    case HI of undefined -> exit(host_missing); _ -> ok end,
-    relay_head(H,HI,Bin,D);
+    case D#data.target of
+        undefined ->
+            {stop,host_missing,D};
+         HI ->
+            Uri = case HI of
+                      {http,Host,80} ->
+                          <<"http://",Host,RelUri>>;
+                      {https,Host,443} ->
+                          <<"https://",Host,RelUri>>;
+                      {Scheme,Host,Port} ->
+                          SchemeBin = atom_to_binary(Scheme),
+                          PortBin = integer_to_binary(Port),
+                          <<SchemeBin/binary,"://",Host/binary,":",PortBin/binary>>
+                  end,
+            relay_head(H,HI,Uri,Bin,D)
+    end;
 
-handle_head(H,{absolute,UriMap},Bin,D) ->
+handle_head(H,{absolute,Uri},Bin,D) ->
     %% This is the only case that uses the Uri.
     %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
-    case relativize(H,UriMap) of
-        {ok,{H2,UriMap2}} ->
-            relay_head(H2,urimap_hostinfo(UriMap2),Bin,D);
-        {error,Rsn} ->
-            {stop,Rsn,D}
+    case uri_string:parse(Uri) of
+        {error,_} = Err ->
+            {stop,Err,D};
+        UriMap ->
+            case relativize(H,UriMap) of
+                {ok,H2} ->
+                    relay_head(H2,urimap_hostinfo(UriMap),Uri,Bin,D);
+                {error,_} = Err ->
+                    {stop,Err,D}
+            end
     end.
 
-connect_request(Req, HI, H) ->
-    case piroxy_hijack:hijacked(HI, H) of
+connect_request(Req, HI, H, Uri) ->
+    case piroxy_hijack:hijacked(HI,H,Uri) of
         true ->
             %% TODO: avoid using http_pipe to send to piroxy_hijack because
             %% it does not need to be pipelined on the server-side end
-            piroxy_hijack:connect(Req, HI);
+            piroxy_hijack:connect(Req,HI);
         false ->
             request_manager:connect(Req, HI)
     end.
 
-relay_head(H, HI, Bin, D) ->
+relay_head(H, HI, Uri, Bin, D) ->
     {_,Host,_} = HI,
     Req = request_manager:nextid(),
     ok = http_pipe:new(Req),
-    connect_request(Req, HI, H),
+    connect_request(Req,HI,H,Uri),
     http_pipe:send(Req, H),
     ?TRACE(Req, Host, ">", H),
     Q = D#data.queue ++ [Req],
@@ -478,19 +488,34 @@ relay_head(H, HI, Bin, D) ->
     end.
 
 urimap_hostinfo(#{scheme:=Scheme,host:=Host,port:=Port}) ->
-    {Scheme,Host,Port}.
+    if
+        Scheme /= <<"http">>, Scheme /= <<"https">> ->
+            exit(badarg);
+        true ->
+            {binary_to_atom(Scheme),Host,Port}
+    end;
+
+urimap_hostinfo(#{scheme:=<<"http">>,host:=Host}) ->
+    {http,Host,80};
+
+urimap_hostinfo(#{scheme:=<<"https">>,host:=Host}) ->
+    {https,Host,443}.
 
 %% Modify the status line in the header so that it is a relative version of itself.
 %% This amounts to removing the explicit reference to a hostname.
-relativize(H,#{host:=Host,path:=Path0,query:=Query} = M0) ->
+relativize(H,#{host:=Host,path:=Path0} = M) ->
     case check_host(Host, H#head.headers) of
         {error,_} = Err -> Err;
         ok ->
             MethodBin = pihttp_lib:method_bin(H#head.method),
+            Query = case M of
+                        #{query:=Q} -> Q;
+                        _ -> []
+                    end,
             Path = iolist_to_binary([Path0|Query]),
             Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
-            M1 = lists:reduce(fun (X,M) -> maps:remove(X,M) end,M0,[host,port]),
-            {ok,{H#head{line=Line},M1}}
+            %%M1 = lists:foldl(fun (X,M) -> maps:remove(X,M) end,M0,[host,port]),
+            {ok,H#head{line=Line}}
     end.
 
 check_host(Host, Headers) ->

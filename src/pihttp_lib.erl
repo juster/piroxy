@@ -80,16 +80,11 @@ http_ver_tuple(_) ->
 split_request_line(Bin) ->
     case nsplit(3,Bin,<<" ">>) of
         {ok,[X,Y,Z]} ->
-            case method_atom(X) of
-                unknown ->
+            case {method_atom(X),http_ver_tuple(Z)} of
+                {_,badarg} ->
                     {error,{badarg,Bin}};
-                Method ->
-                    case http_ver_tuple(Z) of
-                        badarg ->
-                            {error,{badarg,Bin}};
-                        T ->
-                            {ok,{Method,Y,T}}
-                    end
+                {Method,T} ->
+                    {ok,{Method,Y,T}}
             end;
         error ->
             {error,{badarg,Bin}}
