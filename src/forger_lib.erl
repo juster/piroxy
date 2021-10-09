@@ -11,8 +11,8 @@
 -include_lib("public_key/include/public_key.hrl").
 -import(public_key, [generate_key/1, pem_entry_encode/3, pem_encode/1, pkix_sign/2]).
 -import(lists, [map/2]).
--define(PIROXY_ORG, "Pirate Proxy Dev Team").
--define(PIROXYCA_CN, "Pirate Proxy Root CA").
+-define(PIROXY_ORG, "Piroxy Developers").
+-define(PIROXYCA_CN, "Piroxy Root CA").
 -define(PIROXYCA_ORG, ?PIROXY_ORG).
 -define(PIROXYCA_CO, "us").
 %% this is a little bit ridiculous...
