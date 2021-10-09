@@ -109,7 +109,6 @@ handle_event(info, {A,_,Bin}, head, D)
             {keep_state,D#data{reader=Reader},
              {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
-            %% head may throw an exit/error
             case request_headuri(StatusLn, Headers) of
                 {ok,{H,Uri}} ->
                     case head_target(H,Uri) of
@@ -413,7 +412,7 @@ handle_head(H,{relative,RelUri},Bin,D) ->
     %% CONNECT tunnel!
     case D#data.target of
         undefined ->
-            {stop,host_missing,D};
+            {stop,need_connect,D};
          HI ->
             Uri = case HI of
                       {http,Host,80} ->
@@ -429,7 +428,6 @@ handle_head(H,{relative,RelUri},Bin,D) ->
     end;
 
 handle_head(H,{absolute,Uri},Bin,D) ->
-    %% This is the only case that uses the Uri.
     %%case D#data.target of undefined -> ok; _ -> exit(host_connected) end,
     case uri_string:parse(Uri) of
         {error,_} = Err ->
@@ -438,8 +436,8 @@ handle_head(H,{absolute,Uri},Bin,D) ->
             case relativize(H,UriMap) of
                 {ok,H2} ->
                     relay_head(H2,urimap_hostinfo(UriMap),Uri,Bin,D);
-                {error,_} = Err ->
-                    {stop,Err,D}
+                {error,Rsn} ->
+                    {stop,Rsn,D}
             end
     end.
 
