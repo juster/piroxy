@@ -40,7 +40,7 @@ mitm_(TcpSock, Host) ->
                                  {ok,T} -> T
                              end,
     DerKey = public_key:der_encode('ECPrivateKey', Key),
-    Opts = [{mode,binary}, {packet,0}, {verify,verify_none},
+    Opts = [{mode,binary}, {packet,0}, {verify,verify_none}, {log_level,verbose},
             {alpn_preferred_protocols,[<<"http/1.1">>]},
             {cert,HostCert}, {key,{'ECPrivateKey',DerKey}}],
     %%{ok,Timer} = timer:apply_after(?CONNECT_TIMEOUT, io, format, ["SSL handshake spoofing ~s timed out.", Host]),
@@ -68,8 +68,8 @@ init([Opts]) ->
             Tab = ets:new(?MODULE, [set,private]),
             case {file:read_file(CaPath), file:read_file(KeyPath)} of
                 {{ok,CaPem},{ok,KeyPem}} ->
-                    Cert = decode_pem(CaPem),
-                    Key = decrypt_pem(KeyPem, Passwd),
+                    Cert = decode_pem1(CaPem),
+                    Key = decrypt_pem1(KeyPem, Passwd),
                     process_flag(trap_exit, true),
                     {ok,{Cert,Key,Tab}};
                 {{error,Rsn},_} ->
@@ -97,11 +97,11 @@ handle_cast(_Msg, State) ->
 %%% INTERNAL FUNCTIONS
 %%%
 
-decode_pem(PemBin) ->
+decode_pem1(PemBin) ->
     [Entry] = public_key:pem_decode(PemBin),
     public_key:pem_entry_decode(Entry).
 
 %% Decode a PEM binary of a single entry, which was encrypted with Passwd.
-decrypt_pem(PemBin, Passwd) ->
+decrypt_pem1(PemBin, Passwd) ->
     [Entry] = public_key:pem_decode(PemBin),
     public_key:pem_entry_decode(Entry, Passwd).
