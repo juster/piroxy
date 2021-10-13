@@ -17,13 +17,15 @@
 %% this is a little bit ridiculous...
 -define(CERT_SERIAL(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.serialNumber).
 -define(CERT_PUBKEY(Cert), Cert#'Certificate'.tbsCertificate#'TBSCertificate'.subjectPublicKeyInfo#'SubjectPublicKeyInfo'.subjectPublicKey).
--define(EC_CURVE, ?'secp521r1').
+-define(EC_CURVE, ?'secp521r1'). % switched to RSA (unused)
+-define(N_SERIAL_BYTES, 18).
 
 %% References:
+%% RFC3279: algorithm identifier used in X509 certs
+%% RFC3280: X509 certs themselves
 %% RFC5280: has the relevant ASN1 information
 %% RFC5480: info specific to using elliptic curve with PKI, for example:
 %% RFC7748: describes djb's X25519 curve
-%% (I had been useing secp521r1 but it was banned...?)
 
 -export([generate_ca_pair/1, forge/2]).
 
@@ -84,7 +86,7 @@ keyIdentifier(Key) when is_tuple(Key) ->
     keyIdentifier(public_key:der_encode(element(1,Key),Key)).
 
 randSerial() ->
-    N = 18,
+    N = ?N_SERIAL_BYTES,
     <<Serial:(8*N)/integer>> = crypto:strong_rand_bytes(N),
     Serial.
 
@@ -144,9 +146,14 @@ public_key_info(#'RSAPrivateKey'{} = K) ->
     #'OTPSubjectPublicKeyInfo'{
        algorithm = #'PublicKeyAlgorithm'{
                       algorithm = ?'rsaEncryption',
-                      parameters = 'NULL'
+                      parameters = 'NULL' % * MUST be provided for rsaEncryption
                      },
        subjectPublicKey = extract_pubkey(K)};
+
+%% I did not provide the NULL parameter at first and this produced an error in
+%% Firefox and in Safari. In RFC3279 it states that you MUST provide the NULL
+%% parameter when using rsaEncryption. Firefox produced a generic SEC_BAD_DER
+%% error message.
 
 public_key_info(#'ECPrivateKey'{} = K) ->
     #'OTPSubjectPublicKeyInfo'{
@@ -164,7 +171,7 @@ signature_algorithm(#'ECPrivateKey'{}) ->
 signature_algorithm(#'RSAPrivateKey'{}) ->
     #'SignatureAlgorithm'{
        algorithm = ?'sha512WithRSAEncryption',
-       parameters = 'NULL'
+       parameters = 'NULL' % MUST be provided for sha512WithRSAEncryption
       }.
 
 certificate(Subject, SubjectKeyPair, CAKeyPair, Extensions) ->
@@ -174,7 +181,7 @@ certificate(Subject, SubjectKeyPair, CAKeyPair, Extensions) ->
         signature = signature_algorithm(CAKeyPair),
         issuer = attributes(issuer()),
         validity = validity(),
-        subject = attributes(Subject), % checks arguments early,
+        subject = attributes(Subject),
         subjectPublicKeyInfo = public_key_info(SubjectKeyPair),
         issuerUniqueID = asn1_NOVALUE,
         subjectUniqueID = asn1_NOVALUE,
