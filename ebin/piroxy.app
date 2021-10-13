@@ -14,7 +14,7 @@
   {applications, [kernel,stdlib,ssl]},
   {env, [{keyfile, "priv/pem/key.pem"},
          {cafile, "priv/pem/ca.pem"},
-         {passwd, "secret"}]},
+         {passwd, "secret123"}]},
   {mod, {piroxy_app,[]}},
   {start_phases, []}
  ]}.

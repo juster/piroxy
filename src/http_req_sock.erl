@@ -5,12 +5,12 @@
 
 -module(http_req_sock).
 -behavior(gen_statem).
--import(lists, [reverse/1]).
 -include("../include/pihttp_lib.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -define(IDLE_TIMEOUT, 5*60*1000).
--define(ACTIVE_TIMEOUT, 5000).
+-define(ACTIVE_TIMEOUT, ?IDLE_TIMEOUT).
+%%-define(ACTIVE_TIMEOUT, 5000).
 
 -record(data, {target, socket, reader, queue=[], active}).
 -export([start/0,stop/1,control/2]).
@@ -106,9 +106,11 @@ handle_event(info, {A,_,Bin}, head, D)
             {stop,Reason};
         {continue,Reader} ->
             %% Keep the 'head' state but reset the timer.
+            %%io:format("*DBG* head_reader continue after: ~p", [Bin]),
             {keep_state,D#data{reader=Reader},
              {state_timeout,?ACTIVE_TIMEOUT,active}};
         {done,StatusLn,Headers,Rest} ->
+            %%io:format("*DBG* head_reader done~n"),
             case request_headuri(StatusLn, Headers) of
                 {ok,{H,Uri}} ->
                     case head_target(H,Uri) of
@@ -221,7 +223,7 @@ handle_event(info, {transmit,Res,eof}, paused, D) ->
             %% If we get this far, an upgrade request did not result in a
             %% successful upgrade response (101). Restart the pipeline.
             ?TRACE(Res, Host, "<", "EOF"),
-            Bin = iolist_to_binary(reverse(D#data.reader)),
+            Bin = iolist_to_binary(lists:reverse(D#data.reader)),
             {next_state,idle,
              D#data{queue=[],reader=undefined,active=undefined},
              {next_event,info,{tcp,null,Bin}}}
@@ -265,7 +267,6 @@ handle_event(info, {transmit,Res,#head{}=Head}, _, D) ->
 %%            {keep_state, D#data{queue=lists:delete(Req, Q)}}
 %%    end;
 
-%% DEBUG TRACING
 handle_event(info, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     Res = hd(D#data.queue),
     Host = case D#data.target of
@@ -284,39 +285,7 @@ handle_event(info, {transmit,Res,{error,Rsn}=Term}, _, D) ->
     send(D#data.socket, Term);
 
 handle_event(info, {transmit,_Res,Term}, _, D) ->
-    send(D#data.socket, Term);
-
-%%%
-%%% TLS TUNNEL
-%%%
-
-handle_event(cast, {connect,{http,Host,80}=HI}, tunnel, D) ->
-    ?TRACE(0, Host, ">", <<"http_tunnel ",Host/binary>>),
-    {next_state, idle, D#data{target=HI, reader=undefined}};
-
-handle_event(cast, {connect,{https,Host,443}=HI}, tunnel, D) ->
-    {tcp,TcpSock} = D#data.socket,
-    [] = D#data.queue,
-    case forger:mitm(TcpSock, Host) of
-        {ok,TlsSock} ->
-            ?TRACE(0, Host, ">", <<"https_tunnel ",Host/binary>>),
-            %%io:format("~2..0B~2..0B [0] (~s) inbound ~p started tunnel~n",
-            %%          [M,S,Host,self()]),
-            {next_state, idle, D#data{target=HI,
-                                      reader=undefined,
-                                      socket={ssl,TlsSock}}};
-        {error,closed} ->
-            {stop,shutdown};
-        {error,einval} ->
-            {stop,shutdown};
-        {error,Rsn} ->
-            ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(), Host, Rsn]),
-            {stop,Rsn}
-    end;
-
-handle_event(cast, {connect,_}, tunnel, D) ->
-    send(D#data.socket, {status,http_bad_gateway}),
-    {next_state, idle, D}.
+    send(D#data.socket, Term).
 
 %%%
 %%% INTERNAL FUNCTIONS
@@ -395,7 +364,7 @@ handle_head(#head{method=connect},{authority,T},Bin,D) ->
                 ?EMPTY -> ok;
                 _ -> exit({extra_tunnel_bytes,Bin})
             end,
-            {next_state, tunnel, D, {next_event, cast, {connect,T}}};
+            connect_tunnel(T,D);
         _ ->
             {stop,{badarg,{authority,T}}}
     end;
@@ -416,9 +385,9 @@ handle_head(H,{relative,RelUri},Bin,D) ->
          HI ->
             Uri = case HI of
                       {http,Host,80} ->
-                          <<"http://",Host,RelUri>>;
+                          <<"http://",Host/binary,RelUri/binary>>;
                       {https,Host,443} ->
-                          <<"https://",Host,RelUri>>;
+                          <<"https://",Host/binary,RelUri/binary>>;
                       {Scheme,Host,Port} ->
                           SchemeBin = atom_to_binary(Scheme),
                           PortBin = integer_to_binary(Port),
@@ -440,6 +409,47 @@ handle_head(H,{absolute,Uri},Bin,D) ->
                     {stop,Rsn,D}
             end
     end.
+
+%%%
+%%% TLS TUNNEL
+%%%
+
+connect_tunnel({http,Host,80} = HI, D) ->
+    ?TRACE(0, Host, ">", <<"http_tunnel ",Host/binary>>),
+    {next_state, idle, D#data{target=HI, reader=undefined}};
+
+connect_tunnel({https,_,443}, #data{socket={ssl,_}}) ->
+    {stop,already_tunneled};
+
+connect_tunnel({https,Host,443} = HI, #data{socket={tcp,Sock}} = D) ->
+    %% TODO: cleanup messy sanity check
+    case D#data.queue of
+        [] ->
+            ok;
+        _ ->
+            error(need_empty_pipeline)
+    end,
+    case forger:mitm(Sock, Host) of
+        {ok,TlsSock} ->
+            ?TRACE(0, Host, ">", <<"connect_tunnel started">>),
+            %%io:format("~2..0B~2..0B [0] (~s) inbound ~p started tunnel~n",
+            %%          [M,S,Host,self()]),
+            {next_state,
+             idle,
+             D#data{target=HI,reader=undefined,socket={ssl,TlsSock}}};
+        {error,closed} ->
+            {stop,shutdown};
+        {error,einval} ->
+            {stop,shutdown};
+        {error,Rsn} ->
+            ?LOG_ERROR("~p mitm failed for ~s: ~p", [self(),Host,Rsn]),
+            {stop,Rsn}
+    end;
+
+connect_tunnel(_, D) ->
+    send(D#data.socket, {status,http_bad_gateway}),
+    {next_state,idle,D}.
+
 
 connect_request(Req, HI, H, Uri) ->
     case piroxy_hijack:hijacked(HI,H,Uri) of

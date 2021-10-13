@@ -164,8 +164,6 @@ error_bin({shutdown,timeout}) -> status_bin(http_gateway_timeout); % http11_res
 error_bin({missing_length,_,_}) -> status_bin(http_bad_gateway); % http11_res:body_length/3
 error_bin(_) -> status_bin(http_bad_gateway).
 
-trace(_, _, _, _) ->
-    ok;
 trace(Sess, Host, Arrow, Term) ->
     {_,{_H,M,S}} = calendar:local_time(),
     Str = case Term of
