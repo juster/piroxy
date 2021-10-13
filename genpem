@@ -1,0 +1,64 @@
+#!/usr/bin/env escript
+%% -*- erlang -*-
+%%! -pz ebin
+
+-define(DEFAULT_CA_PATH, "priv/pem/ca.pem").
+-define(DEFAULT_KEY_PATH, "priv/pem/key.pem").
+
+prompt_passwd() ->
+    case io:get_line("certificate password: ") of
+        {error,Rsn} ->
+            exit(Rsn);
+        "\n" ->
+            io:format("error: empty password not allowed!~n"),
+            prompt_passwd();
+        Any ->
+            Passwd = string:chomp(Any),
+            if
+                length(Passwd) < 8 ->
+                    io:format("error: password too short!~n"),
+                    prompt_passwd();
+                true ->
+                    Passwd
+            end
+    end.
+
+prompt_new_file(Prompt, Default) ->
+    L = io_lib:format("~s (default: ~s): ", [Prompt,Default]),
+    case io:get_line(L) of
+        {error,Rsn} ->
+            exit(Rsn);
+        Any ->
+            Path = case Any of
+                       "\n" -> Default;
+                       _ -> string:chomp(Any)
+                   end,
+            case file:open(Path, [exclusive]) of
+                {ok,IoDev} ->
+                    IoDev;
+                {error,eexist} ->
+                    io:format("error: path (~s) already exists! Please delete "
+                              ++ "and rerun this script.~n", [Path]),
+                    exit(eexist);
+                {error,Rsn} ->
+                    exit(Rsn)
+            end
+    end.
+
+genpem() ->
+    CADev = prompt_new_file("CA path", ?DEFAULT_CA_PATH),
+    KeyDev = prompt_new_file("Private key path", ?DEFAULT_KEY_PATH),
+    Passwd = prompt_passwd(),
+    {CertPem,KeyPem} = forger_lib:generate_ca_pair(Passwd),
+    file:write(CADev,CertPem),
+    file:close(CADev),
+    file:write(KeyDev,KeyPem),
+    file:close(KeyDev),
+    io:format("Done.~n"),
+    0.
+
+main([]) ->
+    try genpem()
+    catch
+        exit:eexist -> 1 % anticipated errors
+    end.
