@@ -1,5 +1,5 @@
 {application, piroxy,
- [{description, "Pirate Proxy"},
+ [{description, "Personal web pirate proxy"},
   {vsn, "0.01"},
   {modules, [fieldlist, forger, forger_lib,
              http_pipe, http_req_sock, http_res_sock,
@@ -7,14 +7,11 @@
              piroxy_app, piroxy_sup,
              piroxy_disk_log, piroxy_ram_log,
              piroxy_events, piroxy_hijack, piroxy_hijack_spy,
-             piroxy_hijack_ws, piroxy_sup, raw_sock,
+             piroxy_hijack_ws, raw_sock,
              request_manager, request_target, ws_sock]},
   {registered, [piserver, piroxy_events, forger, piroxy_disk_log,
                 piroxy_ram_log, piroxy_hijack, request_manager]},
   {applications, [kernel,stdlib,ssl]},
-  {env, [{keyfile, "priv/pem/key.pem"},
-         {cafile, "priv/pem/ca.pem"},
-         {passwd, "secret123"}]},
   {mod, {piroxy_app,[]}},
   {start_phases, []}
  ]}.
