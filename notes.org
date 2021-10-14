@@ -6,3 +6,9 @@ Download (or brew) and run [[https://ctags.io/][Universal Tags]]:
 #+BEGIN_SRC sh
 ctags -e -h .hrl src/*.erl include/*.hrl
 #+END_SRC
+
+** Generate boot script
+This is how to generate a boot script from a release file:
+#+BEGIN_SRC erlang
+systools:make_script("piroxy", [local]).
+#+END_SRC

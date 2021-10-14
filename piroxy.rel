@@ -1,0 +1,11 @@
+{release,
+ {"piroxy_rel","A"},
+ {erts,"11.2.1"},
+ [{kernel,"7.3"},
+  {stdlib,"3.14.2"},
+  {sasl,"4.0.2"},
+  {public_key,"1.10"},
+  {asn1,"5.0.15"},
+  {ssl,"10.3.1"},
+  {crypto,"4.9"},
+  {piroxy,"0.01"}]}.
