@@ -152,7 +152,7 @@ log_event(T, S) ->
     {ok,S}.
 
 accum_body(Id, Dir, Time, Bin, S) ->
-    io:format("*DBG* accum_body!~n"),
+    %%io:format("*DBG* accum_body!~n"),
     D0 = S#state.accum, % XXX: error if not found
     D = dict:append({Id,Dir}, {Time,Bin}, D0),
     S#state{accum=D}.
@@ -176,7 +176,7 @@ store_body(Id, Dir, S) ->
             S#state{accum=dict:erase({Id,Dir}, S#state.accum)};
         error ->
             %% there were no body messages
-            io:format("*DBG* no body found for request ~p~n", [Id]),
+            %%io:format("*DBG* no body found for request ~p~n", [Id]),
             S
     end.
 

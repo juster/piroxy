@@ -317,8 +317,7 @@ newline(<<?CR>>, <<?LF>>) ->
     {done,<<?CRLF>>,?EMPTY};
 newline(<<?CR>>, <<?LF,Bin2/binary>>) ->
     {done,<<?CRLF>>,Bin2};
-newline(Bin1, Bin2) ->
-    io:format("*DBG* ~p~n", [[{bin1,Bin1},{bin2,Bin2}]]),
+newline(_,_) ->
     {error,expected_crlf}.
 
 chunk_size(Buf, Bin) ->
