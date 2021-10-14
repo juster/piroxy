@@ -1,0 +1,8 @@
+#+TITLE: Piroxy
+
+* Development
+** Generate tags
+Download (or brew) and run [[https://ctags.io/][Universal Tags]]:
+#+BEGIN_SRC sh
+ctags -e -h .hrl src/*.erl include/*.hrl
+#+END_SRC
