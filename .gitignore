@@ -6,3 +6,6 @@
 dev.config
 werl
 log/*
+TAGS
+erl_crash.dump
+.DS_Store
