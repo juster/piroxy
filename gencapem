@@ -6,7 +6,7 @@
 -define(DEFAULT_KEY_PATH, "priv/pem/key.pem").
 
 prompt_passwd() ->
-    case io:get_line("certificate password: ") of
+    case io:get_line("Private key password: ") of
         {error,Rsn} ->
             exit(Rsn);
         "\n" ->
@@ -37,17 +37,18 @@ prompt_new_file(Prompt, Default) ->
                 {ok,IoDev} ->
                     IoDev;
                 {error,eexist} ->
-                    io:format("error: path (~s) already exists! Please delete "
-                              ++ "and rerun this script.~n", [Path]),
-                    exit(eexist);
+                    io:format("error: path (~s) already exists~n"
+                              ++ "*** Please delete ~s and rerun this script.~n",
+                              [Path,Path]),
+                    throw(eexist);
                 {error,Rsn} ->
                     exit(Rsn)
             end
     end.
 
 genpem() ->
-    CADev = prompt_new_file("CA path", ?DEFAULT_CA_PATH),
-    KeyDev = prompt_new_file("Private key path", ?DEFAULT_KEY_PATH),
+    CADev = prompt_new_file("CA cert path", ?DEFAULT_CA_PATH),
+    KeyDev = prompt_new_file("CA key path", ?DEFAULT_KEY_PATH),
     Passwd = prompt_passwd(),
     {CertPem,KeyPem} = forger_lib:generate_ca_pair(Passwd),
     file:write(CADev,CertPem),
@@ -58,7 +59,4 @@ genpem() ->
     0.
 
 main([]) ->
-    try genpem()
-    catch
-        exit:eexist -> 1 % anticipated errors
-    end.
+    try genpem() catch eexist -> 1 end.
