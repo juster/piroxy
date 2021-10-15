@@ -28,15 +28,17 @@ init(Sid) ->
 loop(State0) ->
     receive
         Any ->
-            io:format("*DBG* ~s ~p: received ~p~n", [?MODULE,self(),Any]),
+            %%io:format("*DBG* ~s ~p: received ~p~n", [?MODULE,self(),Any]),
             try handle(Any,State0) of
                 State ->
                     loop(State)
             catch
+                exit:closed ->
+                    exit(closed);
                 exit:Rsn ->
                     ?LOG_ERROR("~s exit reason: ~p", [?MODULE,Rsn]);
                 error:Rsn:Stack ->
-                    ?LOG_ERROR("~s error ~p", [?MODULE,{Rsn,Stack}])
+                    ?LOG_ERROR("~s error ~p~n~p", [?MODULE,Rsn,Stack])
             end
     end.
 
@@ -67,7 +69,7 @@ handle_frame({binary,Bin}, S0) ->
 handle_frame({close,L}, S) ->
     %% we need to send a close in response
     reply({close,L}, S),
-    S;
+    exit(closed);
 
 handle_frame(_, S) ->
     %% ignore other frame types
