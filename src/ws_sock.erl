@@ -1,5 +1,5 @@
 -module(ws_sock).
--export([upgrade_options/1,start/1,connect/2,relay/2]).
+-export([upgrade_options/1,start/1,connect/2]).
 -record(state, {sid,socket,mode,relay,relayFrames=false,logging=false,
                 buffer=(<<>>),fragments=[], zlib=null}).
 -include_lib("kernel/include/logger.hrl").
@@ -51,9 +51,6 @@ connect(Pid1,Pid2) ->
             {error,timeout}
     end.
 
-relay(Pid,Term) ->
-    Pid ! {relay,Term}.
-
 %%%
 %%% INTERNALS
 %%%
@@ -87,7 +84,7 @@ init(Opts) ->
     State = #state{sid=proplists:get_value(id,Opts),
                    socket=proplists:get_value(socket,Opts),
                    mode=proplists:get_value(mode,Opts),
-                   relayFrames=proplists:get_bool(relayFrame,Opts),
+                   relayFrames=proplists:get_bool(relayFrames,Opts),
                    logging=proplists:get_bool(logging,Opts),
                    buffer=iolist_to_binary(proplists:get_value(buffer,Opts)),
                    zlib=proplists:get_value(zlib,Opts)},
@@ -97,24 +94,36 @@ loop(State0) ->
     receive
         Any ->
             %%io:format("*DBG* ws_sock ~p received: ~p~n", [self(),Any]),
-            State = handle(Any,State0),
-            loop(State)
+            try handle(Any,State0) of
+                State ->
+                    loop(State)
+            catch
+                exit:closed ->
+                    exit(closed);
+                exit:Rsn ->
+                    ?LOG_ERROR("~s exit: ~p", [?MODULE,Rsn]),
+                    exit(Rsn);
+                error:Rsn:Stack ->
+                    ?LOG_ERROR("~s error: ~p~n~p", [?MODULE,Rsn,Stack]),
+                    exit(Rsn)
+            end
     end.
 
-handle({connect,Pid,Reply}, #state{socket=Sock} = S) ->
+handle({connect,Pid,Reply}, #state{socket=Sock} = S0) ->
     %% Link to the other process so we know if it errors out.
     process_flag(trap_exit,true),
     link(Pid),
     %% Activate the socket and start relaying data to Pid.
     pisock_lib:setopts(Sock,[{active,true}]),
-    case S#state.buffer of
+    S = S0#state{relay=Pid},
+    case S0#state.buffer of
         <<>> ->
             ok;
         Buf ->
-            relay(Pid,Buf)
+            relay(Buf,S)
     end,
     Reply ! {connected,self()},
-    S#state{relay=Pid};
+    S;
 
 %% Relay messages are sent from the opposite end of the connection
 handle({relay,Bin}, #state{socket=Sock} = S) when is_binary(Bin); is_list(Bin) ->
@@ -133,9 +142,9 @@ handle({relay,Frame}, #state{socket=Sock} = S) when is_tuple(Frame) ->
 handle({relay,_},_) ->
     exit(badarg);
 
-handle({X,_,Bin}, #state{mode=Mode,relay=Pid} = S) when X == tcp; X == ssl ->
+handle({X,_,Bin}, #state{mode=Mode} = S) when X == tcp; X == ssl ->
     %% TODO: binaries are not logged... maybe later?
-    relay(Pid,Bin),
+    relay(Bin,S),
     case Mode of
         raw ->
             S;
@@ -158,7 +167,7 @@ handle({'EXIT',Pid,closed}, #state{relay=Pid} = S) ->
 
 handle({'EXIT',_,Err}, #state{sid=Id,mode=Mode}) ->
     %% If the other side failed unexpectedly then we must always log this.
-    ?LOG_ERROR("ws_sock unexpected exit: ~p", Err),
+    ?LOG_ERROR("ws_sock unexpected exit: ~p", [Err]),
     piroxy_events:fail(Id,Mode,Err),
     exit(Err);
 
@@ -168,6 +177,17 @@ handle(_, _) ->
 %%%
 %%% INTERNAL FUNCTIONS
 %%%
+
+relay(Bin, #state{relay=Pid,relayFrames=false})
+  when is_binary(Bin); is_list(Bin) ->
+    Pid ! {relay,Bin};
+
+relay(T, #state{relay=Pid,relayFrames=true})
+  when is_tuple(T) ->
+    Pid ! {relay,T};
+
+relay(_, _) ->
+    ok.
 
 parse(Bin2, #state{buffer=Bin1} = S)
   when byte_size(Bin1) + byte_size(Bin2) < 2 ->
@@ -287,12 +307,7 @@ send_frame(Rsv1, Op, Payload0, S) ->
                     {Op,Bin}
             end,
     log_event(Frame,S),
-    case S of
-        #state{relayFrames=false} ->
-            ok;
-        #state{relayFrames=true, relay=Pid} ->
-            relay(Pid,Frame)
-    end,
+    relay(Frame,S),
     S.
 
 inflate(Z, Bin0) ->
@@ -318,6 +333,9 @@ frame_binary({close,[Code,Reason]}) ->
     frame_binary({close,<<Code:16,Reason/utf8>>});
 
 %% generates a websocket frame, does not do any frame splitting
+frame_binary({Op,L}) when is_list(L) ->
+    frame_binary({Op,iolist_to_binary(L)});
+
 frame_binary({Op,Bin}) when is_binary(Bin) ->
     Len = byte_size(Bin),
     if

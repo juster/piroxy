@@ -77,7 +77,7 @@ init(Opts) ->
             worker,
             [piserver]},
            {piroxy_hijack,
-            {piroxy_hijack, start_link, []},
+            {piroxy_hijack, start_link, [[]]},
             permanent,
             10000,
             worker,

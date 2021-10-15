@@ -27,6 +27,10 @@ cleanup_replay(Key) ->
 start_link(Opts) ->
     gen_server:start_link({local,?MODULE}, ?MODULE, [], Opts).
 
+%%%
+%%% BEHAVIORS
+%%%
+
 init([]) ->
     {ok,#state{}}.
 
@@ -81,6 +85,10 @@ handle_info({transmit,_Id,A}, S)
 handle_info({transmit,_,Any}, _S) ->
     {stop,{unexpected_message,Any}}.
 
+%%%
+%%% INTERNAL
+%%%
+
 get_uri(?HJ_TARGET, <<"/">>, _Id, H, S) ->
     {static_file(<<"index.html">>, H), S};
 
@@ -93,18 +101,17 @@ get_uri(?HJ_TARGET, <<"/ws">>, Id, H, S) ->
             io:format("*DBG* Sec-WebSocket-Key: ~s~n", [Key]),
             L = [
                  {"Sec-WebSocket-Version", "13"}, % TODO: match w/ client's
-                 {"Sec-WebSocket-Accept", piroxy_hijack_ws:accept(Key)},
+                 {"Sec-WebSocket-Accept", piroxy_hijack_ws:calc_accept(Key)},
                  {"Upgrade", "websocket"},
                  {"Connection", "Upgrade"}
                 ],
             Headers = fieldlist:from_proplist(L),
-            {ok,Pid} = piroxy_hijack_ws:start(),
-            Handshake = {piroxy_hijack_ws, handshake, [Pid]},
-            Start = {ws_sock,start,[client,{handshake,Handshake},{id,Id}]},
             Head = #head{line = <<"HTTP/1.1 101 Switching Protocols">>,
                          headers = Headers,
                          bodylen = 0},
-            {[Head,{upgrade_socket,Start}],S}
+            {ok,Pid} = piroxy_hijack_ws:start(Id),
+            Opts = [{mode,ws},{headers,Headers},{relayFrames,true}],
+            {[Head,{upgrade_socket,Pid,Opts}],S}
     end;
 
 get_uri(?HJ_TARGET, <<"/cp/",BinId/binary>>, _Id, _H, S) ->

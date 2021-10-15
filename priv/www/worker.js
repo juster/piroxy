@@ -1,19 +1,20 @@
 "use strict;"
-var socket
-var connfail = 0
-var MAX_FAIL = 5
+let socket
+let fails = 0
+const MAX_FAIL = 5
 
 importScripts('blert.js')
 
 function connect(){
     socket = new WebSocket('wss://piroxy/ws')
     socket.onmessage = relay_in
-    socket.onclose = connect
-    //socket.onopen = function(evt){ console.log('*DBG* WS opened!') }
+    socket.onclose = function(){ console.log("*DBG* WS closed!") }
+    socket.onopen = function(evt){ console.log('*DBG* WS opened!') }
+    socket.onerror = reconnect
 }
 
 function decode_in(abuf){
-    //console.log('*DBG* decoded: '+JSON.stringify(blert.decode(abuf)))
+    //console.log('*DBG* decoded:', JSON.stringify(blert.decode(abuf)))
     postMessage(blert.decode(abuf))
 }
 
@@ -30,9 +31,9 @@ function relay_in(msg){
     }
 }
 
-function socket_error(evt){
-    if(++connfail > MAX_FAIL){
-        throw new Error("connection failed "+connfail+" times")
+function reconnect(evt){
+    if(++fails > MAX_FAIL){
+        throw new Error("connection failed "+fails+" times")
     }else{
         connect()
     }

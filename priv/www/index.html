@@ -3,13 +3,11 @@
 <head>
 <title>Index</title>
 <meta charset="utf-8">
-<script src="app.js"></script>
 </head>
 <body>
-<script>
+<script type="text/javascript">
+// XXX: temporarily expose vars during debugging
 //(function(){
-
-var app = Elm.Main.init()
 
 var worker = new Worker('worker.js')
 worker.onerror = error
@@ -22,14 +20,13 @@ function error(err){
 }
 
 function recv(msg){
-    var str = JSON.stringify(msg.data)
-    console.log('*DBG* Worker recv:'+str)
-    app.ports.fromPiroxy.send(str)
+    //var str = JSON.stringify(msg.data)
+    console.log('*DBG* Worker recv:', msg.data)
 }
 
-app.ports.toPiroxy.subscribe(function(str){
-    worker.postMessage(JSON.decode(str))
-})
+setInterval(function() {
+    worker.postMessage({tuple:[{atom:"echo"},{tuple:[1,2,3,4,5]}]})
+},5000)
 
 //})()
 </script>
