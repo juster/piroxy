@@ -272,10 +272,17 @@ handle_head(408, _StatusLn, _Headers, _Rest, _D0) ->
     {stop,{shutdown,reset}};
 
 %%% 101 often means to upgrade to a WebSocket.
-handle_head(101, _, Headers, Rest, D) ->
+handle_head(101, StatusLn, Headers, Rest, D) ->
     ?DBG(head, "101 Upgrade"),
-    {Req,_Hreq} = hd(D#data.queue),
-    upgrade(Req, Headers, Rest, D);
+    {Req,Hreq} = hd(D#data.queue),
+    ConnClosed = connection_close(Headers),
+    case head(Hreq#head.method,101,Headers,ConnClosed,StatusLn) of
+        {ok,Hres} ->
+            http_pipe:recv(Req,Hres),
+            upgrade(Req,Headers,Rest,D);
+        {error,Rsn} ->
+            {stop,Rsn,D}
+    end;
 
 handle_head(Code, StatusLn, Headers, Rest, D0) ->
     ConnClosed = connection_close(Headers),
@@ -359,64 +366,24 @@ send_error(Res, Text) ->
 %%% WebSocket and raw binary (unparsed) sockets.
 %%%
 
-upgrade(Req, Headers, Rest, D) ->
+upgrade(Req, Headers, Rest, #data{socket=Sock} = D) ->
     io:format("*DBG* ~p upgrading ~B~n", [self(), Req]),
-    T = try
-            B1 = fieldlist:has_value(<<"upgrade">>, <<"websocket">>, Headers),
-            B2 = fieldlist:has_value(<<"connection">>, <<"upgrade">>, Headers),
-            if
-                B1, B2 ->
-                    %% upgrade_ws might also throw(raw_sock)
-                    upgrade_ws(Req, Headers, D#data.socket, Rest);
-                true ->
-                    throw(raw_sock)
-            end
-        catch
-            raw_sock ->
-                %% Fall back to using raw_sock
-                upgrade_raw(Req, D#data.socket, Rest)
-        end,
-    case T of
-        {ok,Msg} ->
-            http_pipe:recvall(Req, [Msg]), % make http_pipe cleanup
-            request_target:finish(D#data.targetpid, Req), % avoid request retry
+    Opts1 = ws_sock:upgrade_options(Headers),
+    Logging = case proplists:get_value(mode,Opts1) of
+                  ws ->
+                      recv;
+                  raw ->
+                      false
+              end,
+    Opts2 = [{id,Req},{socket,Sock},{logging,Logging},{buffer,Rest}|Opts1],
+    case ws_sock:start(Opts2) of
+        {ok,Pid} ->
+            %% We send the response to http_req_sock through http_pipe, so that
+            %% it is received in the proper order in case of pipelining.
+            http_pipe:recv(Req, {upgrade_socket,Pid,Opts1}),
+            http_pipe:close(Req),
+            request_target:finish(D#data.targetpid, Req), % avoids request retry
             {stop,shutdown};
         {error,Rsn} ->
             {stop,Rsn}
-    end.
-
-upgrade_ws(Req, Headers, Sock, Rest) ->
-    Opts = case fieldlist:get_lcase(<<"sec-websocket-extensions">>, Headers) of
-               <<"permessage-deflate">> ->
-                   %% TODO: handle deflate extension parameters
-                   [{id,Req},{deflate,true}];
-               not_found ->
-                   [{id,Req}];
-               _ ->
-                   %% unknown extension(s), cannot be parsed
-                   throw(raw_sock)
-           end,
-    EventCb = fun ({frame,_} = Frame) ->
-                      piroxy_events:recv(Req,ws,Frame);
-                  (_) ->
-                      %% Only one side (ws_sock) of the session can log open/close events.
-                      %% We log open/close events from the http_req_sock side.
-                      ok
-              end,
-    case ws_sock:start(Sock, Rest, [{eventcb,EventCb}|Opts]) of
-        {ok,Pid} ->
-            {ok,{upgrade_socket,{ws_sock,Pid}}};
-        Any ->
-            Any
-    end.
-
-upgrade_raw(_Req, Sock, Rest) ->
-    %% TODO: add event logging to raw sockets
-    io:format("*DBG* ~p upgrade_raw~n", [self()]),
-    case raw_sock:start(Sock, Rest, [server]) of
-        {ok,Pid} ->
-            %%MF = {raw_sock,relay}, % client message relay fun
-            {ok,{upgrade_socket,{raw_sock,Pid}}};
-        Any ->
-            Any
     end.

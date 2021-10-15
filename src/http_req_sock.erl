@@ -173,31 +173,30 @@ handle_event(info, {A,_,Reason}, _, _)
 %%% messages from http_pipe/piserver
 %%%
 
-handle_event(info, {transmit,Res,{upgrade_socket,{M,Pid2}}}, paused, D) ->
+handle_event(info, {transmit,Res,{upgrade_socket,Pid2,Opts1}}, paused, D) ->
     case D#data.queue of
         [] ->
             {stop,underrun};
         [Res] ->
-            %% Transfers the socket to the new process and shuts down.
-            TargetHost = D#data.target,
-            EventCb = fun (open) ->
-                              piroxy_events:connect(Res,ws,TargetHost);
-                          (close) ->
-                              piroxy_events:close(Res,ws);
-                          ({frame,_} = Frame) ->
-                              piroxy_events:send(Res,ws,Frame)
+            #data{socket=Sock} = D,
+            Bin = lists:reverse(D#data.reader),
+            Logging = case proplists:get_value(mode,Opts1) of
+                          ws ->
+                              send;
+                          raw ->
+                              false
                       end,
-            %% XXX: EventCb is ignored by raw_sock
-            case M:start_link(D#data.socket,
-                              lists:reverse(D#data.reader),
-                              [{eventcb,EventCb}]) of
+            Opts2 = [{socket,Sock},{id,Res},{logging,Logging},{buffer,Bin}|Opts1],
+            case ws_sock:start(Opts2) of
                 {ok,Pid1} ->
-                    piroxy_events:close(Res,http),
-                    case M:handshake(Pid1,Pid2) of
+                    case ws_sock:connect(Pid1,Pid2) of
                         ok ->
-                            {stop,shutdown};
+                            Mode = proplists:get_value(mode,Opts1),
+                            piroxy_events:close(Res,http),
+                            piroxy_events:connect(Res,Mode,D#data.target),
+                            {stop,shutdown,D#data{queue=[]}};
                         {error,Rsn} ->
-                            {stop,{M,Rsn}}
+                            {stop,Rsn}
                     end;
                 {error,Rsn} ->
                     {stop,Rsn}
@@ -242,10 +241,6 @@ handle_event(info, {transmit,Res,eof}, _, #data{queue=[Res|Q]} = D) ->
 
 handle_event(info, {transmit,_,eof}, _, _) ->
     {stop,outoforder};
-
-handle_event(info, {transmit,_,{upgrade_socket,_,_}}, _, _) ->
-    %% Ignore upgrade messages if we are not in the upgrade state.
-    keep_state_and_data;
 
 handle_event(info, {transmit,_,#head{}=Head}, paused, D) ->
     io:format("<====~n~s<~~~~~~~~~n", [pihttp_lib:encode(Head)]),

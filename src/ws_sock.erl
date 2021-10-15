@@ -1,129 +1,169 @@
 -module(ws_sock).
--export([start_link/1,handshake/2,relay_frame/2]).
--record(state, {sid,relay=null,rawpid,eventcb,buffer=(<<>>),fragments=[],z=null}).
+-export([upgrade_options/1,start/1,connect/2,relay/2]).
+-record(state, {sid,socket,mode,relay,relayFrames=false,logging=false,
+                buffer=(<<>>),fragments=[], zlib=null}).
 -include_lib("kernel/include/logger.hrl").
 
 %%%
 %%% EXPORTS
 %%%
 
-start_link(Opts0) ->
-    process_flag(trap_exit, true),
-    case raw_sock:start_link(Opts0) of
-        {ok,Pid1} ->
-            Opts = [{rawpid,Pid1}|Opts0],
-            Pid2 = spawn_link(fun () -> init(Opts) end),
-            unlink(Pid1),
-            {ok,Pid2};
-        Any ->
-            Any
+upgrade_options(Headers) ->
+    try
+        upgrade_options_(Headers)
+    catch raw ->
+            [{mode,raw}]
     end.
 
-handshake(Pid1, Pid2) ->
-    raw_sock:handshake(Pid1,Pid2).
+%% Start a new websocket process.
+%%
+%% Opts (required):
+%%  - socket :: from pisock_lib
+%%  - logging :: boolean
+%%  - id :: session id
+%%  - buffer :: trailing bytes received after the upgrade message
+%%  - headers :: HTTP headers (fieldlist) for the upgrade message
+%%
+start(Opts) ->
+    case proplists:get_value(socket,Opts) of
+        undefined ->
+            {error,badarg};
+        Sock ->
+            %% Control of the socket must be passed to the new process.
+            pisock_lib:setopts(Sock,[{active,false}]),
+            Pid = spawn(fun () -> init(Opts) end),
+            pisock_lib:controlling_process(Sock,Pid),
+            {ok,Pid}
+    end.
 
-%% relay_frame/2 is used by piroxy_hijack_ws but not by ws_sock.
-relay_frame(Pid1, Frame) ->
-    Pid1 ! {frame,Frame}.
+connect(Pid1,Pid2) ->
+    Pid1 ! {connect,Pid2,self()},
+    Pid2 ! {connect,Pid1,self()},
+    receive
+        {connected,Pid1} ->
+            receive
+                {connected,Pid2} ->
+                    ok
+            after 1000 ->
+                    {error,timeout}
+            end
+    after 1000 ->
+            {error,timeout}
+    end.
+
+relay(Pid,Term) ->
+    Pid ! {relay,Term}.
 
 %%%
 %%% INTERNALS
 %%%
 
-init(Opts) ->
-    io:format("*DBG* ws_sock: Opts=~p~n", [Opts]),
-    Z = case proplists:get_bool(deflate, Opts) of
-            true ->
-                X = zlib:open(),
-                %% An important (undocumented) feature of zlib is that a
-                %% negative window size tells it to NOT look for the zlib
-                %% header and CRC32 suffix!
-                zlib:inflateInit(X, -15),
-                X;
-            false ->
-                null
-        end,
-    [Sid,RawPid,Callback] = [proplists:get_value(A,Opts) || A <- [id,rawpid,eventcb]],
-    case lists:member(undefined,[Sid,RawPid,Callback]) of
+upgrade_options_(Headers) ->
+    B1 = fieldlist:has_value(<<"upgrade">>,<<"websocket">>,Headers),
+    B2 = fieldlist:has_value(<<"connection">>,<<"upgrade">>,Headers),
+    if
+        B1, B2 ->
+            Zlib = case fieldlist:get_lcase(<<"sec-websocket-extensions">>,Headers) of
+                       <<"permessage-deflate">> ->
+                           %% TODO: handle deflate extension parameters
+                           X = zlib:open(),
+                           %% XXX: An important (undocumented) feature of zlib
+                           %% is that a negative window size tells it to NOT
+                           %% look for the zlib header and CRC32 suffix!
+                           zlib:inflateInit(X, -15),
+                           X;
+                       not_found ->
+                           null;
+                       _ ->
+                           %% unknown extension(s), it's safer not to try to parse
+                           throw(raw)
+                   end,
+            [{mode,ws},{zlib,Zlib}];
         true ->
-            exit(badarg);
-        false ->
-            wait(#state{sid=Sid,z=Z,rawpid=RawPid,eventcb=Callback})
+            throw(raw)
     end.
 
-wait(#state{rawpid=RawPid1} = S) ->
-    receive
-        {handshake,Pid,WsPid} ->
-            %% First message received from a third party to the first ws_sock.
-            link(WsPid),
-            WsPid ! {hello,self(),{RawPid1,null}},
-            wait2(Pid,S);
-        {hello,_,_} = T ->
-            loop(acknowledge(T,S))
-    after 1000 ->
-            exit(timeout)
-    end.
-
-wait2(Pid, S0) ->
-    receive
-        {howdy,_,_} = T ->
-            S = acknowledge(T,S0),
-            Pid ! {handshake,ok},
-            loop(S)
-    after 1000 ->
-            %% XXX: we could just call exit here instead
-            Pid ! {handshake,timeout}
-    end.
-
-acknowledge({_,_WsPid,{null,null}}, _S) ->
-    exit(badlogic);
-
-acknowledge({A,WsPid,{BinPid,FramePid}}, S0) ->
-    RawPid = S0#state.rawpid,
-    case A of
-        hello -> WsPid ! {howdy,self(),{RawPid,null}}; % we don't want frames
-        howdy -> ok
-    end,
-    %% Either BinPid or FramePid may be null.
-    L = if is_pid(BinPid) -> [BinPid]; true -> [] end,
-    S = if is_pid(FramePid) -> S0#state{relay=FramePid}; true -> S0 end,
-    %% Send handshake to (and wait for ack from) our raw_sock pid.
-    RawPid ! {hello,self(),[self()|L]},
-    receive
-        {howdy,RawPid,_} ->
-            dispatch(open, S),
-            S
-    after 1000 ->
-            exit(timeout)
-    end.
+init(Opts) ->
+    State = #state{sid=proplists:get_value(id,Opts),
+                   socket=proplists:get_value(socket,Opts),
+                   mode=proplists:get_value(mode,Opts),
+                   relayFrames=proplists:get_bool(relayFrame,Opts),
+                   logging=proplists:get_bool(logging,Opts),
+                   buffer=iolist_to_binary(proplists:get_value(buffer,Opts)),
+                   zlib=proplists:get_value(zlib,Opts)},
+    loop(State).
 
 loop(State0) ->
     receive
         Any ->
+            %%io:format("*DBG* ws_sock ~p received: ~p~n", [self(),Any]),
             State = handle(Any,State0),
             loop(State)
     end.
 
-handle({binary,Bin}, S) ->
-    parse(Bin,S);
-
-handle({'EXIT',Pid,closed}, S) ->
-    case S#state.rawpid of
-        Pid ->
+handle({connect,Pid,Reply}, #state{socket=Sock} = S) ->
+    %% Link to the other process so we know if it errors out.
+    process_flag(trap_exit,true),
+    link(Pid),
+    %% Activate the socket and start relaying data to Pid.
+    pisock_lib:setopts(Sock,[{active,true}]),
+    case S#state.buffer of
+        <<>> ->
             ok;
-        RawPid ->
-            raw_sock:close(RawPid)
+        Buf ->
+            relay(Pid,Buf)
     end,
-    dispatch(close,S),
+    Reply ! {connected,self()},
+    S#state{relay=Pid};
+
+%% Relay messages are sent from the opposite end of the connection
+handle({relay,Bin}, #state{socket=Sock} = S) when is_binary(Bin); is_list(Bin) ->
+    pisock_lib:send(Sock,Bin),
+    S;
+
+%% We only convert {relay,{frame,...}} messages to binary and send them over our
+%% socket when we are relaying frames to the opposite end.
+handle({relay,Frame}, #state{relayFrames=false} = S) when is_tuple(Frame) ->
+    S;
+
+handle({relay,Frame}, #state{socket=Sock} = S) when is_tuple(Frame) ->
+    pisock_lib:send(Sock,frame_binary(Frame)),
+    S;
+
+handle({relay,_},_) ->
+    exit(badarg);
+
+handle({X,_,Bin}, #state{mode=Mode,relay=Pid} = S) when X == tcp; X == ssl ->
+    %% TODO: binaries are not logged... maybe later?
+    relay(Pid,Bin),
+    case Mode of
+        raw ->
+            S;
+        ws ->
+            parse(Bin,S)
+    end;
+
+handle({X,_,Rsn},_) when X == tcp_error; X == ssl_error ->
+    ?LOG_ERROR("ws_sock ~s: ~p", [X,Rsn]),
+    exit({X,Rsn});
+
+handle({X,_},S) when X == tcp_closed; X == ssl_closed ->
+    log_event(close,null,S),
     exit(closed);
 
-handle({'EXIT',_,Error}, S) ->
-    dispatch({fail,Error},S),
-    exit(Error);
+handle({'EXIT',Pid,closed}, #state{relay=Pid} = S) ->
+    %% Both sides attempt to log the close event. Only one will succeed.
+    log_event(close,null,S),
+    exit(closed);
 
-handle(Any, S) ->
-    ?LOG_WARNING("ws_sock: unknown message ~p", [Any]),
-    S.
+handle({'EXIT',_,Err}, #state{sid=Id,mode=Mode}) ->
+    %% If the other side failed unexpectedly then we must always log this.
+    ?LOG_ERROR("ws_sock unexpected exit: ~p", Err),
+    piroxy_events:fail(Id,Mode,Err),
+    exit(Err);
+
+handle(_, _) ->
+    exit(unknown_message).
 
 %%%
 %%% INTERNAL FUNCTIONS
@@ -222,7 +262,7 @@ operation(9) -> ping;
 operation(10) -> pong.
 
 send_frame(Rsv1, Op, Payload0, S) ->
-    Bin = case {Rsv1,S#state.z} of
+    Bin = case {Rsv1,S#state.zlib} of
                   {1,null} ->
                       %% XXX: compression used but not negotiated!
                       Payload0;
@@ -246,7 +286,14 @@ send_frame(Rsv1, Op, Payload0, S) ->
                 _ ->
                     {Op,Bin}
             end,
-    relay(Frame,S).
+    log_event(Frame,S),
+    case S of
+        #state{relayFrames=false} ->
+            ok;
+        #state{relayFrames=true, relay=Pid} ->
+            relay(Pid,Frame)
+    end,
+    S.
 
 inflate(Z, Bin0) ->
     %% These extra octets are always the same and so removed/appended.
@@ -256,17 +303,40 @@ inflate(Z, Bin0) ->
     %% I believe future messages depend on previous message state.
     %%zlib:inflateReset(Z).
 
-relay(Frame, #state{relay=null} = S) ->
-    dispatch({frame,Frame},S),
-    S;
+opcode(binary) -> 2;
+opcode(close) -> 8;
+opcode(pong) -> 10.
 
-relay(Frame, #state{relay=Pid} = S) ->
-    dispatch({frame,Frame},S),
-    ws_sock:relay_frame(Pid,Frame),
-    S.
+%% close is the only frame which does not have a binary
+frame_binary({close,[]}) ->
+    frame_binary({close,<<>>});
 
-dispatch(_, #state{eventcb=null}) ->
+frame_binary({close,[Code]}) ->
+    frame_binary({close,<<Code:16>>});
+
+frame_binary({close,[Code,Reason]}) ->
+    frame_binary({close,<<Code:16,Reason/utf8>>});
+
+%% generates a websocket frame, does not do any frame splitting
+frame_binary({Op,Bin}) when is_binary(Bin) ->
+    Len = byte_size(Bin),
+    if
+        Len >= 4294967296 -> % 2^32
+            <<1:1,0:3,(opcode(Op)):4,0:1,127:7,Len:64,Bin/binary>>;
+        Len >= 126 -> % 126 and 127 are used for special lengths
+            <<1:1,0:3,(opcode(Op)):4,0:1,126:7,Len:32,Bin/binary>>;
+        true ->
+            <<1:1,0:3,(opcode(Op)):4,0:1,Len:7,Bin/binary>>
+    end;
+
+frame_binary(_) ->
+    exit(badarg).
+
+log_event(Term, #state{logging=A} = S) ->
+    log_event(A, Term, S).
+
+log_event(_, _, #state{logging=false}) ->
     ok;
 
-dispatch(Event, #state{eventcb=Callback}) ->
-    Callback(Event).
+log_event(A, Term, #state{sid=Id,mode=Mode}) ->
+    piroxy_events:log(Id,Mode,A,Term).
