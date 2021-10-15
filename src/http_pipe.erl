@@ -4,9 +4,9 @@
 -include("../include/pihttp_lib.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--export([start_link/0, start_shell/0, new/1, dump/0, sessions/0,
-         send/2, listen/2, recv/2, recvall/2, rewind/1, cancel/1,
-         transmit/3]).
+-export([start_link/0,start_shell/0,new/1,dump/0,sessions/0,
+         send/2,listen/2,recv/2,recvall/2,close/1,rewind/1,
+         cancel/1,transmit/3]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 %%% EXPORTS
@@ -52,6 +52,9 @@ recv(Id, Term) ->
 
 recvall(Id, L) ->
     foreach(fun (Term) -> recv(Id, Term) end, L),
+    close(Id).
+
+close(Id) ->
     recv(Id, eof).
 
 transmit(Pid,Id,Term) ->
