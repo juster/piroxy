@@ -508,31 +508,16 @@ urimap_hostinfo(#{scheme:=<<"https">>,host:=Host}) ->
 
 %% Modify the status line in the header so that it is a relative version of itself.
 %% This amounts to removing the explicit reference to a hostname.
-relativize(H,#{host:=Host,path:=Path0} = M) ->
-    case check_host(Host, H#head.headers) of
-        {error,_} = Err -> Err;
-        ok ->
-            MethodBin = pihttp_lib:method_bin(H#head.method),
-            Query = case M of
-                        #{query:=Q} -> Q;
-                        _ -> []
-                    end,
-            Path = iolist_to_binary([Path0|Query]),
-            Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
-            %%M1 = lists:foldl(fun (X,M) -> maps:remove(X,M) end,M0,[host,port]),
-            {ok,H#head{line=Line}}
-    end.
-
-check_host(Host, Headers) ->
-    case fieldlist:get_value(<<"host">>, Headers) of
-        not_found ->
-            {error,host_missing};
-        Host ->
-            ok;
-        Host2 ->
-            ?DBG("check_host", {host_mismatch,Host,Host2}),
-            {error,{host_mismatch,Host2}}
-    end.
+relativize(H,#{path:=Path0} = M) ->
+    MethodBin = pihttp_lib:method_bin(H#head.method),
+    Query = case M of
+                #{query:=Q} -> Q;
+                _ -> []
+            end,
+    Path = iolist_to_binary([Path0|Query]),
+    Line = <<MethodBin/binary," ",Path/binary," ", ?HTTP11>>,
+    %%M1 = lists:foldl(fun (X,M) -> maps:remove(X,M) end,M0,[host,port]),
+    {ok,H#head{line=Line}}.
 
 upgrade_requested(H) ->
     Headers = H#head.headers,
