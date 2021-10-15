@@ -170,7 +170,7 @@ next_sock_proc(S) ->
 failure_type(normal) -> soft;
 failure_type(shutdown) -> soft;
 failure_type({shutdown,reset}) -> soft;
-failure_type({shutdown,timeout}) -> hard;
+failure_type({shutdown,timeout}) -> fatal;
 failure_type({ssl_error,_}) -> hard;
 failure_type({tcp_error,_}) -> hard;
 failure_type(_) -> fatal.
