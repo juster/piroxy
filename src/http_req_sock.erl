@@ -328,8 +328,9 @@ head_target(#head{method=connect},UriBin) ->
         {ok,[Host,<<"80">>]} ->
             %% NYI?
             {ok,{authority,{http,Host,80}}};
-        {ok,_} ->
-            {error,http_bad_request};
+        {ok,[Host,PortBin]} ->
+            Port = binary_to_integer(PortBin),
+            {ok,{authority,{http,Host,Port}}};
         {error,_} = Err ->
             Err
     end;
@@ -414,7 +415,7 @@ handle_head(H,{absolute,Uri},Bin,D) ->
 %%% TLS TUNNEL
 %%%
 
-connect_tunnel({http,Host,80} = HI, D) ->
+connect_tunnel({http,Host,_} = HI, D) ->
     ?TRACE(0, Host, ">", <<"http_tunnel ",Host/binary>>),
     {next_state, idle, D#data{target=HI, reader=undefined}};
 
@@ -446,6 +447,9 @@ connect_tunnel({https,Host,443} = HI, #data{socket={tcp,Sock}} = D) ->
             {stop,Rsn}
     end;
 
+%% Cowardly refuse to https tunnel for ports other than 443. This is a difficult
+%% design problem because we do not know if a CONNECT tunnel should be encrypted
+%% unless it is port 443!!
 connect_tunnel(_, D) ->
     send(D#data.socket, {status,http_bad_gateway}),
     {next_state,idle,D}.
