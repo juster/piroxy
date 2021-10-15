@@ -11,7 +11,7 @@
 -export([trace/4]).
 
 %%% HTTP message parsing functions.
--export([head_reader/0, head_reader/2, body_reader/1, body_reader/2]).
+-export([head_reader/0,head_reader/2,body_reader/1,body_reader/2]).
 -export([split_request_line/1,split_status_line/1,body_length/1]).
 
 -import(lists, [reverse/1, flatten/1]).
