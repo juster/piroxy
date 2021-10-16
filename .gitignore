@@ -11,3 +11,7 @@ erl_crash.dump
 .DS_Store
 *.script
 *.boot
+ui/.cpcache
+ui/out
+priv/www/*.js
+priv/www/*.map
