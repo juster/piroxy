@@ -5,30 +5,6 @@
 <meta charset="utf-8">
 </head>
 <body>
-<script type="text/javascript">
-// XXX: temporarily expose vars during debugging
-//(function(){
-
-var worker = new Worker('worker.js')
-worker.onerror = error
-worker.onmessage = recv
-
-function error(err){
-    var str = 'Worker error: '+err.message
-    console.error(str)
-    alert(str)
-}
-
-function recv(msg){
-    //var str = JSON.stringify(msg.data)
-    console.log('*DBG* Worker recv:', msg.data)
-}
-
-setInterval(function() {
-    worker.postMessage({tuple:[{atom:"echo"},{tuple:[1,2,3,4,5]}]})
-},5000)
-
-//})()
-</script>
+<script type="text/javascript" src="app.js"></script>
 </body>
 </html>
