@@ -1,63 +1,35 @@
 (ns piroxy.core
-  (:require [goog.object :as o]))
+  (:require [goog.object :as o]
+            [piroxy.blert :as blert]))
 
 (def worker (atom nil))
+(def n-error (atom 0))
+(def max-error 5)
 
 (defn worker-error [err]
-  (js/console.error (str "Worker error: " (.-message err))))
-
-(defn decode-blert [x]
-  (cond
-    (boolean? x) x
-    (string? x) x
-    (number? x) x
-    (instance? js/Map x)
-    (let [k (map decode-blert (.keys x))
-          v (map decode-blert (.values x))]
-      (zipmap k v))
-    (object? x)
-    (cond
-      (o/containsKey x "atom")
-      (keyword (o/get x "atom"))
-      (o/containsKey x "tuple")
-      (vec (map decode-blert (array-seq (o/get x "tuple"))))
-      (o/containsKey x "list")
-      (map decode-blert (array-seq (o/get x "list")))
-      :else
-      (do
-        (js/console.log "*DBG*" x)
-        (throw (js/Error. "unrecognized erlang object"))))))
+  (js/console.error (str "Worker error: " (.-message err)))
+  (swap! n-error inc)
+  (when (<= @n-error max-error)
+    (swap! worker
+          (fn [w]
+            (.terminate @worker)
+            (new-worker)))))
 
 (defn worker-msg [msg]
-  (let [clj (decode-blert (.-data msg))]
+  (let [clj (blert/decode (.-data msg))]
     (js/console.log "Worker message: " (pr-str clj))))
-
-(defn encode-clj [x]
-  (cond
-    (map? x)
-    (let [m (js/Map.)]
-      (doseq [[k v] x]
-        (.set m (encode-clj k) (encode-clj v)))
-      m)
-    (vector? x)
-    #js{"tuple" (apply array (map encode-clj x))},
-    (keyword? x)
-    #js{"atom" (name x)},
-    (seq? x)
-    #js{"list" (apply array (map encode-clj x))},
-    :else x))
 
 (defn ticker []
   (.postMessage @worker
-                (encode-clj [:echo [{:hello :piroxy}
-                                    "how are you?"
-                                    (seq [1.01 2.02 3.03])]])))
+                (blert/encode [:echo [{:hello :piroxy}
+                                      "how are you?"
+                                      (seq [1.01 2.02 3.03])]])))
 
-(defn init []
+(defn new-worker []
   (let [w (js/Worker. "worker.js")]
     (set! (.-onerror w) worker-error)
     (set! (.-onmessage w) worker-msg)
-    (reset! worker w))
-  (js/setInterval ticker 5000))
+    w))
 
-(init)
+(reset! worker (new-worker))
+(js/setInterval ticker 5000)

@@ -1,59 +1,32 @@
-(ns piroxy.worker
-  (:require [goog.object :as o]))
+(ns piroxy.worker)
 
 (js/importScripts "blert.js")
 
-(def websock (atom nil))
-(def num-fails (atom 0))
-(def max-fails 5)
-(def piroxy-endpoint "wss://piroxy/ws")
-
-(defn encode-clj [x]
-  (cond
-    (map? x)
-    (let [m (js/Map.)]
-      (doseq [[k v] x]
-        (.set m (encode-clj k) (encode-clj v)))
-      m)
-    (vector? x)
-    #js{"tuple" (apply array (map encode-clj x))},
-    (keyword? x)
-    #js{"atom" (name x)},
-    (seq? x)
-    #js{"list" (apply array (map encode-clj x))},
-    :else x))
-
-(defn encode [x]
-  (println (str "*DBG* sending: " (pr-str x)))
-  (js/blert.encode (encode-clj x)))
+(def websock (js/WebSocket. "wss://piroxy/ws"))
 
 (defn relay-incoming [ev]
-  (let [data (o/get ev "data")]
-    (..
+  (let [data (.-data ev)]
+    (->
      (js/Promise.
       (fn [resolve reject]
         (cond
           (instance? js/ArrayBuffer data) (resolve data)
           (instance? js/Blob data) (resolve (.arrayBuffer data))
           :else (reject (js/Error. "unknown websocket data type")))))
-     (then #(js/postMessage (js/blert.decode %1))))))
+     (.then #(js/postMessage (js/blert.decode %1))))))
 
 (defn relay-outgoing [msg]
-  (println "*DBG* relay-outgoing")
-  (.send @websock (js/blert.encode (.-data msg))))
+  (.send websock (js/blert.encode (.-data msg))))
 
 (defn on-open []
-  (js/console.log "*DBG* WS open!")
-  (.send @websock (encode [:echo "Hello, Piroxy!"])))
+  (js/console.log "*DBG* WS open!"))
 
-(defn connect []
-  (when (= nil @websock)
-    (let [newsock (js/WebSocket. piroxy-endpoint)]
-      (set! (.-onopen newsock) on-open)
-      (set! (.-onclose newsock) #(js/console.log "*DBG* WS closed!"))
-      (set! (.-onerror newsock) #(js/console.log "*DBG* WS error" %1))
-      (set! (.-onmessage newsock) relay-incoming)
-      (reset! websock newsock))))
+(defn on-close []
+  (js/console.log "*DBG* WS closed!")
+  (js/close))
 
+(set! (.-onopen websock) on-open)
+(set! (.-onclose websock) on-close)
+;;(set! (.-onerror websock) #(throw %1))
+(set! (.-onmessage websock) relay-incoming)
 (set! js/onmessage relay-outgoing)
-(connect)
