@@ -209,7 +209,7 @@ redirect(Uri) ->
            bodylen = byte_size(Content)}, {body,Content}].
 
 illegal_filename(File) ->
-    case binary:match(File, [<<"/">>, <<"\\">>, <<"..">>, <<0>>]) of
+    case binary:match(File, [<<"\\">>, <<"..">>, <<0>>]) of
         nomatch -> false;
         _ -> true
     end.
