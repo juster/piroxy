@@ -1,8 +1,8 @@
 #!/usr/bin/env tclsh
 
 set sourceMap {
-    {build.edn app.js {piroxy/core.cljs piroxy/blert.cljs}}
-    {build-worker.edn worker.js {piroxy/worker.cljs}}
+    {build.edn app.js {../deps.edn piroxy/core.cljs piroxy/blert.cljs}}
+    {build-worker.edn worker.js {../deps.edn piroxy/worker.cljs}}
 }
 
 proc check {srcTime dest} {

@@ -12,11 +12,11 @@
       (zipmap k v))
     (object? x)
     (cond
-      (o/containsKey x "atom")
+      (js-in x "atom")
       (keyword (o/get x "atom"))
-      (o/containsKey x "tuple")
+      (js-in x "tuple")
       (vec (map decode (array-seq (o/get x "tuple"))))
-      (o/containsKey x "list")
+      (js-in x "list")
       (map decode (array-seq (o/get x "list")))
       :else
       (do
