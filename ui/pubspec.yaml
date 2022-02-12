@@ -1,8 +1,20 @@
 name: piroxy
+description: Embedded webapp for piroxy
+version: 0.1.0
 environment:
-    sdk: '>=2.10.0 <3.0.0'
+    sdk: '>=2.16.0 <3.0.0'
+dependencies:
+    flutter:
+        sdk: flutter
+    flutter_localizations:
+        sdk: flutter
 dev_dependencies:
     build_runner: ^2.1.0
     build_test: ^2.1.0
     build_web_compilers: ^3.0.0
 publish_to: none
+flutter:
+    uses-material-design: true
+    generate: true
+    assets:
+        - assets/images/

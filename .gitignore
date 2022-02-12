@@ -16,3 +16,4 @@ ui/.dart_tool/
 ui/.packages
 ui/lib/app.js*
 ui/js/app.js*
+priv/www/

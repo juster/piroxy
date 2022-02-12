@@ -6,16 +6,21 @@ all: erl js
 erl:
 	erl -make
 
-ui/js/app.js: ui/lib/app.dart
-	dart2js -o ui/js/app.js ui/lib/app.dart
+priv/web/js/main.dart.js: ui/lib/main.dart ui/lib/src/blert.dart
+	cd ui; flutter build web
+	cp -r ui/build/web/* priv/www/
 
-priv/www/app.js: ui/js/app.js
-	cp ui/js/app.js* priv/www/
+priv/www/blert.js: ui/js/blert.js
+	cp $< $@
 
 priv/www/worker.js: ui/js/worker.js
 	cp $< $@
 
-js: priv/www/app.js priv/www/worker.js
+js: priv/www/main.dart.js priv/www/worker.js priv/www/blert.js
 
 run: all
 	sh erl.sh
+
+clean:
+	-rm -f priv/www/*
+	-rm -f ebin/*.beam
