@@ -11,7 +11,10 @@ erl_crash.dump
 .DS_Store
 *.script
 *.boot
-ui/.cpcache
-ui/out
 priv/www/*.js
 priv/www/*.map
+priv/www/app.dart
+priv/www/app.js.deps
+ui/.dart_tool/
+ui/.packages
+ui/lib/app.js*

@@ -1,6 +1,0 @@
-{:main piroxy.core
- :optimizations :advanced
- :output-to "out/app.js"
- :output-dir "out/app"
- :target "browser"
- :source-map "out/app.js.map"}

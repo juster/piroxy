@@ -8,7 +8,11 @@ importScripts('blert.js')
 function connect(){
     socket = new WebSocket('wss://piroxy/ws')
     socket.onmessage = relay_in
-    socket.onclose = function(){ console.log("*DBG* WS closed!") }
+    socket.onclose = function(){
+        socket = null
+        console.log("*DBG* WS closed!")
+        throw new Error("WS closed")
+    }
     socket.onopen = function(evt){ console.log('*DBG* WS opened!') }
     socket.onerror = reconnect
 }

@@ -1,6 +1,0 @@
-{:main piroxy.worker
- :optimizations :advanced
- :output-to "out/worker.js"
- :output-dir "out/worker"
- :target "webworker"
- :source-map "out/worker.js.map"}
