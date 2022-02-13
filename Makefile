@@ -1,4 +1,4 @@
-.PHONY: all erl js run
+.PHONY: all erl js run clean
 
 all: erl js
 
@@ -6,8 +6,8 @@ all: erl js
 erl:
 	erl -make
 
-priv/web/js/main.dart.js: ui/lib/main.dart ui/lib/src/blert.dart
-	cd ui; flutter build web
+priv/www/main.dart.js: ui/lib/main.dart ui/lib/src/blert.dart
+	cd ui; flutter build web --source-maps
 	cp -r ui/build/web/* priv/www/
 
 priv/www/blert.js: ui/js/blert.js
@@ -22,5 +22,5 @@ run: all
 	sh erl.sh
 
 clean:
-	-rm -f priv/www/*
+	-rm -rf priv/www/*
 	-rm -f ebin/*.beam
