@@ -11,11 +11,12 @@ void main() {
 spawnBlert() {
   var worker = new Worker('https://piroxy/worker.js');
   var timer = Timer.periodic(Duration(seconds: 5), (_) {
-      var tuple = blert.tuple([blert.atom("echo"), blert.atom("hello")]);
+      var tuple = blert.fromDart({"tuple": [{"atom":"echo"}, {"atom":"hello"}]});
       worker.postMessage(tuple);
   });
   worker.onMessage.listen((e) {
-      print("*DBG* received: ${e.data}");
+      //var raw = blert.stringify(blert.classify(e.data));
+      print("*DBG* received: ${blert.dumpJs(e.data)}");
   });
   worker.onError.listen((e) {
       print("*DBG* worker error: $e");
@@ -41,15 +42,6 @@ class MyApp extends StatelessWidget {
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({Key? key, required this.title}) : super(key: key);
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
 
   final String title;
 
