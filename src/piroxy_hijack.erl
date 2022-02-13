@@ -137,7 +137,7 @@ get_uri(Target, Path, _Id, H, S) ->
             {L, S};
         not_found ->
             <<"/",Filename/binary>> = Path,
-            {static_file(Filename,H), S}
+            {static_file(strip_query(Filename),H), S}
     end.
 
 lookup_replay(Target, Path, S) ->
@@ -172,6 +172,14 @@ rand_path() ->
                        base64:encode(Bin1),
                        [{<<"+">>,<<"-">>}, {<<"/">>,<<"_">>}, {<<"=">>,<<>>}]),
     <<"/",Bin2/binary>>.
+
+strip_query(Path) ->
+    case binary:match(Path, <<"?">>) of
+        nomatch ->
+            Path;
+        {Start,_} ->
+            binary:part(Path, {0,Start})
+    end.
 
 static_file(File, H) ->
     case {illegal_filename(File), revind($., File)} of
