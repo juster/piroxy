@@ -1,4 +1,4 @@
-.PHONY: all erl js run clean
+.PHONY: all erl js run clean cleanjs
 
 all: erl js
 
@@ -21,6 +21,8 @@ js: priv/www/main.dart.js priv/www/worker.js priv/www/blert.js
 run: all
 	sh erl.sh
 
-clean:
-	-rm -rf priv/www/*
+clean: cleanjs
 	-rm -f ebin/*.beam
+
+cleanjs:
+	-rm -rf priv/www/*
