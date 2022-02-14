@@ -18,12 +18,10 @@ function connect(){
 }
 
 function decode_in(abuf){
-    //console.log('*DBG* decoded:', JSON.stringify(blert.decode(abuf)))
     postMessage(blert.decode(abuf))
 }
 
 function relay_out(msg){
-    console.log(msg.data)
     socket.send(blert.encode(msg.data))
 }
 

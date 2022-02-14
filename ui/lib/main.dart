@@ -3,29 +3,35 @@ import 'dart:html';
 import 'dart:async';
 import 'src/blert.dart' as blert;
 
-void main() {
-  spawnBlert();
-  runApp(const MyApp());
-}
+class BlertWorker {
+  final incoming = StreamController<Object>();
+  Timer? timer = null;
+  List<Object> queue = [];
 
-spawnBlert() {
-  var worker = new Worker('https://piroxy/worker.js');
-  var timer = Timer.periodic(Duration(seconds: 5), (_) {
-      var tuple = blert.fromDart({"tuple": [{"atom":"echo"}, {"atom":"hello"}]});
-      worker.postMessage(tuple);
-  });
-  worker.onMessage.listen((e) {
-      //var raw = blert.stringify(blert.classify(e.data));
-      print("*DBG* received: ${blert.dumpJs(e.data)}");
-  });
-  worker.onError.listen((e) {
-      print("*DBG* worker error: $e");
-      timer.cancel();
-  });
+  BlertWorker() {
+    var worker = new Worker('https://piroxy/worker.js');
+    var timer = Timer.periodic(Duration(seconds: 5), (_) {
+        var tuple = blert.fromDart(
+          {"tuple": [{"atom":"echo"}, {"tuple": [{"atom":"hello"}, {"atom":"world"}]}]}
+        );
+        worker.postMessage(tuple);
+    });
+    worker.onMessage.listen((e) => incoming.add(e.data));
+    worker.onError.listen((e) {
+        incoming.addError(e);
+        timer.cancel();
+    });
+  }
+
+  void listen(fun) {
+    incoming.stream.listen(fun);
+  }
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+  final BlertWorker transport;
+
+  const MyApp(this.transport, {Key? key}) : super(key: key);
 
   // This widget is the root of your application.
   @override
@@ -35,32 +41,67 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: MyHomePage(
+        title: 'Flutter Demo Home Page',
+        transport: transport,
+      ),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({Key? key, required this.title}) : super(key: key);
+  const MyHomePage({
+      Key? key,
+      required this.title,
+      required this.transport
+  }) : super(key: key);
 
   final String title;
+  final BlertWorker transport;
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<MyHomePage> createState() => _MyHomePageState(transport);
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+enum LogPlayback { live, paused }
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+class _MyHomePageState extends State<MyHomePage> {
+  var _playback = LogPlayback.live;
+  List<String> messages = [];
+  List<String> queued = [];
+
+  _MyHomePageState(BlertWorker transport) {
+    transport.listen(_receiveMessage);
+  }
+
+  void _receiveMessage(Object msg) {
+    switch (_playback) {
+      case LogPlayback.live:
+        setState(() {
+            var str = blert.dumpJs(msg);
+            messages.add(str);
+        });
+        break;
+      case LogPlayback.paused:
+        queued.add(blert.dumpJs(msg));
+        break;
+    }
+  }
+
+  void pause() {
+    if (_playback == LogPlayback.paused) return;
+    setState() {
+      _playback = LogPlayback.paused;
+    }
+  }
+
+  void resume() {
+    if (_playback == LogPlayback.live) return;
+    setState() {
+      messages.addAll(queued);
+      queued.clear();
+      _playback = LogPlayback.live;
+    }
   }
 
   @override
@@ -76,42 +117,34 @@ class _MyHomePageState extends State<MyHomePage> {
         // Here we take the value from the MyHomePage object that was created by
         // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
+        actions: <Widget>[
+          IconButton(
+            icon: const Icon(Icons.play_arrow),
+            tooltip: 'Display events live as they occur',
+            onPressed: resume,
+          ),
+          IconButton(
+            icon: const Icon(Icons.pause),
+            tooltip: 'Pause the stream of events',
+            onPressed: pause,
+          )
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+      body: ListView.builder(
+        padding: const EdgeInsets.all(8),
+        itemCount: messages.length,
+        itemBuilder: (BuildContext context, int i) {
+          return Container(
+            height: 30,
+            child: Text(messages[i]),
+          );
+        }
+      )
     );
   }
+}
+
+void main() {
+  var worker = BlertWorker();
+  runApp(MyApp(worker));
 }
