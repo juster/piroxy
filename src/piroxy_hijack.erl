@@ -182,29 +182,35 @@ strip_query(Path) ->
     end.
 
 static_file(File, H) ->
-    case {illegal_filename(File), revind($., File)} of
-        {true,_} ->
+    case illegal_filename(File) of
+        true ->
             io:format("*DBG* illegal_filename! ~s~n", [File]),
             [{status,http_not_found}];
-        {_,nomatch} ->
+        false ->
+            static_file2(File, H)
+    end.
+
+static_file2(File, H) ->
+    AppDir = code:lib_dir(piroxy),
+    Path = filename:join([AppDir, "priv", "www", binary_to_list(File)]),
+    io:format("*DBG* Path=~p~n", [Path]),
+    case file:read_file(Path) of
+        {error,enoent} ->
             [{status,http_not_found}];
-        {false,I} ->
-            AppDir = code:lib_dir(piroxy),
-            Path = filename:join([AppDir, "priv", "www", binary_to_list(File)]),
-            io:format("*DBG* Path=~p~n", [Path]),
-            case file:read_file(Path) of
-                {error,enoent} ->
-                    [{status,http_not_found}];
-                {ok,Bin} ->
-                    Ext = binary_part(File, I, byte_size(File)-I),
-                    Headers = [{"content-type", extmime(Ext)},
-                               {"content-length", integer_to_list(byte_size(Bin))}],
-                    Head = #head{line = <<"HTTP/1.1 200 OK">>,
-                                 method = H#head.method,
-                                 headers = fieldlist:from_proplist(Headers),
-                                 bodylen = byte_size(Bin)},
-                    [Head, {body,Bin}]
-            end
+        {ok,Bin} ->
+            Ext = case revind($., File) of
+                      nomatch ->
+                          null;
+                      Pos ->
+                          binary_part(File, Pos, byte_size(File)-Pos)
+                  end,
+            Headers = [{"content-type", extmime(Ext)},
+                       {"content-length", integer_to_list(byte_size(Bin))}],
+            Head = #head{line = <<"HTTP/1.1 200 OK">>,
+                         method = H#head.method,
+                         headers = fieldlist:from_proplist(Headers),
+                         bodylen = byte_size(Bin)},
+            [Head, {body,Bin}]
     end.
 
 redirect(Uri) ->
