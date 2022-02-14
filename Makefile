@@ -7,7 +7,7 @@ erl:
 	erl -make
 
 priv/www/main.dart.js: ui/lib/main.dart ui/lib/src/blert.dart
-	cd ui; flutter build web --source-maps
+	cd ui; flutter build web --source-maps --profile --dart-define=Dart2jsOptimization=O0
 	cp -r ui/build/web/* priv/www/
 
 priv/www/blert.js: ui/js/blert.js
