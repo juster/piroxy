@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'dart:html';
 import 'dart:async';
 import 'src/blert.dart' as blert;
@@ -28,10 +29,42 @@ class BlertWorker {
   }
 }
 
-class MyApp extends StatelessWidget {
-  final BlertWorker transport;
+enum LogPlayback { live, paused }
 
-  const MyApp(this.transport, {Key? key}) : super(key: key);
+class EventLog with ChangeNotifier {
+  var _playback = LogPlayback.live;
+  var log = <String>[];
+  var _hidden = <String>[];
+
+  void add(Object event){
+    var str = blert.dumpJs(event);
+    switch (_playback) {
+      case LogPlayback.live:
+        log.add(str);
+        notifyListeners();
+        break;
+      case LogPlayback.paused:
+        _hidden.add(str);
+        break;
+    }
+  }
+
+  void play() {
+    if (_playback == LogPlayback.live) return;
+    log.addAll(_hidden);
+    _hidden.clear();
+    _playback = LogPlayback.live;
+    notifyListeners();
+  }
+
+  void pause() {
+    if (_playback == LogPlayback.paused) return;
+    _playback = LogPlayback.paused;
+  }
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
 
   // This widget is the root of your application.
   @override
@@ -41,77 +74,23 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: MyHomePage(
-        title: 'Flutter Demo Home Page',
-        transport: transport,
-      ),
+      home: MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({
-      Key? key,
-      required this.title,
-      required this.transport
-  }) : super(key: key);
+  const MyHomePage({Key? key, required this.title,}) : super(key: key);
 
   final String title;
-  final BlertWorker transport;
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState(transport);
+  State<MyHomePage> createState() => _MyHomePageState();
 }
 
-enum LogPlayback { live, paused }
-
 class _MyHomePageState extends State<MyHomePage> {
-  var _playback = LogPlayback.live;
-  List<String> messages = [];
-  List<String> queued = [];
-
-  _MyHomePageState(BlertWorker transport) {
-    transport.listen(_receiveMessage);
-  }
-
-  void _receiveMessage(Object msg) {
-    switch (_playback) {
-      case LogPlayback.live:
-        setState(() {
-            var str = blert.dumpJs(msg);
-            messages.add(str);
-        });
-        break;
-      case LogPlayback.paused:
-        queued.add(blert.dumpJs(msg));
-        break;
-    }
-  }
-
-  void pause() {
-    if (_playback == LogPlayback.paused) return;
-    setState() {
-      _playback = LogPlayback.paused;
-    }
-  }
-
-  void resume() {
-    if (_playback == LogPlayback.live) return;
-    setState() {
-      messages.addAll(queued);
-      queued.clear();
-      _playback = LogPlayback.live;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
         // Here we take the value from the MyHomePage object that was created by
@@ -121,24 +100,26 @@ class _MyHomePageState extends State<MyHomePage> {
           IconButton(
             icon: const Icon(Icons.play_arrow),
             tooltip: 'Display events live as they occur',
-            onPressed: resume,
+            onPressed: () => context.read<EventLog>().play()
           ),
           IconButton(
             icon: const Icon(Icons.pause),
             tooltip: 'Pause the stream of events',
-            onPressed: pause,
+            onPressed: () => context.read<EventLog>().pause()
           )
         ],
       ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(8),
-        itemCount: messages.length,
-        itemBuilder: (BuildContext context, int i) {
-          return Container(
-            height: 30,
-            child: Text(messages[i]),
-          );
-        }
+      body: Consumer<EventLog>(
+        builder: (context, eventlog, child) => ListView.builder(
+          padding: const EdgeInsets.all(8),
+          itemCount: eventlog.log.length,
+          itemBuilder: (BuildContext context, int i) {
+            return Container(
+              height: 30,
+              child: Text(eventlog.log[i]),
+            );
+          }
+        )
       )
     );
   }
@@ -146,5 +127,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
 void main() {
   var worker = BlertWorker();
-  runApp(MyApp(worker));
+  var eventlog = EventLog();
+  worker.listen((data) => eventlog.add(data));
+  runApp(
+    ChangeNotifierProvider(
+      create: (context) => eventlog,
+      child: const MyApp(),
+    )
+  );
 }
