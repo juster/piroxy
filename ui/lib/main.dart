@@ -32,13 +32,13 @@ class BlertWorker {
 enum LogPlayback { live, paused }
 
 class EventLog with ChangeNotifier {
-  var _playback = LogPlayback.live;
+  var playback = LogPlayback.live;
   var log = <String>[];
   var _hidden = <String>[];
 
   void add(Object event){
     var str = blert.dumpJs(event);
-    switch (_playback) {
+    switch (playback) {
       case LogPlayback.live:
         log.add(str);
         notifyListeners();
@@ -50,16 +50,17 @@ class EventLog with ChangeNotifier {
   }
 
   void play() {
-    if (_playback == LogPlayback.live) return;
+    if (playback == LogPlayback.live) return;
     log.addAll(_hidden);
     _hidden.clear();
-    _playback = LogPlayback.live;
+    playback = LogPlayback.live;
     notifyListeners();
   }
 
   void pause() {
-    if (_playback == LogPlayback.paused) return;
-    _playback = LogPlayback.paused;
+    if (playback == LogPlayback.paused) return;
+    playback = LogPlayback.paused;
+    notifyListeners();
   }
 }
 
@@ -91,29 +92,31 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-        actions: <Widget>[
-          IconButton(
-            icon: const Icon(Icons.play_arrow),
-            tooltip: 'Display events live as they occur',
-            onPressed: () => context.read<EventLog>().play()
-          ),
-          IconButton(
-            icon: const Icon(Icons.pause),
-            tooltip: 'Pause the stream of events',
-            onPressed: () => context.read<EventLog>().pause()
-          )
-        ],
-      ),
-      body: Consumer<EventLog>(
-        builder: (context, eventlog, child) => ListView.builder(
+    return Consumer<EventLog>(
+      builder: (context, eventlog, child) => Scaffold(
+        appBar: AppBar(
+          // Here we take the value from the MyHomePage object that was created by
+          // the App.build method, and use it to set our appbar title.
+          title: Text(widget.title),
+          actions: <Widget>[
+            IconButton(
+              icon: const Icon(Icons.play_arrow),
+              tooltip: 'Display events live as they occur',
+              onPressed: (eventlog.playback != LogPlayback.live
+                ? () => context.read<EventLog>().play() : null)
+            ),
+            IconButton(
+              icon: const Icon(Icons.pause),
+              tooltip: 'Pause the stream of events',
+              onPressed: (eventlog.playback != LogPlayback.paused
+                ? () => context.read<EventLog>().pause() : null)
+            ),
+          ],
+        ),
+        body: ListView.builder(
           padding: const EdgeInsets.all(8),
           itemCount: eventlog.log.length,
-          itemBuilder: (BuildContext context, int i) {
+          itemBuilder: (context, i) {
             return Container(
               height: 30,
               child: Text(eventlog.log[i]),
