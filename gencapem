@@ -33,28 +33,30 @@ prompt_new_file(Prompt, Default) ->
                        "\n" -> Default;
                        _ -> string:chomp(Any)
                    end,
-            case file:open(Path, [exclusive]) of
-                {ok,IoDev} ->
-                    IoDev;
-                {error,eexist} ->
+            case file:read_file_info(Path) of
+                {ok,_} ->
                     io:format("error: path (~s) already exists~n"
                               ++ "*** Please delete ~s and rerun this script.~n",
                               [Path,Path]),
-                    throw(eexist);
+                    exit(eexist);
+                {error,enoent} ->
+                    Path;
                 {error,Rsn} ->
                     exit(Rsn)
             end
     end.
 
 genpem() ->
-    CADev = prompt_new_file("CA cert path", ?DEFAULT_CA_PATH),
-    KeyDev = prompt_new_file("CA key path", ?DEFAULT_KEY_PATH),
+    CAPath = prompt_new_file("CA cert path", ?DEFAULT_CA_PATH),
+    KeyPath = prompt_new_file("CA key path", ?DEFAULT_KEY_PATH),
     Passwd = prompt_passwd(),
+    {ok,CAFile} = file:open(CAPath,[exclusive]),
+    {ok,KeyFile} = file:open(KeyPath,[exclusive]),
     {CertPem,KeyPem} = forger_lib:generate_ca_pair(Passwd),
-    file:write(CADev,CertPem),
-    file:close(CADev),
-    file:write(KeyDev,KeyPem),
-    file:close(KeyDev),
+    file:write(CAFile,CertPem),
+    file:close(CAFile),
+    file:write(KeyFile,KeyPem),
+    file:close(KeyFile),
     io:format("Done.~n"),
     0.
 
