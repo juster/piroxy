@@ -104,7 +104,6 @@ handle_event(cast, {connect,{Host,Port,true}}, disconnected, D) ->
         {error,Reason} ->
             {stop,Reason};
         {ok,Socket} ->
-            ssl:setopts(Socket, [{active,true}]),
             {next_state,eof,D#data{socket={ssl,Socket}}}
     end;
 
