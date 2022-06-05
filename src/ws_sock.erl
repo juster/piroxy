@@ -31,7 +31,7 @@ start(Opts) ->
         Sock ->
             %% Control of the socket must be passed to the new process.
             pisock_lib:setopts(Sock,[{active,false}]),
-            Pid = spawn(fun () -> init(Opts) end),
+            Pid = proc_lib:spawn(fun () -> init(Opts) end),
             pisock_lib:controlling_process(Sock,Pid),
             {ok,Pid}
     end.
