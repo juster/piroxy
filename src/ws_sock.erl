@@ -1,7 +1,7 @@
 -module(ws_sock).
 -export([upgrade_options/1,start/1,connect/2]).
 -record(state, {sid,socket,mode,relay,relayFrames=false,logging=false,
-                buffer=(<<>>),fragments=[], zlib=null}).
+                buffer=(<<>>),fragments=[],zlib=null}).
 -include_lib("kernel/include/logger.hrl").
 
 %%%
@@ -81,13 +81,13 @@ upgrade_options_(Headers) ->
     end.
 
 init(Opts) ->
-    State = #state{sid=proplists:get_value(id,Opts),
-                   socket=proplists:get_value(socket,Opts),
-                   mode=proplists:get_value(mode,Opts),
-                   relayFrames=proplists:get_bool(relayFrames,Opts),
-                   logging=proplists:get_bool(logging,Opts),
-                   buffer=iolist_to_binary(proplists:get_value(buffer,Opts)),
-                   zlib=proplists:get_value(zlib,Opts)},
+    State = #state{sid         = proplists:get_value(id,Opts),
+                   socket      = proplists:get_value(socket,Opts),
+                   mode        = proplists:get_value(mode,Opts),
+                   relayFrames = proplists:get_bool(relayframes,Opts),
+                   logging     = proplists:get_bool(logging,Opts),
+                   buffer      = iolist_to_binary(proplists:get_value(buffer,Opts)),
+                   zlib        = proplists:get_value(zlib,Opts)},
     loop(State).
 
 loop(State0) ->
@@ -99,7 +99,7 @@ loop(State0) ->
                     loop(State)
             catch
                 exit:closed ->
-                    exit(closed);
+                    ok;
                 exit:Rsn ->
                     ?LOG_ERROR("~s exit: ~p", [?MODULE,Rsn]),
                     exit(Rsn);
