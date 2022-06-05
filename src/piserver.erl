@@ -2,17 +2,11 @@
 
 -include_lib("kernel/include/logger.hrl").
 -include("../include/pihttp_lib.hrl").
--import(lists, [foreach/2]).
-
--export([start/2, start_link/2, stop/0, superserver/1, listen/2]).
-
-start(Addr, Port) ->
-    Pid = spawn(?MODULE, listen, [Addr,Port]),
-    register(piserver, Pid),
-    {ok,Pid}.
+-export([start_link/2,stop/0,superserver/2,listen/1,superloop/1]).
+-define(N_LISTENERS, 10).
 
 start_link(Addr, Port) ->
-    Pid = spawn_link(?MODULE, listen, [Addr,Port]),
+    Pid = proc_lib:spawn_link(?MODULE, superserver, [Addr,Port]),
     register(piserver, Pid),
     {ok,Pid}.
 
@@ -20,28 +14,44 @@ stop() ->
     exit(whereis(piserver), stop),
     ok.
 
-listen(_Addr, Port) ->
+superserver(_Addr, Port) ->
     case gen_tcp:listen(Port, [inet,{active,false},binary]) of
-        {ok,Listen} ->
-            superserver(Listen);
+        {ok,ListenSock} ->
+            process_flag(trap_exit,true),
+            lists:foreach(fun (_) -> spawn_link_listener(ListenSock) end,
+                          lists:seq(1,?N_LISTENERS)),
+            superloop(ListenSock);
         {error,Reason} ->
-            io:format("~p~n",[{error,Reason}]),
-            exit(Reason)
+            error(Reason)
     end.
 
-superserver(Listen) ->
-    case gen_tcp:accept(Listen) of
+spawn_link_listener(ListenSock) ->
+    proc_lib:spawn_link(?MODULE,listen,[ListenSock]).
+
+superloop(ListenSock) ->
+    receive
+        {'EXIT',_,normal} ->
+            spawn_link_listener(ListenSock),
+            superloop(ListenSock);
+        {'EXIT',_,Reason} ->
+            exit(Reason);
+        upgrade ->
+            piserver:superloop(ListenSock)
+    end.
+
+listen(ListenSock) ->
+    {ok,Pid} = http_req_sock:start(),
+    case gen_tcp:accept(ListenSock) of
         {ok,Socket} ->
-            {ok,Pid} = http_req_sock:start(),
-            case gen_tcp:controlling_process(Socket, Pid) of
+            case gen_tcp:controlling_process(Socket,Pid) of
                 ok ->
-                    http_req_sock:control(Pid, Socket),
-                    piserver:superserver(Listen);
+                    http_req_sock:control(Pid,Socket),
+                    ok;
                 {error,Reason} ->
-                    exit(Pid, kill),
+                    http_req_sock:stop(Pid),
                     exit(Reason)
-            end,
-            ok;
+            end;
         {error,Reason} ->
+            http_req_sock:stop(Pid),
             exit(Reason)
     end.

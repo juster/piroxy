@@ -56,7 +56,7 @@ terminate(Reason, _, D) ->
 %%%
 
 handle_event(enter, connect, _, _) ->
-    {keep_state_and_data, {state_timeout,?CONNECT_TIMEOUT,connect}};
+    keep_state_and_data;
 
 handle_event(enter, idle, _, _) ->
     {keep_state_and_data, {state_timeout,?IDLE_TIMEOUT,idle}};
