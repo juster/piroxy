@@ -29,38 +29,53 @@ class BlertWorker {
   }
 }
 
-enum LogPlayback { live, paused }
+enum LogPlayback { record, play, pause, stop }
 
-class EventLog with ChangeNotifier {
-  var playback = LogPlayback.live;
+class EventPlayer with ChangeNotifier {
+  var playback = LogPlayback.record;
   var log = <String>[];
   var _hidden = <String>[];
 
   void add(Object event){
     var str = blert.dumpJs(event);
     switch (playback) {
-      case LogPlayback.live:
+      case LogPlayback.record:
         log.add(str);
         notifyListeners();
         break;
-      case LogPlayback.paused:
+      case LogPlayback.play:
+      case LogPlayback.pause:
         _hidden.add(str);
+        break;
+      case LogPlayback.stop:
         break;
     }
   }
 
-  void play() {
-    if (playback == LogPlayback.live) return;
-    log.addAll(_hidden);
-    _hidden.clear();
-    playback = LogPlayback.live;
+  _setPlayback(LogPlayback next) {
+    if (playback == next) return;
+    playback = next;
     notifyListeners();
   }
 
-  void pause() {
-    if (playback == LogPlayback.paused) return;
-    playback = LogPlayback.paused;
+  void record() {
+    if (playback == LogPlayback.record) return;
+    log.addAll(_hidden);
+    _hidden.clear();
+    playback = LogPlayback.record;
     notifyListeners();
+  }
+
+  void stop() {
+    _setPlayback(LogPlayback.stop);
+  }
+
+  void pause() {
+    _setPlayback(LogPlayback.pause);
+  }
+
+  void play() {
+    _setPlayback(LogPlayback.pause);
   }
 }
 
@@ -92,45 +107,56 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
-    return Consumer<EventLog>(
-      builder: (context, eventlog, child) => Scaffold(
-        appBar: AppBar(
-          // Here we take the value from the MyHomePage object that was created by
-          // the App.build method, and use it to set our appbar title.
-          title: Text(widget.title),
-          actions: <Widget>[
-            IconButton(
-              icon: const Icon(Icons.play_arrow),
-              tooltip: 'Display events live as they occur',
-              onPressed: (eventlog.playback != LogPlayback.live
-                ? () => context.read<EventLog>().play() : null)
-            ),
-            IconButton(
-              icon: const Icon(Icons.pause),
-              tooltip: 'Pause the stream of events',
-              onPressed: (eventlog.playback != LogPlayback.paused
-                ? () => context.read<EventLog>().pause() : null)
-            ),
-          ],
-        ),
-        body: ListView.builder(
-          padding: const EdgeInsets.all(8),
-          itemCount: eventlog.log.length,
-          itemBuilder: (context, i) {
-            return Container(
-              height: 30,
-              child: Text(eventlog.log[i]),
-            );
-          }
-        )
-      )
-    );
+    return Consumer<EventPlayer>(
+      builder: (context, eventlog, child) {
+        var recColor = (eventlog.playback == LogPlayback.record ? Colors.red[200] : null);
+        return Scaffold(
+          appBar: AppBar(
+            // Here we take the value from the MyHomePage object that was created by
+            // the App.build method, and use it to set our appbar title.
+            title: Text(widget.title),
+            actions: <Widget>[
+              IconButton(
+                icon: const Icon(Icons.circle),
+                color: recColor,
+                tooltip: 'Record requests and responses.',
+                onPressed: () => context.read<EventPlayer>().record()
+              ),
+              IconButton(
+                icon: const Icon(Icons.play_arrow),
+                tooltip: 'Playback requests and responses.',
+                onPressed: () => context.read<EventPlayer>().play()
+              ),
+              IconButton(
+                icon: const Icon(Icons.pause),
+                tooltip: 'Pause the stream but keep recording.',
+                onPressed: () => context.read<EventPlayer>().pause(),
+              ),
+              IconButton(
+                icon: const Icon(Icons.stop),
+                tooltip: 'Stop recording requests and responses.',
+                onPressed: () => context.read<EventPlayer>().stop(),
+              ),
+            ],
+          ),
+          body: ListView.builder(
+            padding: const EdgeInsets.all(8),
+            itemCount: eventlog.log.length,
+            itemBuilder: (context, i) {
+              return Container(
+                height: 30,
+                child: Text(eventlog.log[i]),
+              );
+            }
+          )
+        );
+    });
   }
 }
 
 void main() {
   var worker = BlertWorker();
-  var eventlog = EventLog();
+  var eventlog = EventPlayer();
   worker.listen((data) => eventlog.add(data));
   runApp(
     ChangeNotifierProvider(
