@@ -94,9 +94,8 @@ handle_event(cast, {connect,{Host,Port,false}}, disconnected, D) ->
 handle_event(cast, {connect,{Host,Port,true}}, disconnected, D) ->
     case ssl:connect(Host, Port, [{active,true},binary,{packet,0},
                                   {keepalive,true},
-                                  {exit_on_close,false},
-                                  {verify,verify_none}],
-                     ?CONNECT_TIMEOUT) of
+                                  {verify,verify_none},
+                                  {exit_on_close,false}], ?CONNECT_TIMEOUT) of
         {error,timeout} ->
             {stop,{shutdown,timeout}};
         {error,nxdomain} ->
