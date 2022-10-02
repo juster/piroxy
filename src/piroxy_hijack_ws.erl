@@ -63,7 +63,7 @@ handle_frame({binary,Bin}, S0) ->
     Term = binary_to_term(Bin),
     io:format("*DBG* ~s ~p: received: ~p~n",[?MODULE,self(),Term]),
     {Res,S} = rpc(Term,S0),
-    reply({binary,term_to_iovec(Res)},S),
+    reply({binary,term_to_binary(Res)},S),
     S;
 
 handle_frame({close,L}, S) ->

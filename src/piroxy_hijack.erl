@@ -160,7 +160,7 @@ store_replay(Target, OrigId, S) ->
 rebuild_uri({{http,Host,80}, RelPath}) -> <<"http://",Host/binary,RelPath/binary>>;
 rebuild_uri({{https,Host,443}, RelPath}) -> <<"https://",Host/binary,RelPath/binary>>;
 rebuild_uri({{Proto,Host,Port}, RelPath}) ->
-    <<(atom_to_binary(Proto))/binary,"://",
+    <<(atom_to_binary(Proto, latin))/binary,"://",
       Host/binary,(integer_to_binary(Port))/binary,
       RelPath/binary>>.
 

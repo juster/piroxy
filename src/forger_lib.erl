@@ -86,9 +86,7 @@ keyIdentifier(Key) when is_tuple(Key) ->
     keyIdentifier(public_key:der_encode(element(1,Key),Key)).
 
 randSerial() ->
-    N = ?N_SERIAL_BYTES,
-    <<Serial:(8*N)/integer>> = crypto:strong_rand_bytes(N),
-    Serial.
+    crypto:bytes_to_integer(crypto:strong_rand_bytes(?N_SERIAL_BYTES)).
 
 attributes(L) ->
     Fun = fun ({T,V}) when is_binary(V) ->

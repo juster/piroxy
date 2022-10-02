@@ -385,7 +385,7 @@ handle_head(H,{relative,RelUri},Bin,D) ->
                       {https,Host,443} ->
                           <<"https://",Host/binary,RelUri/binary>>;
                       {Scheme,Host,Port} ->
-                          SchemeBin = atom_to_binary(Scheme),
+                          SchemeBin = atom_to_binary(Scheme, latin),
                           PortBin = integer_to_binary(Port),
                           <<SchemeBin/binary,"://",Host/binary,":",PortBin/binary>>
                   end,
@@ -496,7 +496,7 @@ urimap_hostinfo(#{scheme:=Scheme,host:=Host,port:=Port}) ->
         Scheme /= <<"http">>, Scheme /= <<"https">> ->
             exit(badarg);
         true ->
-            {binary_to_atom(Scheme),Host,Port}
+            {binary_to_atom(Scheme, latin),Host,Port}
     end;
 
 urimap_hostinfo(#{scheme:=<<"http">>,host:=Host}) ->
